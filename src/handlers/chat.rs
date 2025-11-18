@@ -129,7 +129,20 @@ pub async fn handler(
         .max_tokens(endpoint.max_tokens as u32)
         .temperature(endpoint.temperature as f32)
         .build()
-        .map_err(|e| AppError::Internal(format!("Failed to build AgentOptions: {}", e)))?;
+        .map_err(|e| {
+            tracing::error!(
+                endpoint_name = %endpoint.name,
+                endpoint_url = %endpoint.base_url,
+                max_tokens = endpoint.max_tokens,
+                temperature = endpoint.temperature,
+                error = %e,
+                "Failed to build AgentOptions from endpoint configuration"
+            );
+            AppError::Internal(format!(
+                "Failed to configure model endpoint '{}': {}",
+                endpoint.name, e
+            ))
+        })?;
 
     // Query the model using the standalone function (avoids !Sync issues)
     tracing::debug!(
@@ -152,7 +165,10 @@ pub async fn handler(
         tracing::error!(
             endpoint_name = %endpoint.name,
             timeout_seconds = state.config().server.request_timeout_seconds,
-            "Request timed out"
+            message_length = request.message.len(),
+            task_type = ?request.task_type,
+            importance = ?request.importance,
+            "Request timed out - consider increasing timeout for this type of request"
         );
         AppError::Internal(format!(
             "Request timed out after {} seconds",
@@ -174,8 +190,17 @@ pub async fn handler(
         match result {
             Ok(block) => {
                 use open_agent::ContentBlock;
-                if let ContentBlock::Text(text_block) = block {
-                    response_text.push_str(&text_block.text);
+                match block {
+                    ContentBlock::Text(text_block) => {
+                        response_text.push_str(&text_block.text);
+                    }
+                    other_block => {
+                        tracing::warn!(
+                            endpoint_name = %endpoint.name,
+                            block_type = ?other_block,
+                            "Received non-text content block, skipping (not yet supported in Phase 2a)"
+                        );
+                    }
                 }
             }
             Err(e) => {

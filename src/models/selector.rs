@@ -41,7 +41,10 @@ impl ModelSelector {
         };
 
         if endpoints.is_empty() {
-            tracing::debug!(tier = ?target, "No endpoints available for tier");
+            tracing::error!(
+                tier = ?target,
+                "No endpoints configured for tier - check config.toml"
+            );
             return None;
         }
 
