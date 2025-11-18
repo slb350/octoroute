@@ -956,30 +956,41 @@ proptest! {
 
 ### Phase 1: Foundation (Week 1)
 
-**Goals**: Basic HTTP server + rule-based routing
+**Goals**: Basic HTTP server + rule-based routing + multi-model config
 
 - [ ] Initialize Cargo project with dependencies
 - [ ] Define `AppError` and `IntoResponse` implementation
-- [ ] Create `config.toml` schema and parser
+- [ ] Create `config.toml` schema and parser **with multi-model support**
+  - [ ] Support arrays of models per tier (fast, balanced, deep)
+  - [ ] Add `weight` and `priority` fields to `ModelEndpoint`
+  - [ ] Simple model selection (first available or round-robin)
 - [ ] Implement `RuleBasedRouter`
 - [ ] Write unit tests for rule matching
 - [ ] Set up Axum server with `/health` endpoint
 - [ ] Add `tracing` setup
 
-**Deliverable**: Server that responds to `/health` with rule router tested
+**Deliverable**: Server that responds to `/health` with rule router tested. Config supports multiple models per tier with simple selection.
 
-### Phase 2: Model Integration (Week 2)
+**Note**: Multi-model config structure established, but sophisticated load balancing deferred to Phase 2.
 
-**Goals**: Integrate `open-agent-sdk` for model clients
+### Phase 2: Model Integration + Load Balancing (Week 2)
+
+**Goals**: Integrate `open-agent-sdk` for model clients + intelligent load balancing
 
 - [ ] Create `ModelClient` wrapper around `open_agent::Client`
+- [ ] Implement `ModelSelector` for choosing from multiple models per tier
+  - [ ] Weighted load balancing algorithm (respects `weight` field)
+  - [ ] Priority-based selection (respects `priority` field)
+  - [ ] Health checks for model availability
+  - [ ] Retry logic with fallback to lower-weight/priority models
+  - [ ] Circuit breaker pattern for failed models
 - [ ] Implement `create_client_for(TargetModel)` factory
 - [ ] Add `/chat` endpoint with request validation
-- [ ] Test against local 8B model (Ollama)
-- [ ] Add response streaming (optional)
+- [ ] Test against multiple fast tier models (load balancing)
+- [ ] Add response streaming from `open-agent-sdk`
 - [ ] Write integration tests
 
-**Deliverable**: `/chat` endpoint routes to 8B model successfully
+**Deliverable**: `/chat` endpoint intelligently load balances across multiple models per tier with health-aware failover
 
 ### Phase 3: LLM Routing (Week 3)
 
@@ -1032,23 +1043,44 @@ host = "0.0.0.0"
 port = 3000
 request_timeout_seconds = 30
 
-[models.fast]
+# Multi-model support: Each tier can have multiple models for load balancing
+# Phase 1: Simple selection (first available or round-robin)
+# Phase 2: Weighted load balancing with health checks
+
+# Fast tier models (e.g., 8B models for quick tasks)
+[[models.fast]]
 name = "qwen3-8b-instruct"
 base_url = "http://macmini-1:11434/v1"
 max_tokens = 4096
 temperature = 0.7
+weight = 1.0      # Load balancing weight (Phase 2)
+priority = 1      # Higher priority models tried first (Phase 2)
 
-[models.balanced]
+[[models.fast]]
+name = "qwen3-8b-instruct"
+base_url = "http://macmini-2:11434/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+# Balanced tier models (e.g., 30B models for coding/analysis)
+[[models.balanced]]
 name = "qwen3-30b-instruct"
 base_url = "http://lmstudio-host:1234/v1"
 max_tokens = 8192
 temperature = 0.7
+weight = 1.0
+priority = 1
 
-[models.deep]
+# Deep tier models (e.g., 120B models for complex reasoning)
+[[models.deep]]
 name = "gpt-oss-120b"
 base_url = "http://llamacpp-box:8080/v1"
 max_tokens = 16384
 temperature = 0.7
+weight = 1.0
+priority = 1
 
 [routing]
 # Strategy: "rule", "llm", "hybrid", "tool"
@@ -1057,7 +1089,7 @@ strategy = "hybrid"
 # Default importance if not specified
 default_importance = "normal"
 
-# Use 30B model for LLM-based routing
+# Use balanced tier for LLM-based routing
 router_model = "balanced"
 
 [observability]
