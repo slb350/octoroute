@@ -12,9 +12,15 @@ use axum::{
     routing::post,
 };
 use octoroute::{
-    config::{Config, ModelEndpoint, ModelsConfig, ObservabilityConfig, RoutingConfig, RoutingStrategy, ServerConfig},
+    config::{
+        Config, ModelEndpoint, ModelsConfig, ObservabilityConfig, RoutingConfig, RoutingStrategy,
+        ServerConfig,
+    },
     error::AppError,
-    handlers::{AppState, chat::{ChatRequest, ChatResponse}},
+    handlers::{
+        AppState,
+        chat::{ChatRequest, ChatResponse},
+    },
     router::Importance,
 };
 use tower::ServiceExt;
@@ -37,12 +43,9 @@ async fn mock_chat_handler(
     });
 
     // Use real selector to test endpoint selection
-    let endpoint = state
-        .selector()
-        .select(target)
-        .ok_or_else(|| {
-            AppError::RoutingFailed(format!("No available endpoints for tier {:?}", target))
-        })?;
+    let endpoint = state.selector().select(target).ok_or_else(|| {
+        AppError::RoutingFailed(format!("No available endpoints for tier {:?}", target))
+    })?;
 
     // Return mock response without calling real model
     // This tests validation, routing, selection, and response serialization
@@ -134,8 +137,7 @@ async fn test_chat_endpoint_with_valid_request() {
 
     // Verify response fields (mock handler returns mock data)
     assert_eq!(
-        chat_response.content,
-        "Mock response for testing",
+        chat_response.content, "Mock response for testing",
         "content should be mock response"
     );
     assert!(
