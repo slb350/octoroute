@@ -956,41 +956,44 @@ proptest! {
 
 ### Phase 1: Foundation (Week 1)
 
-**Goals**: Basic HTTP server + rule-based routing + multi-model config
+**Goals**: Basic HTTP server + rule-based routing + multi-model config schema
 
-- [ ] Initialize Cargo project with dependencies
-- [ ] Define `AppError` and `IntoResponse` implementation
-- [ ] Create `config.toml` schema and parser **with multi-model support**
-  - [ ] Support arrays of models per tier (fast, balanced, deep)
-  - [ ] Add `weight` and `priority` fields to `ModelEndpoint`
-  - [ ] Simple model selection (first available or round-robin)
-- [ ] Implement `RuleBasedRouter`
-- [ ] Write unit tests for rule matching
-- [ ] Set up Axum server with `/health` endpoint
-- [ ] Add `tracing` setup
+- [x] Initialize Cargo project with dependencies
+- [x] Define `AppError` and `IntoResponse` implementation
+- [x] Create `config.toml` schema and parser **with multi-model support**
+  - [x] Support arrays of models per tier (fast, balanced, deep)
+  - [x] Add `weight` and `priority` fields to `ModelEndpoint`
+  - [x] Config validation (empty arrays, invalid values, port conflicts)
+- [x] Implement `RuleBasedRouter`
+- [x] Write unit tests for rule matching
+- [x] Set up Axum server with `/health` endpoint
+- [x] Add `tracing` setup
 
-**Deliverable**: Server that responds to `/health` with rule router tested. Config supports multiple models per tier with simple selection.
+**Deliverable**: Server that responds to `/health` with rule router tested. Config supports multiple models per tier (structure only).
 
-**Note**: Multi-model config structure established, but sophisticated load balancing deferred to Phase 2.
+**Note**: Phase 1 establishes the multi-model *config structure* (arrays, weights, priorities) but does NOT implement model selection/invocation. Actual model selection logic and `/chat` endpoint are Phase 2 features.
 
 ### Phase 2: Model Integration + Load Balancing (Week 2)
 
-**Goals**: Integrate `open-agent-sdk` for model clients + intelligent load balancing
+**Goals**: Integrate `open-agent-sdk` for model clients + implement model selection
 
 - [ ] Create `ModelClient` wrapper around `open_agent::Client`
 - [ ] Implement `ModelSelector` for choosing from multiple models per tier
-  - [ ] Weighted load balancing algorithm (respects `weight` field)
-  - [ ] Priority-based selection (respects `priority` field)
+  - [ ] **Phase 2a: Simple selection** (first available or round-robin)
+  - [ ] **Phase 2b: Weighted load balancing** (respects `weight` field)
+  - [ ] **Phase 2c: Priority-based selection** (respects `priority` field)
   - [ ] Health checks for model availability
   - [ ] Retry logic with fallback to lower-weight/priority models
   - [ ] Circuit breaker pattern for failed models
-- [ ] Implement `create_client_for(TargetModel)` factory
+- [ ] Implement `create_client_for(TargetModel)` factory that returns selected endpoint
 - [ ] Add `/chat` endpoint with request validation
 - [ ] Test against multiple fast tier models (load balancing)
 - [ ] Add response streaming from `open-agent-sdk`
 - [ ] Write integration tests
 
-**Deliverable**: `/chat` endpoint intelligently load balances across multiple models per tier with health-aware failover
+**Deliverable**: `/chat` endpoint routes requests to models with intelligent load balancing across multiple endpoints per tier
+
+**Note**: Phase 2 brings the multi-model config to life by implementing actual model selection and invocation.
 
 ### Phase 3: LLM Routing (Week 3)
 

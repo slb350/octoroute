@@ -73,7 +73,7 @@ fn default_priority() -> u8 {
 pub struct RoutingConfig {
     pub strategy: RoutingStrategy,
     #[serde(default)]
-    pub default_importance: String,
+    pub default_importance: crate::router::Importance,
     pub router_model: String,
 }
 
@@ -283,7 +283,10 @@ metrics_port = 9090
     fn test_config_parses_routing_strategy() {
         let config = Config::from_str(TEST_CONFIG).expect("should parse config");
         assert_eq!(config.routing.strategy, RoutingStrategy::Hybrid);
-        assert_eq!(config.routing.default_importance, "normal");
+        assert_eq!(
+            config.routing.default_importance,
+            crate::router::Importance::Normal
+        );
         assert_eq!(config.routing.router_model, "balanced");
     }
 
