@@ -184,7 +184,9 @@ impl HealthChecker {
             }
         };
 
-        let url = format!("{}/v1/models", endpoint.base_url);
+        // base_url already includes /v1 (e.g., "http://host:port/v1")
+        // so we only append /models to get the correct path
+        let url = format!("{}/models", endpoint.base_url);
 
         match client.head(&url).send().await {
             Ok(response) => {

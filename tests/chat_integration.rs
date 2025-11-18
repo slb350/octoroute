@@ -43,9 +43,14 @@ async fn mock_chat_handler(
     });
 
     // Use real selector to test endpoint selection (with health filtering)
-    let endpoint = state.selector().select(target).await.ok_or_else(|| {
-        AppError::RoutingFailed(format!("No available endpoints for tier {:?}", target))
-    })?;
+    let no_exclude = std::collections::HashSet::new();
+    let endpoint = state
+        .selector()
+        .select(target, &no_exclude)
+        .await
+        .ok_or_else(|| {
+            AppError::RoutingFailed(format!("No available endpoints for tier {:?}", target))
+        })?;
 
     // Return mock response without calling real model
     // This tests validation, routing, selection, and response serialization

@@ -8,6 +8,7 @@ use crate::handlers::AppState;
 use crate::router::{Importance, RouteMetadata, TaskType};
 use axum::{Json, extract::State, response::IntoResponse};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::time::Duration;
 
 /// Maximum allowed message length in characters (100K chars)
@@ -107,12 +108,14 @@ pub async fn handler(
     );
 
     // Retry logic: Attempt up to MAX_RETRIES times with different endpoints
+    // Track endpoints that have failed in THIS request to avoid retrying them
     const MAX_RETRIES: usize = 3;
     let mut last_error = None;
+    let mut failed_endpoints = HashSet::new();
 
     for attempt in 1..=MAX_RETRIES {
-        // Select endpoint from target tier (with health filtering + priority)
-        let endpoint = match state.selector().select(target).await {
+        // Select endpoint from target tier (with health filtering + priority + exclusion)
+        let endpoint = match state.selector().select(target, &failed_endpoints).await {
             Some(ep) => ep.clone(),
             None => {
                 tracing::error!(
@@ -170,25 +173,28 @@ pub async fn handler(
                 return Ok(Json(response));
             }
             Err(e) => {
-                // Failure - mark endpoint as unhealthy and retry
+                // Failure - mark endpoint as unhealthy and exclude from retries
                 tracing::warn!(
                     endpoint_name = %endpoint.name,
                     attempt = attempt,
                     max_retries = MAX_RETRIES,
                     error = %e,
-                    "Endpoint query failed, marking unhealthy and will retry with different endpoint"
+                    "Endpoint query failed, excluding from retries and marking for health tracking"
                 );
 
-                // Mark this endpoint as failed for health tracking
+                // Mark this endpoint as failed for long-term health tracking
                 state
                     .selector()
                     .health_checker()
                     .mark_failure(&endpoint.name)
                     .await;
 
+                // Exclude this endpoint from subsequent retry attempts in THIS request
+                failed_endpoints.insert(endpoint.name.clone());
+
                 last_error = Some(e);
 
-                // Continue to next attempt (will select different endpoint due to health filtering)
+                // Continue to next attempt (will select different endpoint due to exclusion)
             }
         }
     }

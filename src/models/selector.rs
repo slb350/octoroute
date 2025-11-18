@@ -6,6 +6,7 @@ use crate::config::{Config, ModelEndpoint};
 use crate::models::health::HealthChecker;
 use crate::router::TargetModel;
 use rand::Rng;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -50,14 +51,23 @@ impl ModelSelector {
 
     /// Select an endpoint for the given target model tier using priority + weighted random selection
     ///
-    /// Phase 2c: Priority-based selection with health filtering and weighted distribution.
+    /// Phase 2c: Priority-based selection with health filtering, exclusion, and weighted distribution.
     /// - Filters out unhealthy endpoints first
+    /// - Filters out endpoints in the exclusion set (for retry logic)
     /// - Filters to only the highest available priority tier
     /// - Within that priority tier, uses weighted random selection
     /// - Higher priority = tried first, higher weight = more traffic within priority tier
     ///
-    /// Returns None if the requested tier has no healthy endpoints available.
-    pub async fn select(&self, target: TargetModel) -> Option<&ModelEndpoint> {
+    /// # Arguments
+    /// * `target` - The model tier to select from (Fast, Balanced, Deep)
+    /// * `exclude` - Set of endpoint names to exclude from selection (e.g., endpoints that failed in current request)
+    ///
+    /// Returns None if the requested tier has no healthy, non-excluded endpoints available.
+    pub async fn select(
+        &self,
+        target: TargetModel,
+        exclude: &HashSet<String>,
+    ) -> Option<&ModelEndpoint> {
         let (endpoints, counter) = match target {
             TargetModel::Fast => (&self.config.models.fast, &self.fast_counter),
             TargetModel::Balanced => (&self.config.models.balanced, &self.balanced_counter),
@@ -72,19 +82,33 @@ impl ModelSelector {
             return None;
         }
 
-        // Phase 2c: Filter to only healthy endpoints first
-        let mut healthy_endpoints = Vec::new();
+        // Phase 2c: Filter to only healthy and non-excluded endpoints
+        let mut available_endpoints = Vec::new();
         for endpoint in endpoints.iter() {
-            if self.health_checker.is_healthy(&endpoint.name).await {
-                healthy_endpoints.push(endpoint);
+            // Skip unhealthy endpoints
+            if !self.health_checker.is_healthy(&endpoint.name).await {
+                continue;
             }
+
+            // Skip excluded endpoints (e.g., already failed in this request)
+            if exclude.contains(&endpoint.name) {
+                tracing::debug!(
+                    tier = ?target,
+                    endpoint_name = %endpoint.name,
+                    "Skipping excluded endpoint"
+                );
+                continue;
+            }
+
+            available_endpoints.push(endpoint);
         }
 
-        if healthy_endpoints.is_empty() {
+        if available_endpoints.is_empty() {
             tracing::error!(
                 tier = ?target,
                 total_endpoints = endpoints.len(),
-                "No healthy endpoints available for tier - all endpoints unhealthy"
+                excluded_count = exclude.len(),
+                "No available endpoints for tier - all endpoints either unhealthy or excluded"
             );
             return None;
         }
@@ -92,14 +116,19 @@ impl ModelSelector {
         tracing::debug!(
             tier = ?target,
             total_endpoints = endpoints.len(),
-            healthy_endpoints = healthy_endpoints.len(),
-            "Filtered to healthy endpoints"
+            excluded_count = exclude.len(),
+            available_endpoints = available_endpoints.len(),
+            "Filtered to healthy and non-excluded endpoints"
         );
 
-        // Phase 2c: Find highest priority among healthy endpoints and filter to only that tier
-        let max_priority = healthy_endpoints.iter().map(|e| e.priority).max().unwrap(); // Safe because we already checked healthy_endpoints is not empty
+        // Phase 2c: Find highest priority among available endpoints and filter to only that tier
+        let max_priority = available_endpoints
+            .iter()
+            .map(|e| e.priority)
+            .max()
+            .unwrap(); // Safe because we already checked available_endpoints is not empty
 
-        let highest_priority_endpoints: Vec<&ModelEndpoint> = healthy_endpoints
+        let highest_priority_endpoints: Vec<&ModelEndpoint> = available_endpoints
             .iter()
             .filter(|e| e.priority == max_priority)
             .copied()
@@ -108,9 +137,9 @@ impl ModelSelector {
         tracing::debug!(
             tier = ?target,
             max_priority = max_priority,
-            healthy_endpoints = healthy_endpoints.len(),
+            available_endpoints = available_endpoints.len(),
             priority_tier_endpoints = highest_priority_endpoints.len(),
-            "Filtered to highest priority tier among healthy endpoints"
+            "Filtered to highest priority tier among available endpoints"
         );
 
         // Increment selection counter for metrics (atomic operation)
@@ -266,10 +295,26 @@ mod tests {
         let config = Arc::new(create_test_config());
         let selector = ModelSelector::new(config);
 
-        // Should return some endpoint for each tier
-        assert!(selector.select(TargetModel::Fast).await.is_some());
-        assert!(selector.select(TargetModel::Balanced).await.is_some());
-        assert!(selector.select(TargetModel::Deep).await.is_some());
+        // Should return some endpoint for each tier (no exclusions)
+        let no_exclude = HashSet::new();
+        assert!(
+            selector
+                .select(TargetModel::Fast, &no_exclude)
+                .await
+                .is_some()
+        );
+        assert!(
+            selector
+                .select(TargetModel::Balanced, &no_exclude)
+                .await
+                .is_some()
+        );
+        assert!(
+            selector
+                .select(TargetModel::Deep, &no_exclude)
+                .await
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -281,9 +326,13 @@ mod tests {
         // Sample 100 times to verify both can be selected
         let mut fast1_seen = false;
         let mut fast2_seen = false;
+        let no_exclude = HashSet::new();
 
         for _ in 0..100 {
-            let selected = selector.select(TargetModel::Fast).await.unwrap();
+            let selected = selector
+                .select(TargetModel::Fast, &no_exclude)
+                .await
+                .unwrap();
             if selected.name == "fast-1" {
                 fast1_seen = true;
             }
@@ -312,8 +361,15 @@ mod tests {
         let selector = ModelSelector::new(config);
 
         // Balanced tier has only one endpoint, should return same one
-        let first = selector.select(TargetModel::Balanced).await.unwrap();
-        let second = selector.select(TargetModel::Balanced).await.unwrap();
+        let no_exclude = HashSet::new();
+        let first = selector
+            .select(TargetModel::Balanced, &no_exclude)
+            .await
+            .unwrap();
+        let second = selector
+            .select(TargetModel::Balanced, &no_exclude)
+            .await
+            .unwrap();
 
         assert_eq!(first.name, "balanced-1");
         assert_eq!(second.name, "balanced-1");
@@ -335,7 +391,8 @@ mod tests {
         config.models.fast = vec![]; // Empty tier
         let selector = ModelSelector::new(Arc::new(config));
 
-        let result = selector.select(TargetModel::Fast).await;
+        let no_exclude = HashSet::new();
+        let result = selector.select(TargetModel::Fast, &no_exclude).await;
         assert!(result.is_none(), "should return None for empty tier");
     }
 
@@ -349,7 +406,10 @@ mod tests {
         for _ in 0..10 {
             let sel = selector.clone();
             handles.push(tokio::spawn(async move {
-                sel.select(TargetModel::Fast).await.map(|e| e.name.clone())
+                let no_exclude = HashSet::new();
+                sel.select(TargetModel::Fast, &no_exclude)
+                    .await
+                    .map(|e| e.name.clone())
             }));
         }
 
@@ -396,8 +456,9 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Should fall back to uniform random selection, not panic
+        let no_exclude = HashSet::new();
         for _ in 0..10 {
-            let result = selector.select(TargetModel::Fast).await;
+            let result = selector.select(TargetModel::Fast, &no_exclude).await;
             assert!(
                 result.is_some(),
                 "should return endpoint even with zero total weight"
@@ -421,7 +482,8 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Should fall back to uniform random selection, not panic
-        let result = selector.select(TargetModel::Fast).await;
+        let no_exclude = HashSet::new();
+        let result = selector.select(TargetModel::Fast, &no_exclude).await;
         assert!(
             result.is_some(),
             "should return endpoint even with negative weights"
@@ -438,9 +500,13 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 3000 times to get statistically significant distribution
+        let no_exclude = HashSet::new();
         let mut counts = std::collections::HashMap::new();
         for _ in 0..3000 {
-            let endpoint = selector.select(TargetModel::Fast).await.unwrap();
+            let endpoint = selector
+                .select(TargetModel::Fast, &no_exclude)
+                .await
+                .unwrap();
             *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
         }
 
@@ -471,9 +537,13 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 1000 times
+        let no_exclude = HashSet::new();
         let mut counts = std::collections::HashMap::new();
         for _ in 0..1000 {
-            let endpoint = selector.select(TargetModel::Fast).await.unwrap();
+            let endpoint = selector
+                .select(TargetModel::Fast, &no_exclude)
+                .await
+                .unwrap();
             *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
         }
 
@@ -502,9 +572,13 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 2000 times
+        let no_exclude = HashSet::new();
         let mut counts = std::collections::HashMap::new();
         for _ in 0..2000 {
-            let endpoint = selector.select(TargetModel::Fast).await.unwrap();
+            let endpoint = selector
+                .select(TargetModel::Fast, &no_exclude)
+                .await
+                .unwrap();
             *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
         }
 
@@ -559,9 +633,13 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 6000 times (divisible by 6 for clean expected values)
+        let no_exclude = HashSet::new();
         let mut counts = std::collections::HashMap::new();
         for _ in 0..6000 {
-            let endpoint = selector.select(TargetModel::Fast).await.unwrap();
+            let endpoint = selector
+                .select(TargetModel::Fast, &no_exclude)
+                .await
+                .unwrap();
             *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
         }
 
@@ -625,8 +703,12 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 100 times - should ALWAYS select priority 10 endpoint
+        let no_exclude = HashSet::new();
         for _ in 0..100 {
-            let endpoint = selector.select(TargetModel::Fast).await.unwrap();
+            let endpoint = selector
+                .select(TargetModel::Fast, &no_exclude)
+                .await
+                .unwrap();
             assert_eq!(
                 endpoint.name, "fast-priority-10",
                 "Should always select highest priority (10) endpoint"
@@ -669,9 +751,13 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 3000 times
+        let no_exclude = HashSet::new();
         let mut counts = std::collections::HashMap::new();
         for _ in 0..3000 {
-            let endpoint = selector.select(TargetModel::Fast).await.unwrap();
+            let endpoint = selector
+                .select(TargetModel::Fast, &no_exclude)
+                .await
+                .unwrap();
             *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
         }
 
@@ -725,9 +811,13 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 4000 times
+        let no_exclude = HashSet::new();
         let mut counts = std::collections::HashMap::new();
         for _ in 0..4000 {
-            let endpoint = selector.select(TargetModel::Fast).await.unwrap();
+            let endpoint = selector
+                .select(TargetModel::Fast, &no_exclude)
+                .await
+                .unwrap();
             *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
         }
 
@@ -746,5 +836,105 @@ mod tests {
             "Light weight (1.0) should get ~1000/4000 selections, got {}",
             light_count
         );
+    }
+
+    // Exclusion tests
+
+    #[tokio::test]
+    async fn test_exclusion_filters_endpoints() {
+        // Test that excluded endpoints are not selected
+        let config = Arc::new(create_test_config());
+        let selector = ModelSelector::new(config);
+
+        // Exclude fast-1, should only select fast-2
+        let mut exclude = HashSet::new();
+        exclude.insert("fast-1".to_string());
+
+        // Sample 100 times - should NEVER select fast-1
+        for _ in 0..100 {
+            let endpoint = selector.select(TargetModel::Fast, &exclude).await.unwrap();
+            assert_eq!(
+                endpoint.name, "fast-2",
+                "Should only select fast-2 when fast-1 is excluded"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_exclusion_all_endpoints_returns_none() {
+        // Test that excluding all endpoints returns None
+        let config = Arc::new(create_test_config());
+        let selector = ModelSelector::new(config);
+
+        // Exclude both fast endpoints
+        let mut exclude = HashSet::new();
+        exclude.insert("fast-1".to_string());
+        exclude.insert("fast-2".to_string());
+
+        let result = selector.select(TargetModel::Fast, &exclude).await;
+        assert!(
+            result.is_none(),
+            "Should return None when all endpoints are excluded"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exclusion_preserves_priority_and_weight() {
+        // Test that exclusion works with priority and weighted selection
+        let mut config = create_test_config();
+        config.models.fast = vec![
+            ModelEndpoint {
+                name: "fast-priority-10-heavy".to_string(),
+                base_url: "http://localhost:1234/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 3.0,
+                priority: 10,
+            },
+            ModelEndpoint {
+                name: "fast-priority-10-light".to_string(),
+                base_url: "http://localhost:1235/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 1.0,
+                priority: 10,
+            },
+            ModelEndpoint {
+                name: "fast-priority-5".to_string(),
+                base_url: "http://localhost:1236/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 10.0, // High weight but lower priority
+                priority: 5,
+            },
+        ];
+
+        let selector = ModelSelector::new(Arc::new(config));
+
+        // Exclude the heavy priority-10 endpoint
+        let mut exclude = HashSet::new();
+        exclude.insert("fast-priority-10-heavy".to_string());
+
+        // Should only select fast-priority-10-light (same priority tier, not excluded)
+        // Should NEVER select fast-priority-5 (lower priority, even though not excluded)
+        for _ in 0..100 {
+            let endpoint = selector.select(TargetModel::Fast, &exclude).await.unwrap();
+            assert_eq!(
+                endpoint.name, "fast-priority-10-light",
+                "Should select remaining priority-10 endpoint, not lower priority"
+            );
+        }
+
+        // Now exclude both priority-10 endpoints
+        exclude.insert("fast-priority-10-light".to_string());
+
+        // Now should fall back to priority-5
+        for _ in 0..100 {
+            let endpoint = selector.select(TargetModel::Fast, &exclude).await.unwrap();
+            assert_eq!(
+                endpoint.name, "fast-priority-5",
+                "Should fall back to lower priority when higher priority excluded"
+            );
+        }
     }
 }
