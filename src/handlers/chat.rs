@@ -152,13 +152,57 @@ pub async fn handler(
         "Starting model query"
     );
 
-    // Enforce request timeout from config
+    // Enforce request timeout from config - wrap ENTIRE operation including streaming
     let timeout_duration = Duration::from_secs(state.config().server.request_timeout_seconds);
 
     use futures::StreamExt;
-    let mut stream = tokio::time::timeout(
+    let response_text = tokio::time::timeout(
         timeout_duration,
-        open_agent::query(&request.message, &options),
+        async {
+            // Query model and get stream
+            let mut stream = open_agent::query(&request.message, &options)
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        endpoint_name = %endpoint.name,
+                        error = %e,
+                        "Failed to query model"
+                    );
+                    AppError::Internal(format!("Failed to query model: {}", e))
+                })?;
+
+            // Collect response from stream
+            let mut response_text = String::new();
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(block) => {
+                        use open_agent::ContentBlock;
+                        match block {
+                            ContentBlock::Text(text_block) => {
+                                response_text.push_str(&text_block.text);
+                            }
+                            other_block => {
+                                tracing::warn!(
+                                    endpoint_name = %endpoint.name,
+                                    block_type = ?other_block,
+                                    "Received non-text content block, skipping (not yet supported in Phase 2a)"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            endpoint_name = %endpoint.name,
+                            error = %e,
+                            "Stream error during response collection"
+                        );
+                        return Err(AppError::Internal(format!("Stream error: {}", e)));
+                    }
+                }
+            }
+
+            Ok::<String, AppError>(response_text)
+        }
     )
     .await
     .map_err(|_| {
@@ -168,51 +212,13 @@ pub async fn handler(
             message_length = request.message.len(),
             task_type = ?request.task_type,
             importance = ?request.importance,
-            "Request timed out - consider increasing timeout for this type of request"
+            "Request timed out (including streaming) - consider increasing timeout for this type of request"
         );
         AppError::Internal(format!(
             "Request timed out after {} seconds",
             state.config().server.request_timeout_seconds
         ))
-    })?
-    .map_err(|e| {
-        tracing::error!(
-            endpoint_name = %endpoint.name,
-            error = %e,
-            "Failed to query model"
-        );
-        AppError::Internal(format!("Failed to query model: {}", e))
-    })?;
-
-    // Collect response from stream
-    let mut response_text = String::new();
-    while let Some(result) = stream.next().await {
-        match result {
-            Ok(block) => {
-                use open_agent::ContentBlock;
-                match block {
-                    ContentBlock::Text(text_block) => {
-                        response_text.push_str(&text_block.text);
-                    }
-                    other_block => {
-                        tracing::warn!(
-                            endpoint_name = %endpoint.name,
-                            block_type = ?other_block,
-                            "Received non-text content block, skipping (not yet supported in Phase 2a)"
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!(
-                    endpoint_name = %endpoint.name,
-                    error = %e,
-                    "Stream error during response collection"
-                );
-                return Err(AppError::Internal(format!("Stream error: {}", e)));
-            }
-        }
-    }
+    })??;
 
     tracing::info!(
         endpoint_name = %endpoint.name,

@@ -1,24 +1,110 @@
 //! Integration tests for /chat endpoint
+//!
+//! These tests use a mock handler to avoid calling real model endpoints,
+//! ensuring tests are hermetic and don't depend on external services.
 
 use axum::{
-    Router,
+    Json, Router,
     body::Body,
+    extract::State,
     http::{Request, StatusCode},
+    response::IntoResponse,
     routing::post,
 };
 use octoroute::{
-    config::Config,
-    handlers::{AppState, chat::ChatResponse},
+    config::{Config, ModelEndpoint, ModelsConfig, ObservabilityConfig, RoutingConfig, RoutingStrategy, ServerConfig},
+    error::AppError,
+    handlers::{AppState, chat::{ChatRequest, ChatResponse}},
+    router::Importance,
 };
 use tower::ServiceExt;
 
-/// Helper to create test app with AppState
+/// Mock chat handler for testing that doesn't call real model endpoints
+async fn mock_chat_handler(
+    State(state): State<AppState>,
+    Json(request): Json<ChatRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    // Perform same validation as real handler
+    request.validate()?;
+
+    // Convert to metadata for routing (test routing logic)
+    let metadata = request.to_metadata();
+
+    // Use real router to test routing decisions
+    let target = state.router().route(&metadata).unwrap_or_else(|| {
+        use octoroute::router::TargetModel;
+        TargetModel::Balanced
+    });
+
+    // Use real selector to test endpoint selection
+    let endpoint = state
+        .selector()
+        .select(target)
+        .ok_or_else(|| {
+            AppError::RoutingFailed(format!("No available endpoints for tier {:?}", target))
+        })?;
+
+    // Return mock response without calling real model
+    // This tests validation, routing, selection, and response serialization
+    let response = ChatResponse {
+        content: "Mock response for testing".to_string(),
+        model_tier: format!("{:?}", target).to_lowercase(),
+        model_name: endpoint.name.clone(),
+    };
+
+    Ok(Json(response))
+}
+
+/// Create test-specific config that doesn't require external services
+fn create_test_config() -> Config {
+    Config {
+        server: ServerConfig {
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            request_timeout_seconds: 30,
+        },
+        models: ModelsConfig {
+            fast: vec![ModelEndpoint {
+                name: "test-fast-1".to_string(),
+                base_url: "http://localhost:9999/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 1.0,
+                priority: 1,
+            }],
+            balanced: vec![ModelEndpoint {
+                name: "test-balanced-1".to_string(),
+                base_url: "http://localhost:9998/v1".to_string(),
+                max_tokens: 4096,
+                temperature: 0.7,
+                weight: 1.0,
+                priority: 1,
+            }],
+            deep: vec![ModelEndpoint {
+                name: "test-deep-1".to_string(),
+                base_url: "http://localhost:9997/v1".to_string(),
+                max_tokens: 8192,
+                temperature: 0.7,
+                weight: 1.0,
+                priority: 1,
+            }],
+        },
+        routing: RoutingConfig {
+            strategy: RoutingStrategy::Rule,
+            default_importance: Importance::Normal,
+            router_model: "balanced".to_string(),
+        },
+        observability: ObservabilityConfig::default(),
+    }
+}
+
+/// Helper to create test app with mock handler
 fn create_test_app() -> Router {
-    let config = Config::from_file("config.toml").expect("failed to load config");
+    let config = create_test_config();
     let state = AppState::new(config);
 
     Router::new()
-        .route("/chat", post(octoroute::handlers::chat::handler))
+        .route("/chat", post(mock_chat_handler))
         .with_state(state)
 }
 
@@ -46,10 +132,11 @@ async fn test_chat_endpoint_with_valid_request() {
     let chat_response: ChatResponse =
         serde_json::from_slice(&body).expect("response should be valid ChatResponse JSON");
 
-    // Verify response fields
-    assert!(
-        !chat_response.content.is_empty(),
-        "content should not be empty"
+    // Verify response fields (mock handler returns mock data)
+    assert_eq!(
+        chat_response.content,
+        "Mock response for testing",
+        "content should be mock response"
     );
     assert!(
         ["fast", "balanced", "deep"].contains(&chat_response.model_tier.as_str()),
@@ -57,8 +144,9 @@ async fn test_chat_endpoint_with_valid_request() {
         chat_response.model_tier
     );
     assert!(
-        !chat_response.model_name.is_empty(),
-        "model_name should not be empty"
+        chat_response.model_name.starts_with("test-"),
+        "model_name should be test endpoint, got {}",
+        chat_response.model_name
     );
 }
 
@@ -137,43 +225,15 @@ async fn test_chat_endpoint_with_invalid_json() {
 
 #[tokio::test]
 async fn test_chat_endpoint_with_no_available_endpoints() {
-    // Create config with empty fast tier to trigger "no available endpoints" error
-    let config_str = r#"
-[server]
-host = "127.0.0.1"
-port = 8080
-
-[[models.fast]]
-name = "test-fast"
-base_url = "http://localhost:1234/v1"
-max_tokens = 2048
-
-[[models.balanced]]
-name = "test-balanced"
-base_url = "http://localhost:1235/v1"
-max_tokens = 4096
-
-[[models.deep]]
-name = "test-deep"
-base_url = "http://localhost:1236/v1"
-max_tokens = 8192
-
-[routing]
-strategy = "rule"
-default_importance = "normal"
-router_model = "balanced"
-"#;
-
-    let mut config: Config = toml::from_str(config_str).expect("failed to parse config");
-
-    // Empty ALL tiers to ensure we hit "no available endpoints" for any routing decision
+    // Create config with all empty tiers to trigger "no available endpoints" error
+    let mut config = create_test_config();
     config.models.fast.clear();
     config.models.balanced.clear();
     config.models.deep.clear();
 
     let state = AppState::new(config);
     let app = Router::new()
-        .route("/chat", post(octoroute::handlers::chat::handler))
+        .route("/chat", post(mock_chat_handler))
         .with_state(state);
 
     let request = Request::builder()
