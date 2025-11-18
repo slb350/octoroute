@@ -13,7 +13,7 @@ repository = "https://github.com/slb350/octoroute"
 open-agent-sdk = "0.6"
 
 # Core dependencies
-axum = "0.8"
+axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
@@ -25,6 +25,9 @@ thiserror = "2"
 # Logging and tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async utilities
+futures = "0.3"
 
 [dev-dependencies]
 proptest = "1.4"

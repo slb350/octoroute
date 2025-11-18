@@ -2,8 +2,15 @@
 //!
 //! Starts an Axum web server that routes LLM requests to optimal model endpoints.
 
-use axum::{Router, routing::get};
-use octoroute::{config::Config, handlers, telemetry};
+use axum::{
+    Router,
+    routing::{get, post},
+};
+use octoroute::{
+    config::Config,
+    handlers::{self, AppState},
+    telemetry,
+};
 use std::net::SocketAddr;
 
 #[tokio::main]
@@ -20,8 +27,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.server.port
     );
 
-    // Build router
-    let app = Router::new().route("/health", get(handlers::health::handler));
+    // Create application state
+    let state = AppState::new(config.clone());
+
+    // Build router with state
+    let app = Router::new()
+        .route("/health", get(handlers::health::handler))
+        .route("/chat", post(handlers::chat::handler))
+        .with_state(state);
 
     // Create socket address
     let ip_addr = config
@@ -39,6 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Listening on {}", addr);
     tracing::info!("Health check available at http://{}/health", addr);
+    tracing::info!("Chat endpoint available at http://{}/chat", addr);
 
     // Start server
     let listener = tokio::net::TcpListener::bind(addr).await?;

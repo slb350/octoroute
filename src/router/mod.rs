@@ -4,6 +4,8 @@
 
 pub mod rule_based;
 
+pub use rule_based::RuleBasedRouter;
+
 use serde::{Deserialize, Serialize};
 
 /// Target model selection (generic tiers)
