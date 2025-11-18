@@ -1,0 +1,52 @@
+# Octoroute Configuration
+#
+# This file configures the HTTP server, model endpoints, routing strategy,
+# and observability settings for Octoroute.
+
+[server]
+host = "0.0.0.0"
+port = 3000
+request_timeout_seconds = 30
+
+# Fast model (8B parameters) - for simple tasks, casual chat, quick Q&A
+[models.fast]
+name = "qwen/qwen3-vl-8b"
+base_url = "http://192.168.1.67:1234/v1"
+max_tokens = 4096
+temperature = 0.7
+
+# Balanced model (30B parameters) - for coding, analysis, explanations
+[models.balanced]
+name = "qwen/qwen3-30b-a3b-2507"
+base_url = "http://192.168.1.61:1234/v1"
+max_tokens = 8192
+temperature = 0.7
+
+# Deep model (120B parameters) - for complex reasoning, creative writing, research
+[models.deep]
+name = "/home/steve/dev/llama.cpp/models/gpt-oss-120b-mxfp4.gguf"
+base_url = "https://strix-ai.localbrandonfamily.com/v1"
+max_tokens = 16384
+temperature = 0.7
+
+[routing]
+# Strategy options: "rule", "llm", "hybrid", "tool"
+# - rule: Fast pattern-based routing (no LLM overhead)
+# - llm: Intelligent routing using 30B model
+# - hybrid: Rule-based first, LLM fallback (recommended)
+# - tool: Tool-based routing (experimental)
+strategy = "hybrid"
+
+# Default importance level if not specified in request
+default_importance = "normal"
+
+# Which model to use for LLM-based routing decisions
+router_model = "balanced"
+
+[observability]
+# Log level: "trace", "debug", "info", "warn", "error"
+log_level = "info"
+
+# Enable Prometheus metrics endpoint
+metrics_enabled = false
+metrics_port = 9090
