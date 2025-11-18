@@ -31,10 +31,12 @@ impl ModelSelector {
         }
     }
 
-    /// Select an endpoint for the given target model tier using weighted random selection
+    /// Select an endpoint for the given target model tier using priority + weighted random selection
     ///
-    /// Uses the `weight` field from ModelEndpoint configuration to distribute load.
-    /// Higher weights receive proportionally more traffic.
+    /// Phase 2c: Priority-based selection with weighted distribution within priority tier.
+    /// - Filters endpoints to only the highest available priority
+    /// - Within that priority tier, uses weighted random selection
+    /// - Higher priority = tried first, higher weight = more traffic within priority tier
     ///
     /// Returns None if the requested tier has no available endpoints.
     pub fn select(&self, target: TargetModel) -> Option<&ModelEndpoint> {
@@ -52,28 +54,46 @@ impl ModelSelector {
             return None;
         }
 
+        // Phase 2c: Find highest priority and filter to only that tier
+        let max_priority = endpoints.iter().map(|e| e.priority).max().unwrap(); // Safe because we already checked endpoints is not empty
+
+        let highest_priority_endpoints: Vec<&ModelEndpoint> = endpoints
+            .iter()
+            .filter(|e| e.priority == max_priority)
+            .collect();
+
+        tracing::debug!(
+            tier = ?target,
+            max_priority = max_priority,
+            total_endpoints = endpoints.len(),
+            priority_tier_endpoints = highest_priority_endpoints.len(),
+            "Filtered to highest priority tier"
+        );
+
         // Increment selection counter for metrics (atomic operation)
         counter.fetch_add(1, Ordering::Relaxed);
 
-        // Calculate total weight of all endpoints
-        let total_weight: f64 = endpoints.iter().map(|e| e.weight).sum();
+        // Calculate total weight of endpoints in highest priority tier
+        let total_weight: f64 = highest_priority_endpoints.iter().map(|e| e.weight).sum();
 
         // Handle zero or negative total weight (all endpoints disabled/misconfigured)
         if total_weight <= 0.0 {
             tracing::warn!(
                 tier = ?target,
+                priority = max_priority,
                 total_weight = total_weight,
-                endpoints_count = endpoints.len(),
-                "All endpoints in tier have zero/negative weight, falling back to uniform selection"
+                endpoints_count = highest_priority_endpoints.len(),
+                "All endpoints in priority tier have zero/negative weight, falling back to uniform selection"
             );
 
-            // Fall back to uniform random selection
+            // Fall back to uniform random selection within priority tier
             let mut rng = rand::thread_rng();
-            let index = rng.gen_range(0..endpoints.len());
-            let endpoint = &endpoints[index];
+            let index = rng.gen_range(0..highest_priority_endpoints.len());
+            let endpoint = highest_priority_endpoints[index];
 
             tracing::info!(
                 tier = ?target,
+                priority = max_priority,
                 endpoint_name = %endpoint.name,
                 endpoint_index = index,
                 "Selected endpoint via uniform fallback (zero total weight)"
@@ -86,30 +106,33 @@ impl ModelSelector {
         let mut rng = rand::thread_rng();
         let random_weight = rng.gen_range(0.0..total_weight);
 
-        // Select endpoint using cumulative weight distribution
+        // Select endpoint using cumulative weight distribution within priority tier
         let mut cumulative_weight = 0.0;
-        for (index, endpoint) in endpoints.iter().enumerate() {
+        for (index, endpoint) in highest_priority_endpoints.iter().enumerate() {
             cumulative_weight += endpoint.weight;
             if random_weight < cumulative_weight {
                 tracing::debug!(
                     tier = ?target,
+                    priority = max_priority,
                     endpoint_name = %endpoint.name,
                     endpoint_index = index,
+                    endpoint_priority = endpoint.priority,
                     endpoint_weight = endpoint.weight,
-                    total_endpoints = endpoints.len(),
+                    priority_tier_endpoints = highest_priority_endpoints.len(),
                     total_weight = total_weight,
-                    "Selected endpoint via weighted random selection"
+                    "Selected endpoint via priority + weighted selection"
                 );
                 return Some(endpoint);
             }
         }
 
-        // Fallback to last endpoint (should never happen due to float precision)
-        let last_endpoint = &endpoints[endpoints.len() - 1];
+        // Fallback to last endpoint in priority tier (should never happen due to float precision)
+        let last_endpoint = highest_priority_endpoints[highest_priority_endpoints.len() - 1];
         tracing::debug!(
             tier = ?target,
+            priority = max_priority,
             endpoint_name = %last_endpoint.name,
-            "Selected last endpoint as fallback (floating point edge case)"
+            "Selected last endpoint in priority tier as fallback (floating point edge case)"
         );
         Some(last_endpoint)
     }
@@ -519,6 +542,166 @@ mod tests {
             *fast3_count >= 900 && *fast3_count <= 1100,
             "fast-3 (weight 1.0) should get ~1000/6000 selections, got {}",
             fast3_count
+        );
+    }
+
+    // Phase 2c: Priority-based selection tests
+
+    #[test]
+    fn test_priority_selection_highest_chosen() {
+        // Config with three priority levels: 10, 5, 1
+        // All endpoints healthy, should always select priority 10
+        let mut config = create_test_config();
+        config.models.fast = vec![
+            ModelEndpoint {
+                name: "fast-priority-10".to_string(),
+                base_url: "http://localhost:1234/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 1.0,
+                priority: 10,
+            },
+            ModelEndpoint {
+                name: "fast-priority-5".to_string(),
+                base_url: "http://localhost:1235/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 1.0,
+                priority: 5,
+            },
+            ModelEndpoint {
+                name: "fast-priority-1".to_string(),
+                base_url: "http://localhost:1236/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 1.0,
+                priority: 1,
+            },
+        ];
+
+        let selector = ModelSelector::new(Arc::new(config));
+
+        // Sample 100 times - should ALWAYS select priority 10 endpoint
+        for _ in 0..100 {
+            let endpoint = selector.select(TargetModel::Fast).unwrap();
+            assert_eq!(
+                endpoint.name, "fast-priority-10",
+                "Should always select highest priority (10) endpoint"
+            );
+        }
+    }
+
+    #[test]
+    fn test_priority_with_weighted_distribution() {
+        // Config: Two priority 5 endpoints with 2:1 weight ratio, one priority 1
+        // Should only select from priority 5 tier with weighted distribution
+        let mut config = create_test_config();
+        config.models.fast = vec![
+            ModelEndpoint {
+                name: "fast-priority-5-heavy".to_string(),
+                base_url: "http://localhost:1234/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 2.0,
+                priority: 5,
+            },
+            ModelEndpoint {
+                name: "fast-priority-5-light".to_string(),
+                base_url: "http://localhost:1235/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 1.0,
+                priority: 5,
+            },
+            ModelEndpoint {
+                name: "fast-priority-1".to_string(),
+                base_url: "http://localhost:1236/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 10.0, // High weight but lower priority - should never be selected
+                priority: 1,
+            },
+        ];
+
+        let selector = ModelSelector::new(Arc::new(config));
+
+        // Sample 3000 times
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..3000 {
+            let endpoint = selector.select(TargetModel::Fast).unwrap();
+            *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
+        }
+
+        let heavy_count = counts.get("fast-priority-5-heavy").unwrap_or(&0);
+        let light_count = counts.get("fast-priority-5-light").unwrap_or(&0);
+        let low_priority_count = counts.get("fast-priority-1").unwrap_or(&0);
+
+        // Priority 1 should NEVER be selected (priority 5 available)
+        assert_eq!(
+            *low_priority_count, 0,
+            "Lower priority endpoint should never be selected when higher priority available"
+        );
+
+        // Within priority 5 tier: expect ~2000:1000 distribution (2:1 ratio)
+        // Allow 10% deviation
+        assert!(
+            *heavy_count >= 1800 && *heavy_count <= 2200,
+            "Priority 5 heavy (weight 2.0) should get ~2000/3000 selections, got {}",
+            heavy_count
+        );
+        assert!(
+            *light_count >= 800 && *light_count <= 1200,
+            "Priority 5 light (weight 1.0) should get ~1000/3000 selections, got {}",
+            light_count
+        );
+    }
+
+    #[test]
+    fn test_priority_all_same_uses_weighted() {
+        // When all endpoints have same priority, should use weighted selection
+        let mut config = create_test_config();
+        config.models.fast = vec![
+            ModelEndpoint {
+                name: "fast-heavy".to_string(),
+                base_url: "http://localhost:1234/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 3.0,
+                priority: 1,
+            },
+            ModelEndpoint {
+                name: "fast-light".to_string(),
+                base_url: "http://localhost:1235/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 1.0,
+                priority: 1,
+            },
+        ];
+
+        let selector = ModelSelector::new(Arc::new(config));
+
+        // Sample 4000 times
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..4000 {
+            let endpoint = selector.select(TargetModel::Fast).unwrap();
+            *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
+        }
+
+        let heavy_count = counts.get("fast-heavy").unwrap_or(&0);
+        let light_count = counts.get("fast-light").unwrap_or(&0);
+
+        // With 3:1 weight ratio, expect ~3000:1000 distribution
+        // Allow 10% deviation
+        assert!(
+            *heavy_count >= 2700 && *heavy_count <= 3300,
+            "Heavy weight (3.0) should get ~3000/4000 selections, got {}",
+            heavy_count
+        );
+        assert!(
+            *light_count >= 700 && *light_count <= 1300,
+            "Light weight (1.0) should get ~1000/4000 selections, got {}",
+            light_count
         );
     }
 }
