@@ -13,7 +13,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// Type-safe wrapper for endpoint names
 ///
 /// Prevents typos and wrong-tier endpoint names in exclusion sets.
-/// Use `EndpointName::from(endpoint)` to create from a ModelEndpoint reference.
+///
+/// # Preferred Usage
+/// - **Production code**: Use `EndpointName::from(endpoint)` to create from a ModelEndpoint reference (always valid)
+/// - **Test code**: Use string conversions, but be aware they don't validate endpoint existence
+///
+/// # Validation
+/// String conversions (`From<&str>`, `From<String>`) don't validate that the endpoint exists
+/// in the configuration. Invalid names will be silently ignored during health checks and selection.
+/// For validated construction, prefer creating from `&ModelEndpoint` references.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct EndpointName(String);
 
@@ -22,21 +30,40 @@ impl EndpointName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Validate that this endpoint name exists in the given configuration
+    ///
+    /// Returns true if this endpoint name matches any configured endpoint
+    /// across all tiers (fast, balanced, deep).
+    pub fn is_valid(&self, config: &Config) -> bool {
+        config.models.fast.iter().any(|e| e.name == self.0)
+            || config.models.balanced.iter().any(|e| e.name == self.0)
+            || config.models.deep.iter().any(|e| e.name == self.0)
+    }
 }
 
 impl From<&ModelEndpoint> for EndpointName {
+    /// Create an EndpointName from a ModelEndpoint reference (always valid)
     fn from(endpoint: &ModelEndpoint) -> Self {
         Self(endpoint.name.clone())
     }
 }
 
 impl From<String> for EndpointName {
+    /// Create an EndpointName from a String
+    ///
+    /// Note: This does NOT validate that the endpoint exists in the configuration.
+    /// Prefer `EndpointName::from(&endpoint)` in production code.
     fn from(name: String) -> Self {
         Self(name)
     }
 }
 
 impl From<&str> for EndpointName {
+    /// Create an EndpointName from a string slice
+    ///
+    /// Note: This does NOT validate that the endpoint exists in the configuration.
+    /// Prefer `EndpointName::from(&endpoint)` in production code.
     fn from(name: &str) -> Self {
         Self(name.to_string())
     }
@@ -96,6 +123,12 @@ impl ModelSelector {
     /// # Arguments
     /// * `target` - The model tier to select from (Fast, Balanced, Deep)
     /// * `exclude` - Set of endpoint names to exclude from selection (e.g., endpoints that failed in current request)
+    ///
+    /// # Performance
+    /// - **Time complexity**: O(n) where n is the number of configured endpoints in the tier
+    /// - **Space complexity**: O(n) for temporary endpoint vector during filtering
+    /// - **Async**: Single RwLock read for health status (non-blocking if no writers)
+    /// - **Expected latency**: <1ms for typical configurations (1-10 endpoints per tier)
     ///
     /// Returns None if the requested tier has no healthy, non-excluded endpoints available.
     pub async fn select(
@@ -161,7 +194,7 @@ impl ModelSelector {
             .iter()
             .map(|e| e.priority)
             .max()
-            .unwrap(); // Safe because we already checked available_endpoints is not empty
+            .unwrap();
 
         let highest_priority_endpoints: Vec<&ModelEndpoint> = available_endpoints
             .iter()
@@ -1016,6 +1049,73 @@ mod tests {
             assert_eq!(
                 endpoint.name, "fast-priority-5",
                 "Should fall back to lower priority when higher priority excluded"
+            );
+        }
+    }
+
+    #[test]
+    fn test_endpoint_name_validation() {
+        let config = create_test_config();
+
+        // Valid endpoint names from each tier
+        let fast_name = EndpointName::from("fast-1");
+        assert!(fast_name.is_valid(&config), "fast-1 should be valid");
+
+        let balanced_name = EndpointName::from("balanced-1");
+        assert!(
+            balanced_name.is_valid(&config),
+            "balanced-1 should be valid"
+        );
+
+        let deep_name = EndpointName::from("deep-1");
+        assert!(deep_name.is_valid(&config), "deep-1 should be valid");
+
+        // Invalid endpoint names
+        let invalid_name = EndpointName::from("nonexistent-endpoint");
+        assert!(
+            !invalid_name.is_valid(&config),
+            "nonexistent-endpoint should be invalid"
+        );
+
+        let typo_name = EndpointName::from("fast-11");
+        assert!(!typo_name.is_valid(&config), "fast-11 should be invalid");
+
+        let empty_name = EndpointName::from("");
+        assert!(
+            !empty_name.is_valid(&config),
+            "empty name should be invalid"
+        );
+    }
+
+    #[test]
+    fn test_endpoint_name_from_model_endpoint_always_valid() {
+        let config = create_test_config();
+
+        // Creating from ModelEndpoint reference should always be valid
+        for endpoint in &config.models.fast {
+            let name = EndpointName::from(endpoint);
+            assert!(
+                name.is_valid(&config),
+                "{} created from ModelEndpoint should be valid",
+                endpoint.name
+            );
+        }
+
+        for endpoint in &config.models.balanced {
+            let name = EndpointName::from(endpoint);
+            assert!(
+                name.is_valid(&config),
+                "{} created from ModelEndpoint should be valid",
+                endpoint.name
+            );
+        }
+
+        for endpoint in &config.models.deep {
+            let name = EndpointName::from(endpoint);
+            assert!(
+                name.is_valid(&config),
+                "{} created from ModelEndpoint should be valid",
+                endpoint.name
             );
         }
     }

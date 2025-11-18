@@ -160,8 +160,44 @@ pub async fn handler(
         "Routing decision made"
     );
 
-    // Retry logic: Attempt up to MAX_RETRIES times with different endpoints
-    // Track endpoints that have failed in THIS request to avoid retrying them
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // RETRY STRATEGY: Dual-Level Failure Tracking
+    // ═══════════════════════════════════════════════════════════════════════════════
+    //
+    // This handler implements a sophisticated retry mechanism with two levels of failure tracking:
+    //
+    // 1️⃣  REQUEST-SCOPED EXCLUSION (Immediate, This Request Only)
+    //    - Failed endpoints are added to `failed_endpoints` exclusion set
+    //    - Prevents retrying the same endpoint within THIS single request
+    //    - Guarantees each retry attempt uses a different endpoint
+    //    - Clears after request completes (doesn't affect future requests)
+    //
+    // 2️⃣  GLOBAL HEALTH TRACKING (Persistent, Across All Requests)
+    //    - Endpoints marked unhealthy after 3 consecutive failures across ALL requests
+    //    - Unhealthy endpoints excluded from selection for ANY request
+    //    - Background health checks (every 30s) probe unhealthy endpoints for recovery
+    //    - Immediate recovery on successful request (mark_success resets failure count)
+    //
+    // WHY BOTH?
+    // - Request-scoped exclusion ensures no wasted retries on known-bad endpoints in THIS request
+    // - Global health tracking prevents all requests from hitting persistently failing endpoints
+    // - Without request-scoped: Could retry the same failed endpoint on attempts 1, 2, 3
+    // - Without global health: Every request would independently discover failing endpoints
+    //
+    // RETRY FLOW:
+    // 1. Select endpoint (filtered by health status + request exclusion + priority + weight)
+    // 2. Attempt query with timeout
+    // 3. On success: mark_success() → return response to user
+    // 4. On failure: mark_failure() + add to exclusion set → try next endpoint
+    // 5. After MAX_RETRIES attempts: return error to user
+    //
+    // EXAMPLE WITH 2 ENDPOINTS (fast-1, fast-2) WHERE fast-1 IS DOWN:
+    // - Attempt 1: Select fast-1 (50% chance), fail → add to exclusion, mark_failure (1/3)
+    // - Attempt 2: Select fast-2 (100% chance, fast-1 excluded), succeed → return response
+    // - If fast-1 fails 2 more times across future requests → marked unhealthy globally
+    // - All future requests will only see fast-2 until background health check recovers fast-1
+    //
+    // ═══════════════════════════════════════════════════════════════════════════════
     const MAX_RETRIES: usize = 3;
     let mut last_error = None;
     let mut failed_endpoints = ExclusionSet::new();
@@ -387,6 +423,12 @@ async fn try_query_model(
                         }
                     }
                     Err(e) => {
+                        // IMPORTANT: Partial response handling
+                        // When a stream error occurs (network interruption, endpoint crash, etc.),
+                        // we discard the partial response and return an error. The retry logic
+                        // will attempt a different endpoint with a fresh request.
+                        // This ensures users never receive incomplete/corrupted responses.
+                        // See tests/retry_logic.rs for detailed documentation.
                         tracing::error!(
                             endpoint_name = %endpoint.name,
                             endpoint_url = %endpoint.base_url,
@@ -394,6 +436,7 @@ async fn try_query_model(
                             block_count = block_count,
                             partial_response_length = response_text.len(),
                             "Stream error after {} blocks ({} chars received). \
+                            Discarding partial response and triggering retry. \
                             This could indicate network interruption (if blocks > 0) or \
                             connection failure (if blocks = 0)",
                             block_count, response_text.len()

@@ -119,18 +119,30 @@ impl HealthChecker {
     }
 
     /// Check if an endpoint is currently healthy
+    ///
+    /// # Performance
+    /// - **Time complexity**: O(1) HashMap lookup
+    /// - **Space complexity**: O(1)
+    /// - **Async**: RwLock read (shared, non-blocking with other readers)
+    /// - **Expected latency**: <1μs
     pub async fn is_healthy(&self, endpoint_name: &str) -> bool {
         let status = self.health_status.read().await;
         status
             .get(endpoint_name)
             .map(|h| h.healthy)
-            .unwrap_or(false) // Unknown endpoints are considered unhealthy
+            .unwrap_or(false)
     }
 
     /// Mark an endpoint as having failed
     ///
     /// Increments consecutive failure count.
     /// After 3 consecutive failures, marks endpoint as unhealthy.
+    ///
+    /// # Performance
+    /// - **Time complexity**: O(1) HashMap lookup + mutation
+    /// - **Space complexity**: O(1)
+    /// - **Async**: RwLock write (exclusive lock, blocks other readers/writers)
+    /// - **Expected latency**: <10μs (depends on lock contention)
     ///
     /// Returns an error if the endpoint name is unknown.
     pub async fn mark_failure(&self, endpoint_name: &str) -> Result<(), HealthError> {
@@ -179,6 +191,12 @@ impl HealthChecker {
     /// Mark an endpoint as having succeeded
     ///
     /// Resets consecutive failure count and marks endpoint as healthy.
+    ///
+    /// # Performance
+    /// - **Time complexity**: O(1) HashMap lookup + mutation
+    /// - **Space complexity**: O(1)
+    /// - **Async**: RwLock write (exclusive lock, blocks other readers/writers)
+    /// - **Expected latency**: <10μs (depends on lock contention)
     ///
     /// Returns an error if the endpoint name is unknown.
     pub async fn mark_success(&self, endpoint_name: &str) -> Result<(), HealthError> {
