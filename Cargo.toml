@@ -1,0 +1,29 @@
+[package]
+name = "octoroute"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+authors = ["Steve Brandon <steve@localbrandonfamily.com>"]
+description = "Intelligent multi-model router for self-hosted LLMs"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/slb350/octoroute"
+
+[dependencies]
+# Core dependencies
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+proptest = "1.4"
+tokio-test = "0.4"
+tempfile = "3"
