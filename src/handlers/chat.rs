@@ -146,7 +146,13 @@ pub async fn handler(
         .await
         {
             Ok(response_text) => {
-                // Success! Build and return response
+                // Success! Mark endpoint as healthy to enable immediate recovery
+                state
+                    .selector()
+                    .health_checker()
+                    .mark_success(&endpoint.name)
+                    .await;
+
                 tracing::info!(
                     endpoint_name = %endpoint.name,
                     response_length = response_text.len(),
