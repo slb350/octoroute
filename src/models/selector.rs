@@ -1,19 +1,20 @@
 //! Model selection logic for choosing from multiple endpoints
 //!
-//! Implements simple round-robin selection (Phase 2a)
+//! Implements weighted random selection (Phase 2b)
 
 use crate::config::{Config, ModelEndpoint};
 use crate::router::TargetModel;
+use rand::Rng;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Selects appropriate model endpoint from multi-model configuration
 ///
-/// Phase 2a: Simple round-robin selection among available endpoints.
-/// Phase 2b/2c will add weighted load balancing and priority selection.
+/// Phase 2b: Weighted random selection respecting endpoint weight configuration.
+/// Higher weight values receive proportionally more traffic.
 pub struct ModelSelector {
     config: Arc<Config>,
-    // Round-robin counters for each tier
+    // Selection counters for metrics tracking (not used for round-robin)
     fast_counter: AtomicUsize,
     balanced_counter: AtomicUsize,
     deep_counter: AtomicUsize,
@@ -30,7 +31,10 @@ impl ModelSelector {
         }
     }
 
-    /// Select an endpoint for the given target model tier using round-robin
+    /// Select an endpoint for the given target model tier using weighted random selection
+    ///
+    /// Uses the `weight` field from ModelEndpoint configuration to distribute load.
+    /// Higher weights receive proportionally more traffic.
     ///
     /// Returns None if the requested tier has no available endpoints.
     pub fn select(&self, target: TargetModel) -> Option<&ModelEndpoint> {
@@ -48,25 +52,42 @@ impl ModelSelector {
             return None;
         }
 
-        // Get current counter value and increment atomically with wrapping to prevent overflow
-        // Using fetch_update instead of fetch_add to handle potential overflow gracefully
-        let index = counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |val| {
-                Some(val.wrapping_add(1))
-            })
-            .unwrap_or(0)
-            % endpoints.len();
-        let selected_endpoint = &endpoints[index];
+        // Increment selection counter for metrics (atomic operation)
+        counter.fetch_add(1, Ordering::Relaxed);
 
+        // Calculate total weight of all endpoints
+        let total_weight: f64 = endpoints.iter().map(|e| e.weight).sum();
+
+        // Generate random number in range [0, total_weight)
+        let mut rng = rand::thread_rng();
+        let random_weight = rng.gen_range(0.0..total_weight);
+
+        // Select endpoint using cumulative weight distribution
+        let mut cumulative_weight = 0.0;
+        for (index, endpoint) in endpoints.iter().enumerate() {
+            cumulative_weight += endpoint.weight;
+            if random_weight < cumulative_weight {
+                tracing::debug!(
+                    tier = ?target,
+                    endpoint_name = %endpoint.name,
+                    endpoint_index = index,
+                    endpoint_weight = endpoint.weight,
+                    total_endpoints = endpoints.len(),
+                    total_weight = total_weight,
+                    "Selected endpoint via weighted random selection"
+                );
+                return Some(endpoint);
+            }
+        }
+
+        // Fallback to last endpoint (should never happen due to float precision)
+        let last_endpoint = &endpoints[endpoints.len() - 1];
         tracing::debug!(
             tier = ?target,
-            endpoint_name = %selected_endpoint.name,
-            endpoint_index = index,
-            total_endpoints = endpoints.len(),
-            "Selected endpoint via round-robin"
+            endpoint_name = %last_endpoint.name,
+            "Selected last endpoint as fallback (floating point edge case)"
         );
-
-        Some(selected_endpoint)
+        Some(last_endpoint)
     }
 
     /// Get the number of available endpoints for a target tier
@@ -162,21 +183,37 @@ mod tests {
     }
 
     #[test]
-    fn test_selector_round_robin_fast_tier() {
+    fn test_selector_weighted_fast_tier_both_endpoints_selectable() {
         let config = Arc::new(create_test_config());
         let selector = ModelSelector::new(config);
 
-        // First call should return fast-1
-        let first = selector.select(TargetModel::Fast).unwrap();
-        assert_eq!(first.name, "fast-1");
+        // With equal weights (1.0 each), both endpoints should be selectable
+        // Sample 100 times to verify both can be selected
+        let mut fast1_seen = false;
+        let mut fast2_seen = false;
 
-        // Second call should return fast-2
-        let second = selector.select(TargetModel::Fast).unwrap();
-        assert_eq!(second.name, "fast-2");
+        for _ in 0..100 {
+            let selected = selector.select(TargetModel::Fast).unwrap();
+            if selected.name == "fast-1" {
+                fast1_seen = true;
+            }
+            if selected.name == "fast-2" {
+                fast2_seen = true;
+            }
 
-        // Third call should wrap around to fast-1
-        let third = selector.select(TargetModel::Fast).unwrap();
-        assert_eq!(third.name, "fast-1");
+            if fast1_seen && fast2_seen {
+                break; // Both have been selected, test passes
+            }
+        }
+
+        assert!(
+            fast1_seen,
+            "fast-1 should be selected at least once in 100 attempts"
+        );
+        assert!(
+            fast2_seen,
+            "fast-2 should be selected at least once in 100 attempts"
+        );
     }
 
     #[test]
@@ -248,6 +285,166 @@ mod tests {
             has_fast1 && has_fast2,
             "both endpoints should be selected during concurrent access, got: {:?}",
             endpoint_names
+        );
+    }
+
+    #[test]
+    fn test_weighted_selection_distribution() {
+        // Create config with different weights: 2.0 vs 1.0 (2:1 ratio)
+        let mut config = create_test_config();
+        config.models.fast[0].weight = 2.0;
+        config.models.fast[1].weight = 1.0;
+
+        let selector = ModelSelector::new(Arc::new(config));
+
+        // Sample 3000 times to get statistically significant distribution
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..3000 {
+            let endpoint = selector.select(TargetModel::Fast).unwrap();
+            *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
+        }
+
+        let fast1_count = counts.get("fast-1").unwrap_or(&0);
+        let fast2_count = counts.get("fast-2").unwrap_or(&0);
+
+        // With 2:1 weight ratio, expect ~2000:1000 distribution
+        // Allow 10% deviation for randomness (1800-2200 for fast-1, 800-1200 for fast-2)
+        assert!(
+            *fast1_count >= 1800 && *fast1_count <= 2200,
+            "fast-1 (weight 2.0) should get ~2000/3000 selections, got {}",
+            fast1_count
+        );
+        assert!(
+            *fast2_count >= 800 && *fast2_count <= 1200,
+            "fast-2 (weight 1.0) should get ~1000/3000 selections, got {}",
+            fast2_count
+        );
+    }
+
+    #[test]
+    fn test_weighted_selection_heavily_skewed() {
+        // Create config with heavily skewed weights: 9.0 vs 1.0 (9:1 ratio)
+        let mut config = create_test_config();
+        config.models.fast[0].weight = 9.0;
+        config.models.fast[1].weight = 1.0;
+
+        let selector = ModelSelector::new(Arc::new(config));
+
+        // Sample 1000 times
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..1000 {
+            let endpoint = selector.select(TargetModel::Fast).unwrap();
+            *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
+        }
+
+        let fast1_count = counts.get("fast-1").unwrap_or(&0);
+        let fast2_count = counts.get("fast-2").unwrap_or(&0);
+
+        // With 9:1 weight ratio, expect ~900:100 distribution
+        // Allow 15% deviation (765-1035 for fast-1, 35-165 for fast-2)
+        assert!(
+            *fast1_count >= 765 && *fast1_count <= 1035,
+            "fast-1 (weight 9.0) should get ~900/1000 selections, got {}",
+            fast1_count
+        );
+        assert!(
+            *fast2_count >= 35 && *fast2_count <= 165,
+            "fast-2 (weight 1.0) should get ~100/1000 selections, got {}",
+            fast2_count
+        );
+    }
+
+    #[test]
+    fn test_weighted_selection_all_equal_weights() {
+        // When all weights are equal, should behave like uniform distribution
+        let config = create_test_config(); // Both have weight 1.0
+
+        let selector = ModelSelector::new(Arc::new(config));
+
+        // Sample 2000 times
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..2000 {
+            let endpoint = selector.select(TargetModel::Fast).unwrap();
+            *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
+        }
+
+        let fast1_count = counts.get("fast-1").unwrap_or(&0);
+        let fast2_count = counts.get("fast-2").unwrap_or(&0);
+
+        // With equal weights, expect ~1000:1000 distribution
+        // Allow 15% deviation for randomness (850-1150 for each)
+        assert!(
+            *fast1_count >= 850 && *fast1_count <= 1150,
+            "fast-1 (weight 1.0) should get ~1000/2000 selections, got {}",
+            fast1_count
+        );
+        assert!(
+            *fast2_count >= 850 && *fast2_count <= 1150,
+            "fast-2 (weight 1.0) should get ~1000/2000 selections, got {}",
+            fast2_count
+        );
+    }
+
+    #[test]
+    fn test_weighted_selection_three_endpoints() {
+        // Test with three endpoints with weights 3.0, 2.0, 1.0 (3:2:1 ratio)
+        let mut config = create_test_config();
+        config.models.fast = vec![
+            ModelEndpoint {
+                name: "fast-1".to_string(),
+                base_url: "http://localhost:1234/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 3.0,
+                priority: 1,
+            },
+            ModelEndpoint {
+                name: "fast-2".to_string(),
+                base_url: "http://localhost:1235/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 2.0,
+                priority: 1,
+            },
+            ModelEndpoint {
+                name: "fast-3".to_string(),
+                base_url: "http://localhost:1236/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 1.0,
+                priority: 1,
+            },
+        ];
+
+        let selector = ModelSelector::new(Arc::new(config));
+
+        // Sample 6000 times (divisible by 6 for clean expected values)
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..6000 {
+            let endpoint = selector.select(TargetModel::Fast).unwrap();
+            *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
+        }
+
+        let fast1_count = counts.get("fast-1").unwrap_or(&0);
+        let fast2_count = counts.get("fast-2").unwrap_or(&0);
+        let fast3_count = counts.get("fast-3").unwrap_or(&0);
+
+        // Total weight = 6.0, so expect: fast-1: 3000, fast-2: 2000, fast-3: 1000
+        // Allow 10% deviation
+        assert!(
+            *fast1_count >= 2700 && *fast1_count <= 3300,
+            "fast-1 (weight 3.0) should get ~3000/6000 selections, got {}",
+            fast1_count
+        );
+        assert!(
+            *fast2_count >= 1800 && *fast2_count <= 2200,
+            "fast-2 (weight 2.0) should get ~2000/6000 selections, got {}",
+            fast2_count
+        );
+        assert!(
+            *fast3_count >= 900 && *fast3_count <= 1100,
+            "fast-3 (weight 1.0) should get ~1000/6000 selections, got {}",
+            fast3_count
         );
     }
 }
