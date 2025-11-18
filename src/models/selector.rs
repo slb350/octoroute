@@ -41,12 +41,29 @@ impl ModelSelector {
         };
 
         if endpoints.is_empty() {
+            tracing::debug!(tier = ?target, "No endpoints available for tier");
             return None;
         }
 
-        // Get current counter value and increment atomically
-        let index = counter.fetch_add(1, Ordering::Relaxed) % endpoints.len();
-        Some(&endpoints[index])
+        // Get current counter value and increment atomically with wrapping to prevent overflow
+        // Using fetch_update instead of fetch_add to handle potential overflow gracefully
+        let index = counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |val| {
+                Some(val.wrapping_add(1))
+            })
+            .unwrap_or(0)
+            % endpoints.len();
+        let selected_endpoint = &endpoints[index];
+
+        tracing::debug!(
+            tier = ?target,
+            endpoint_name = %selected_endpoint.name,
+            endpoint_index = index,
+            total_endpoints = endpoints.len(),
+            "Selected endpoint via round-robin"
+        );
+
+        Some(selected_endpoint)
     }
 
     /// Get the number of available endpoints for a target tier
@@ -180,5 +197,54 @@ mod tests {
         assert_eq!(selector.endpoint_count(TargetModel::Fast), 2);
         assert_eq!(selector.endpoint_count(TargetModel::Balanced), 1);
         assert_eq!(selector.endpoint_count(TargetModel::Deep), 1);
+    }
+
+    #[test]
+    fn test_selector_returns_none_for_empty_tier() {
+        let mut config = create_test_config();
+        config.models.fast = vec![]; // Empty tier
+        let selector = ModelSelector::new(Arc::new(config));
+
+        let result = selector.select(TargetModel::Fast);
+        assert!(result.is_none(), "should return None for empty tier");
+    }
+
+    #[tokio::test]
+    async fn test_selector_concurrent_round_robin() {
+        let config = Arc::new(create_test_config());
+        let selector = Arc::new(ModelSelector::new(config));
+
+        // Spawn 10 concurrent tasks selecting from Fast tier (which has 2 endpoints)
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let sel = selector.clone();
+            handles.push(tokio::spawn(async move {
+                sel.select(TargetModel::Fast).map(|e| e.name.clone())
+            }));
+        }
+
+        // Collect results
+        let results: Vec<_> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+
+        // Verify all selections succeeded
+        assert_eq!(results.len(), 10);
+        for result in &results {
+            assert!(result.is_some(), "all selections should succeed");
+        }
+
+        // Verify both endpoints were selected (round-robin rotated)
+        let endpoint_names: Vec<String> = results.into_iter().flatten().collect();
+        let has_fast1 = endpoint_names.iter().any(|n| n == "fast-1");
+        let has_fast2 = endpoint_names.iter().any(|n| n == "fast-2");
+
+        assert!(
+            has_fast1 && has_fast2,
+            "both endpoints should be selected during concurrent access, got: {:?}",
+            endpoint_names
+        );
     }
 }

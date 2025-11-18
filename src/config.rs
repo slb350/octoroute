@@ -48,10 +48,10 @@ pub struct ModelEndpoint {
     pub max_tokens: usize,
     #[serde(default = "default_temperature")]
     pub temperature: f64,
-    /// Load balancing weight (Phase 2 feature)
+    /// Load balancing weight (Phase 2b/2c feature)
     #[serde(default = "default_weight")]
     pub weight: f64,
-    /// Priority level (higher = tried first, Phase 2 feature)
+    /// Priority level (higher = tried first, Phase 2b/2c feature)
     #[serde(default = "default_priority")]
     pub priority: u8,
 }

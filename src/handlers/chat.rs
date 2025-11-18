@@ -1,12 +1,16 @@
 //! Chat endpoint handler
 //!
-//! Handles POST /chat requests with intelligent model routing and streaming responses.
+//! Handles POST /chat requests with intelligent model routing.
 
 use crate::error::{AppError, AppResult};
 use crate::handlers::AppState;
 use crate::router::{Importance, RouteMetadata, TaskType};
 use axum::{Json, extract::State, response::IntoResponse};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+/// Maximum allowed message length in characters (100K chars)
+const MAX_MESSAGE_LENGTH: usize = 100_000;
 
 /// Chat request from client
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -25,8 +29,19 @@ impl ChatRequest {
     /// Validate the chat request
     pub fn validate(&self) -> AppResult<()> {
         if self.message.trim().is_empty() {
-            return Err(AppError::Validation("message cannot be empty".to_string()));
+            return Err(AppError::Validation(
+                "message cannot be empty or contain only whitespace".to_string(),
+            ));
         }
+
+        if self.message.len() > MAX_MESSAGE_LENGTH {
+            return Err(AppError::Validation(format!(
+                "message exceeds maximum length of {} characters (got {})",
+                MAX_MESSAGE_LENGTH,
+                self.message.len()
+            )));
+        }
+
         Ok(())
     }
 
@@ -57,6 +72,13 @@ pub async fn handler(
     State(state): State<AppState>,
     Json(request): Json<ChatRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    tracing::debug!(
+        message_length = request.message.len(),
+        importance = ?request.importance,
+        task_type = ?request.task_type,
+        "Received chat request"
+    );
+
     // Validate request
     request.validate()?;
 
@@ -67,18 +89,38 @@ pub async fn handler(
     let target = state.router().route(&metadata).unwrap_or_else(|| {
         // When no rule matches, fall back to balanced tier as a sensible default
         // This handles common cases like simple questions that don't match specific rules
+        tracing::warn!(
+            task_type = ?metadata.task_type,
+            importance = ?metadata.importance,
+            token_estimate = metadata.token_estimate,
+            "No routing rule matched, falling back to Balanced tier"
+        );
         use crate::router::TargetModel;
         TargetModel::Balanced
     });
+
+    tracing::info!(
+        target_tier = ?target,
+        token_estimate = metadata.token_estimate,
+        "Routing decision made"
+    );
 
     // Select specific endpoint from the target tier
     let endpoint = state
         .selector()
         .select(target)
         .ok_or_else(|| {
+            tracing::error!(tier = ?target, "No available endpoints for tier");
             AppError::RoutingFailed(format!("No available endpoints for tier {:?}", target))
         })?
         .clone();
+
+    tracing::info!(
+        endpoint_name = %endpoint.name,
+        endpoint_url = %endpoint.base_url,
+        max_tokens = endpoint.max_tokens,
+        "Endpoint selected"
+    );
 
     // Build AgentOptions from selected endpoint
     let options = open_agent::AgentOptions::builder()
@@ -90,10 +132,41 @@ pub async fn handler(
         .map_err(|e| AppError::Internal(format!("Failed to build AgentOptions: {}", e)))?;
 
     // Query the model using the standalone function (avoids !Sync issues)
+    tracing::debug!(
+        endpoint_name = %endpoint.name,
+        message_length = request.message.len(),
+        timeout_seconds = state.config().server.request_timeout_seconds,
+        "Starting model query"
+    );
+
+    // Enforce request timeout from config
+    let timeout_duration = Duration::from_secs(state.config().server.request_timeout_seconds);
+
     use futures::StreamExt;
-    let mut stream = open_agent::query(&request.message, &options)
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to query model: {}", e)))?;
+    let mut stream = tokio::time::timeout(
+        timeout_duration,
+        open_agent::query(&request.message, &options),
+    )
+    .await
+    .map_err(|_| {
+        tracing::error!(
+            endpoint_name = %endpoint.name,
+            timeout_seconds = state.config().server.request_timeout_seconds,
+            "Request timed out"
+        );
+        AppError::Internal(format!(
+            "Request timed out after {} seconds",
+            state.config().server.request_timeout_seconds
+        ))
+    })?
+    .map_err(|e| {
+        tracing::error!(
+            endpoint_name = %endpoint.name,
+            error = %e,
+            "Failed to query model"
+        );
+        AppError::Internal(format!("Failed to query model: {}", e))
+    })?;
 
     // Collect response from stream
     let mut response_text = String::new();
@@ -106,10 +179,22 @@ pub async fn handler(
                 }
             }
             Err(e) => {
+                tracing::error!(
+                    endpoint_name = %endpoint.name,
+                    error = %e,
+                    "Stream error during response collection"
+                );
                 return Err(AppError::Internal(format!("Stream error: {}", e)));
             }
         }
     }
+
+    tracing::info!(
+        endpoint_name = %endpoint.name,
+        response_length = response_text.len(),
+        model_tier = ?target,
+        "Request completed successfully"
+    );
 
     // Build response
     let response = ChatResponse {
@@ -163,6 +248,47 @@ mod tests {
         let result = req.validate();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn test_chat_request_validate_whitespace_only_message() {
+        let req = ChatRequest {
+            message: "   \n\t  ".to_string(),
+            importance: Importance::Normal,
+            task_type: TaskType::QuestionAnswer,
+        };
+
+        let result = req.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("empty") || err_msg.contains("whitespace"),
+            "error message should mention empty or whitespace, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_chat_request_validate_message_too_long() {
+        let long_message = "a".repeat(100_001); // Exceeds MAX_MESSAGE_LENGTH
+        let req = ChatRequest {
+            message: long_message,
+            importance: Importance::Normal,
+            task_type: TaskType::QuestionAnswer,
+        };
+
+        let result = req.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("exceeds maximum length"),
+            "error message should mention exceeds maximum length, got: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("100000"),
+            "error message should mention the max length constant"
+        );
     }
 
     #[test]

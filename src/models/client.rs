@@ -11,7 +11,15 @@ use tokio::sync::Mutex;
 
 /// Wrapper around open_agent::Client with endpoint configuration
 ///
-/// Client is wrapped in Arc<Mutex<>> to make it Send + Sync for use in async handlers
+/// **NOTE**: Currently unused in Phase 2a. The `/chat` handler uses the standalone
+/// `open_agent::query()` function to avoid `!Sync` issues with the stateful Client.
+/// This wrapper may be used in future phases (Phase 3+) for:
+/// - Conversation history management
+/// - Stateful multi-turn conversations
+/// - Per-client session management
+///
+/// Client is wrapped in Arc<Mutex<>> to make it Send + Sync for use in async handlers.
+#[allow(dead_code)]
 pub struct ModelClient {
     endpoint: ModelEndpoint,
     client: Arc<Mutex<Client>>,
@@ -19,6 +27,7 @@ pub struct ModelClient {
 
 impl ModelClient {
     /// Create a new ModelClient from a ModelEndpoint configuration
+    #[allow(dead_code)]
     pub fn new(endpoint: ModelEndpoint) -> AppResult<Self> {
         // Build AgentOptions from ModelEndpoint
         let options = AgentOptions::builder()
@@ -44,11 +53,13 @@ impl ModelClient {
     }
 
     /// Get reference to the underlying endpoint configuration
+    #[allow(dead_code)]
     pub fn endpoint(&self) -> &ModelEndpoint {
         &self.endpoint
     }
 
     /// Get arc-mutex wrapped client for thread-safe access
+    #[allow(dead_code)]
     pub fn client(&self) -> &Arc<Mutex<Client>> {
         &self.client
     }
