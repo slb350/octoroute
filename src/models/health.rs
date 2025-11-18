@@ -205,8 +205,13 @@ impl HealthChecker {
             Err(e) => {
                 tracing::error!(
                     endpoint_name = %endpoint.name,
+                    endpoint_url = %endpoint.base_url,
                     error = %e,
-                    "Failed to create HTTP client for health check"
+                    error_debug = ?e,
+                    "CRITICAL: Failed to create HTTP client for health check. \
+                    This indicates a systemic issue (TLS config, resource exhaustion), \
+                    not just an unhealthy endpoint. Error: {:?}",
+                    e
                 );
                 return false;
             }

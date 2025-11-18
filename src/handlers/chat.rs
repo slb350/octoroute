@@ -170,15 +170,24 @@ pub async fn handler(
         let endpoint = match state.selector().select(target, &failed_endpoints).await {
             Some(ep) => ep.clone(),
             None => {
+                let total_configured = state.selector().endpoint_count(target);
+                let excluded_count = failed_endpoints.len();
+
                 tracing::error!(
                     tier = ?target,
                     attempt = attempt,
                     max_retries = MAX_RETRIES,
-                    "No available healthy endpoints for tier"
+                    total_configured_endpoints = total_configured,
+                    failed_endpoints_count = excluded_count,
+                    failed_endpoints = ?failed_endpoints,
+                    "No available healthy endpoints for tier. Configured: {}, Excluded: {}, \
+                    This means all endpoints are either unhealthy or have failed in this request.",
+                    total_configured, excluded_count
                 );
                 last_error = Some(AppError::RoutingFailed(format!(
-                    "No available healthy endpoints for tier {:?}",
-                    target
+                    "No available healthy endpoints for tier {:?} \
+                    (configured: {}, excluded: {}, attempt {}/{})",
+                    target, total_configured, excluded_count, attempt, MAX_RETRIES
                 )));
                 continue; // Try again (may have different healthy endpoints)
             }
@@ -197,6 +206,8 @@ pub async fn handler(
             &endpoint,
             &request,
             state.config().server.request_timeout_seconds,
+            attempt,
+            MAX_RETRIES,
         )
         .await
         {
@@ -271,6 +282,8 @@ async fn try_query_model(
     endpoint: &ModelEndpoint,
     request: &ChatRequest,
     timeout_seconds: u64,
+    attempt: usize,
+    max_retries: usize,
 ) -> AppResult<String> {
     // Build AgentOptions from selected endpoint
     let options = open_agent::AgentOptions::builder()
@@ -322,9 +335,11 @@ async fn try_query_model(
 
             // Collect response from stream
             let mut response_text = String::new();
+            let mut block_count = 0;
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(block) => {
+                        block_count += 1;
                         use open_agent::ContentBlock;
                         match block {
                             ContentBlock::Text(text_block) => {
@@ -334,6 +349,7 @@ async fn try_query_model(
                                 tracing::warn!(
                                     endpoint_name = %endpoint.name,
                                     block_type = ?other_block,
+                                    block_number = block_count,
                                     "Received non-text content block, skipping (not yet supported in Phase 2a)"
                                 );
                             }
@@ -342,10 +358,19 @@ async fn try_query_model(
                     Err(e) => {
                         tracing::error!(
                             endpoint_name = %endpoint.name,
+                            endpoint_url = %endpoint.base_url,
                             error = %e,
-                            "Stream error during response collection"
+                            block_count = block_count,
+                            partial_response_length = response_text.len(),
+                            "Stream error after {} blocks ({} chars received). \
+                            This could indicate network interruption (if blocks > 0) or \
+                            connection failure (if blocks = 0)",
+                            block_count, response_text.len()
                         );
-                        return Err(AppError::Internal(format!("Stream error: {}", e)));
+                        return Err(AppError::Internal(format!(
+                            "Stream error from {}: {} (after {} blocks, {} chars received)",
+                            endpoint.base_url, e, block_count, response_text.len()
+                        )));
                     }
                 }
             }
@@ -357,15 +382,20 @@ async fn try_query_model(
     .map_err(|_| {
         tracing::error!(
             endpoint_name = %endpoint.name,
+            endpoint_url = %endpoint.base_url,
             timeout_seconds = timeout_seconds,
             message_length = request.message().len(),
             task_type = ?request.task_type(),
             importance = ?request.importance(),
-            "Request timed out (including streaming) - consider increasing timeout for this type of request"
+            attempt = attempt,
+            max_retries = max_retries,
+            "Request timed out (including streaming). Endpoint: {} - \
+            consider increasing timeout or check endpoint connectivity (attempt {}/{})",
+            endpoint.base_url, attempt, max_retries
         );
         AppError::Internal(format!(
-            "Request timed out after {} seconds",
-            timeout_seconds
+            "Request to {} timed out after {} seconds (attempt {}/{})",
+            endpoint.base_url, timeout_seconds, attempt, max_retries
         ))
     })??;
 
