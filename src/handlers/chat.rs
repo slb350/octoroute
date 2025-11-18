@@ -63,11 +63,13 @@ pub async fn handler(
     // Convert to metadata for routing
     let metadata = request.to_metadata();
 
-    // Use rule-based router to determine target tier
-    let target = state
-        .router()
-        .route(&metadata)
-        .ok_or_else(|| AppError::RoutingFailed("No routing rule matched".to_string()))?;
+    // Use rule-based router to determine target tier, with fallback to default
+    let target = state.router().route(&metadata).unwrap_or_else(|| {
+        // When no rule matches, fall back to balanced tier as a sensible default
+        // This handles common cases like simple questions that don't match specific rules
+        use crate::router::TargetModel;
+        TargetModel::Balanced
+    });
 
     // Select specific endpoint from the target tier
     let endpoint = state
