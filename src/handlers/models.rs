@@ -35,23 +35,23 @@ pub async fn handler(State(state): State<AppState>) -> Json<ModelsResponse> {
         .into_iter()
         .map(|h| {
             // Determine tier by checking config
-            let tier = if config.models.fast.iter().any(|e| e.name == h.name) {
+            let tier = if config.models.fast.iter().any(|e| e.name == h.name()) {
                 "fast".to_string()
-            } else if config.models.balanced.iter().any(|e| e.name == h.name) {
+            } else if config.models.balanced.iter().any(|e| e.name == h.name()) {
                 "balanced".to_string()
-            } else if config.models.deep.iter().any(|e| e.name == h.name) {
+            } else if config.models.deep.iter().any(|e| e.name == h.name()) {
                 "deep".to_string()
             } else {
                 "unknown".to_string()
             };
 
             ModelStatus {
-                name: h.name,
+                name: h.name().to_string(),
                 tier,
-                endpoint: h.base_url,
-                healthy: h.healthy,
-                last_check_seconds_ago: h.last_check.elapsed().as_secs(),
-                consecutive_failures: h.consecutive_failures,
+                endpoint: h.base_url().to_string(),
+                healthy: h.is_healthy(),
+                last_check_seconds_ago: h.last_check().elapsed().as_secs(),
+                consecutive_failures: h.consecutive_failures(),
             }
         })
         .collect();

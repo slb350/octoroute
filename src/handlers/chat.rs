@@ -7,7 +7,7 @@ use crate::error::{AppError, AppResult};
 use crate::handlers::AppState;
 use crate::router::{Importance, RouteMetadata, TaskType};
 use axum::{Json, extract::State, response::IntoResponse};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -15,36 +15,29 @@ use std::time::Duration;
 const MAX_MESSAGE_LENGTH: usize = 100_000;
 
 /// Chat request from client
-#[derive(Debug, Clone, Deserialize, Serialize)]
+///
+/// Validation is enforced during deserialization - invalid instances cannot exist.
+#[derive(Debug, Clone, Serialize)]
 pub struct ChatRequest {
-    /// User's message/prompt
-    pub message: String,
-    /// Optional importance level (defaults to normal)
-    #[serde(default)]
-    pub importance: Importance,
-    /// Optional task type classification
-    #[serde(default)]
-    pub task_type: TaskType,
+    message: String,
+    importance: Importance,
+    task_type: TaskType,
 }
 
 impl ChatRequest {
-    /// Validate the chat request
-    pub fn validate(&self) -> AppResult<()> {
-        if self.message.trim().is_empty() {
-            return Err(AppError::Validation(
-                "message cannot be empty or contain only whitespace".to_string(),
-            ));
-        }
+    /// Get the message
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 
-        if self.message.len() > MAX_MESSAGE_LENGTH {
-            return Err(AppError::Validation(format!(
-                "message exceeds maximum length of {} characters (got {})",
-                MAX_MESSAGE_LENGTH,
-                self.message.len()
-            )));
-        }
+    /// Get the importance level
+    pub fn importance(&self) -> Importance {
+        self.importance
+    }
 
-        Ok(())
+    /// Get the task type
+    pub fn task_type(&self) -> TaskType {
+        self.task_type
     }
 
     /// Convert request to RouteMetadata for routing decisions
@@ -58,13 +51,73 @@ impl ChatRequest {
     }
 }
 
+/// Custom Deserialize implementation that validates during deserialization
+impl<'de> Deserialize<'de> for ChatRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawChatRequest {
+            message: String,
+            #[serde(default)]
+            importance: Importance,
+            #[serde(default)]
+            task_type: TaskType,
+        }
+
+        let raw = RawChatRequest::deserialize(deserializer)?;
+
+        // Validate message is not empty or whitespace-only
+        if raw.message.trim().is_empty() {
+            return Err(serde::de::Error::custom(
+                "message cannot be empty or contain only whitespace",
+            ));
+        }
+
+        // Validate message length
+        if raw.message.len() > MAX_MESSAGE_LENGTH {
+            return Err(serde::de::Error::custom(format!(
+                "message exceeds maximum length of {} characters (got {})",
+                MAX_MESSAGE_LENGTH,
+                raw.message.len()
+            )));
+        }
+
+        Ok(ChatRequest {
+            message: raw.message,
+            importance: raw.importance,
+            task_type: raw.task_type,
+        })
+    }
+}
+
+/// Model tier classification for API responses
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelTier {
+    Fast,
+    Balanced,
+    Deep,
+}
+
+impl From<crate::router::TargetModel> for ModelTier {
+    fn from(target: crate::router::TargetModel) -> Self {
+        match target {
+            crate::router::TargetModel::Fast => ModelTier::Fast,
+            crate::router::TargetModel::Balanced => ModelTier::Balanced,
+            crate::router::TargetModel::Deep => ModelTier::Deep,
+        }
+    }
+}
+
 /// Chat response to client
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatResponse {
     /// Model's response content
     pub content: String,
     /// Which model tier was used
-    pub model_tier: String,
+    pub model_tier: ModelTier,
     /// Which specific endpoint was used
     pub model_name: String,
 }
@@ -75,14 +128,13 @@ pub async fn handler(
     Json(request): Json<ChatRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     tracing::debug!(
-        message_length = request.message.len(),
-        importance = ?request.importance,
-        task_type = ?request.task_type,
+        message_length = request.message().len(),
+        importance = ?request.importance(),
+        task_type = ?request.task_type(),
         "Received chat request"
     );
 
-    // Validate request
-    request.validate()?;
+    // No need to validate - validation happens during deserialization
 
     // Convert to metadata for routing
     let metadata = request.to_metadata();
@@ -166,7 +218,7 @@ pub async fn handler(
 
                 let response = ChatResponse {
                     content: response_text,
-                    model_tier: format!("{:?}", target).to_lowercase(),
+                    model_tier: target.into(),
                     model_name: endpoint.name.clone(),
                 };
 
@@ -244,7 +296,7 @@ async fn try_query_model(
 
     tracing::debug!(
         endpoint_name = %endpoint.name,
-        message_length = request.message.len(),
+        message_length = request.message().len(),
         timeout_seconds = timeout_seconds,
         "Starting model query"
     );
@@ -257,7 +309,7 @@ async fn try_query_model(
         timeout_duration,
         async {
             // Query model and get stream
-            let mut stream = open_agent::query(&request.message, &options)
+            let mut stream = open_agent::query(request.message(), &options)
                 .await
                 .map_err(|e| {
                     tracing::error!(
@@ -306,9 +358,9 @@ async fn try_query_model(
         tracing::error!(
             endpoint_name = %endpoint.name,
             timeout_seconds = timeout_seconds,
-            message_length = request.message.len(),
-            task_type = ?request.task_type,
-            importance = ?request.importance,
+            message_length = request.message().len(),
+            task_type = ?request.task_type(),
+            importance = ?request.importance(),
             "Request timed out (including streaming) - consider increasing timeout for this type of request"
         );
         AppError::Internal(format!(
@@ -335,9 +387,9 @@ mod tests {
         let json = r#"{"message": "Hello!"}"#;
         let req: ChatRequest = serde_json::from_str(json).expect("should deserialize");
 
-        assert_eq!(req.message, "Hello!");
-        assert_eq!(req.importance, Importance::Normal); // default
-        assert_eq!(req.task_type, TaskType::QuestionAnswer); // default
+        assert_eq!(req.message(), "Hello!");
+        assert_eq!(req.importance(), Importance::Normal); // default
+        assert_eq!(req.task_type(), TaskType::QuestionAnswer); // default
     }
 
     #[test]
@@ -345,8 +397,8 @@ mod tests {
         let json = r#"{"message": "Urgent!", "importance": "high"}"#;
         let req: ChatRequest = serde_json::from_str(json).expect("should deserialize");
 
-        assert_eq!(req.message, "Urgent!");
-        assert_eq!(req.importance, Importance::High);
+        assert_eq!(req.message(), "Urgent!");
+        assert_eq!(req.importance(), Importance::High);
     }
 
     #[test]
@@ -354,31 +406,14 @@ mod tests {
         let json = r#"{"message": "Write code", "task_type": "code"}"#;
         let req: ChatRequest = serde_json::from_str(json).expect("should deserialize");
 
-        assert_eq!(req.task_type, TaskType::Code);
+        assert_eq!(req.task_type(), TaskType::Code);
     }
 
     #[test]
-    fn test_chat_request_validate_empty_message() {
-        let req = ChatRequest {
-            message: "".to_string(),
-            importance: Importance::Normal,
-            task_type: TaskType::QuestionAnswer,
-        };
+    fn test_chat_request_rejects_empty_message() {
+        let json = r#"{"message": ""}"#;
+        let result = serde_json::from_str::<ChatRequest>(json);
 
-        let result = req.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("empty"));
-    }
-
-    #[test]
-    fn test_chat_request_validate_whitespace_only_message() {
-        let req = ChatRequest {
-            message: "   \n\t  ".to_string(),
-            importance: Importance::Normal,
-            task_type: TaskType::QuestionAnswer,
-        };
-
-        let result = req.validate();
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -389,46 +424,49 @@ mod tests {
     }
 
     #[test]
-    fn test_chat_request_validate_message_too_long() {
-        let long_message = "a".repeat(100_001); // Exceeds MAX_MESSAGE_LENGTH
-        let req = ChatRequest {
-            message: long_message,
-            importance: Importance::Normal,
-            task_type: TaskType::QuestionAnswer,
-        };
+    fn test_chat_request_rejects_whitespace_only_message() {
+        let json = r#"{"message": "   \n\t  "}"#;
+        let result = serde_json::from_str::<ChatRequest>(json);
 
-        let result = req.validate();
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("exceeds maximum length"),
-            "error message should mention exceeds maximum length, got: {}",
+            err_msg.contains("empty") || err_msg.contains("whitespace"),
+            "error message should mention empty or whitespace, got: {}",
             err_msg
-        );
-        assert!(
-            err_msg.contains("100000"),
-            "error message should mention the max length constant"
         );
     }
 
     #[test]
-    fn test_chat_request_validate_valid_message() {
-        let req = ChatRequest {
-            message: "Hello, world!".to_string(),
-            importance: Importance::Normal,
-            task_type: TaskType::QuestionAnswer,
-        };
+    fn test_chat_request_rejects_message_too_long() {
+        let long_message = "a".repeat(100_001); // Exceeds MAX_MESSAGE_LENGTH
+        let json = format!(r#"{{"message": "{}"}}"#, long_message);
+        let result = serde_json::from_str::<ChatRequest>(&json);
 
-        assert!(req.validate().is_ok());
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("exceeds maximum length") || err_msg.contains("100000"),
+            "error message should mention exceeds maximum length, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_chat_request_accepts_valid_message() {
+        let json = r#"{"message": "Hello, world!"}"#;
+        let result = serde_json::from_str::<ChatRequest>(json);
+
+        assert!(result.is_ok());
+        let req = result.unwrap();
+        assert_eq!(req.message(), "Hello, world!");
     }
 
     #[test]
     fn test_chat_request_to_metadata() {
-        let req = ChatRequest {
-            message: "What is 2+2?".to_string(),
-            importance: Importance::Low,
-            task_type: TaskType::CasualChat,
-        };
+        let json =
+            r#"{"message": "What is 2+2?", "importance": "low", "task_type": "casual_chat"}"#;
+        let req: ChatRequest = serde_json::from_str(json).expect("should deserialize");
 
         let meta = req.to_metadata();
         assert_eq!(meta.importance, Importance::Low);
@@ -440,7 +478,7 @@ mod tests {
     fn test_chat_response_serializes() {
         let resp = ChatResponse {
             content: "4".to_string(),
-            model_tier: "fast".to_string(),
+            model_tier: ModelTier::Fast,
             model_name: "fast-1".to_string(),
         };
 

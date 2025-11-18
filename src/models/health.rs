@@ -10,13 +10,16 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 /// Health status for a single endpoint
+///
+/// Encapsulates health state to prevent invalid state transitions.
+/// All fields are private to ensure state invariants are maintained.
 #[derive(Clone, Debug)]
 pub struct EndpointHealth {
-    pub name: String,
-    pub base_url: String,
-    pub healthy: bool,
-    pub last_check: Instant,
-    pub consecutive_failures: u32,
+    name: String,
+    base_url: String,
+    healthy: bool,
+    last_check: Instant,
+    consecutive_failures: u32,
 }
 
 impl EndpointHealth {
@@ -29,6 +32,31 @@ impl EndpointHealth {
             last_check: Instant::now(),
             consecutive_failures: 0,
         }
+    }
+
+    /// Get the endpoint name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the endpoint base URL
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Check if the endpoint is currently healthy
+    pub fn is_healthy(&self) -> bool {
+        self.healthy
+    }
+
+    /// Get the last health check time
+    pub fn last_check(&self) -> Instant {
+        self.last_check
+    }
+
+    /// Get the consecutive failure count
+    pub fn consecutive_failures(&self) -> u32 {
+        self.consecutive_failures
     }
 }
 
@@ -237,8 +265,9 @@ impl HealthChecker {
     /// Start background health checking task
     ///
     /// Spawns a tokio task that runs health checks every 30 seconds.
+    /// Also spawns a monitoring task to detect if the health check task fails.
     pub fn start_background_checks(self: Arc<Self>) {
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             tracing::info!("Starting background health checks (30s interval)");
 
             loop {
@@ -246,6 +275,28 @@ impl HealthChecker {
 
                 tracing::debug!("Running scheduled health checks");
                 self.run_health_checks().await;
+            }
+        });
+
+        // Monitor the health check task to detect failures
+        tokio::spawn(async move {
+            match handle.await {
+                Ok(_) => {
+                    tracing::error!(
+                        "Background health check task terminated unexpectedly. \
+                        Health monitoring has stopped. Endpoints marked unhealthy \
+                        will remain unhealthy until server restart."
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "Background health check task panicked. \
+                        Health monitoring has stopped. This indicates a bug in \
+                        the health check logic. Endpoints marked unhealthy will \
+                        remain unhealthy until server restart."
+                    );
+                }
             }
         });
     }

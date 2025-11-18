@@ -30,8 +30,7 @@ async fn mock_chat_handler(
     State(state): State<AppState>,
     Json(request): Json<ChatRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    // Perform same validation as real handler
-    request.validate()?;
+    // Validation happens automatically during deserialization
 
     // Convert to metadata for routing (test routing logic)
     let metadata = request.to_metadata();
@@ -56,7 +55,7 @@ async fn mock_chat_handler(
     // This tests validation, routing, selection, and response serialization
     let response = ChatResponse {
         content: "Mock response for testing".to_string(),
-        model_tier: format!("{:?}", target).to_lowercase(),
+        model_tier: target.into(),
         model_name: endpoint.name.clone(),
     };
 
@@ -145,9 +144,13 @@ async fn test_chat_endpoint_with_valid_request() {
         chat_response.content, "Mock response for testing",
         "content should be mock response"
     );
+    use octoroute::handlers::chat::ModelTier;
     assert!(
-        ["fast", "balanced", "deep"].contains(&chat_response.model_tier.as_str()),
-        "model_tier should be one of fast/balanced/deep, got {}",
+        matches!(
+            chat_response.model_tier,
+            ModelTier::Fast | ModelTier::Balanced | ModelTier::Deep
+        ),
+        "model_tier should be one of Fast/Balanced/Deep, got {:?}",
         chat_response.model_tier
     );
     assert!(
@@ -170,8 +173,8 @@ async fn test_chat_endpoint_with_empty_message() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Should return 400 Bad Request for validation error
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    // Should return 422 Unprocessable Entity for deserialization validation error
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -198,8 +201,8 @@ async fn test_chat_endpoint_with_whitespace_only_message() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Should return 400 Bad Request for validation error
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    // Should return 422 Unprocessable Entity for deserialization validation error
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
