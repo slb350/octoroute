@@ -126,12 +126,57 @@ impl Config {
                 e
             ))
         })?;
-        Self::from_str(&content).map_err(|_| {
+        let config = Self::from_str(&content).map_err(|e| {
             crate::error::AppError::Config(format!(
-                "Failed to parse config file {}",
-                path.as_ref().display()
+                "Failed to parse config file {}: {}",
+                path.as_ref().display(),
+                e
             ))
-        })
+        })?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Validate configuration after parsing
+    fn validate(&self) -> crate::error::AppResult<()> {
+        // Validate that each model tier has at least one endpoint
+        if self.models.fast.is_empty() {
+            return Err(crate::error::AppError::Config(
+                "Configuration error: models.fast must contain at least one model endpoint"
+                    .to_string(),
+            ));
+        }
+        if self.models.balanced.is_empty() {
+            return Err(crate::error::AppError::Config(
+                "Configuration error: models.balanced must contain at least one model endpoint"
+                    .to_string(),
+            ));
+        }
+        if self.models.deep.is_empty() {
+            return Err(crate::error::AppError::Config(
+                "Configuration error: models.deep must contain at least one model endpoint"
+                    .to_string(),
+            ));
+        }
+
+        // Validate router_model is valid
+        if !["fast", "balanced", "deep"].contains(&self.routing.router_model.as_str()) {
+            return Err(crate::error::AppError::Config(format!(
+                "Configuration error: routing.router_model must be 'fast', 'balanced', or 'deep', got '{}'",
+                self.routing.router_model
+            )));
+        }
+
+        // Validate port conflict
+        if self.observability.metrics_enabled && self.observability.metrics_port == self.server.port
+        {
+            return Err(crate::error::AppError::Config(format!(
+                "Configuration error: metrics_port ({}) cannot be the same as server port ({})",
+                self.observability.metrics_port, self.server.port
+            )));
+        }
+
+        Ok(())
     }
 }
 
@@ -306,5 +351,90 @@ router_model = "balanced"
         // Verify defaults for weight and priority
         assert_eq!(config.models.fast[0].weight, 1.0);
         assert_eq!(config.models.fast[0].priority, 1);
+    }
+
+    #[test]
+    fn test_config_validation_empty_fast_tier_fails() {
+        // Create a config with empty fast tier programmatically
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.fast.clear(); // Empty the fast tier
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("models.fast"));
+    }
+
+    #[test]
+    fn test_config_validation_invalid_router_model_fails() {
+        let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[[models.fast]]
+name = "test"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+
+[[models.balanced]]
+name = "test"
+base_url = "http://localhost:1235/v1"
+max_tokens = 8192
+
+[[models.deep]]
+name = "test"
+base_url = "http://localhost:1236/v1"
+max_tokens = 16384
+
+[routing]
+strategy = "rule"
+router_model = "invalid"
+"#;
+
+        let config = Config::from_str(config_str).unwrap();
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("router_model"));
+        assert!(err_msg.contains("invalid"));
+    }
+
+    #[test]
+    fn test_config_validation_port_conflict_fails() {
+        let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[[models.fast]]
+name = "test"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+
+[[models.balanced]]
+name = "test"
+base_url = "http://localhost:1235/v1"
+max_tokens = 8192
+
+[[models.deep]]
+name = "test"
+base_url = "http://localhost:1236/v1"
+max_tokens = 16384
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+
+[observability]
+metrics_enabled = true
+metrics_port = 3000
+"#;
+
+        let config = Config::from_str(config_str).unwrap();
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("metrics_port"));
+        assert!(err_msg.contains("3000"));
     }
 }
