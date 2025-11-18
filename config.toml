@@ -8,21 +8,24 @@ host = "0.0.0.0"
 port = 3000
 request_timeout_seconds = 30
 
-# Fast model (8B parameters) - for simple tasks, casual chat, quick Q&A
+# Fast model tier - for simple tasks, casual chat, quick Q&A
+# (Example: 8B parameter model, but any fast model works)
 [models.fast]
 name = "qwen/qwen3-vl-8b"
 base_url = "http://192.168.1.67:1234/v1"
 max_tokens = 4096
 temperature = 0.7
 
-# Balanced model (30B parameters) - for coding, analysis, explanations
+# Balanced model tier - for coding, analysis, explanations
+# (Example: 30B parameter model, but any medium-sized model works)
 [models.balanced]
 name = "qwen/qwen3-30b-a3b-2507"
 base_url = "http://192.168.1.61:1234/v1"
 max_tokens = 8192
 temperature = 0.7
 
-# Deep model (120B parameters) - for complex reasoning, creative writing, research
+# Deep model tier - for complex reasoning, creative writing, research
+# (Example: 120B parameter model, but any large model works)
 [models.deep]
 name = "/home/steve/dev/llama.cpp/models/gpt-oss-120b-mxfp4.gguf"
 base_url = "https://strix-ai.localbrandonfamily.com/v1"
