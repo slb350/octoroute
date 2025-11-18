@@ -58,6 +58,30 @@ impl ModelSelector {
         // Calculate total weight of all endpoints
         let total_weight: f64 = endpoints.iter().map(|e| e.weight).sum();
 
+        // Handle zero or negative total weight (all endpoints disabled/misconfigured)
+        if total_weight <= 0.0 {
+            tracing::warn!(
+                tier = ?target,
+                total_weight = total_weight,
+                endpoints_count = endpoints.len(),
+                "All endpoints in tier have zero/negative weight, falling back to uniform selection"
+            );
+
+            // Fall back to uniform random selection
+            let mut rng = rand::thread_rng();
+            let index = rng.gen_range(0..endpoints.len());
+            let endpoint = &endpoints[index];
+
+            tracing::info!(
+                tier = ?target,
+                endpoint_name = %endpoint.name,
+                endpoint_index = index,
+                "Selected endpoint via uniform fallback (zero total weight)"
+            );
+
+            return Some(endpoint);
+        }
+
         // Generate random number in range [0, total_weight)
         let mut rng = rand::thread_rng();
         let random_weight = rng.gen_range(0.0..total_weight);
@@ -250,7 +274,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_selector_concurrent_round_robin() {
+    async fn test_selector_concurrent_weighted_selection() {
         let config = Arc::new(create_test_config());
         let selector = Arc::new(ModelSelector::new(config));
 
@@ -270,21 +294,71 @@ mod tests {
             .map(|r| r.unwrap())
             .collect();
 
-        // Verify all selections succeeded
-        assert_eq!(results.len(), 10);
+        // Verify all selections succeeded (concurrency safety)
+        assert_eq!(
+            results.len(),
+            10,
+            "all concurrent selections should complete"
+        );
         for result in &results {
             assert!(result.is_some(), "all selections should succeed");
         }
 
-        // Verify both endpoints were selected (round-robin rotated)
+        // Verify all selected endpoints are valid (from the configured endpoints)
         let endpoint_names: Vec<String> = results.into_iter().flatten().collect();
-        let has_fast1 = endpoint_names.iter().any(|n| n == "fast-1");
-        let has_fast2 = endpoint_names.iter().any(|n| n == "fast-2");
+        for name in &endpoint_names {
+            assert!(
+                name == "fast-1" || name == "fast-2",
+                "selected endpoint should be valid, got: {}",
+                name
+            );
+        }
 
+        // Note: With weighted random selection, we cannot deterministically assert
+        // that both endpoints are always selected in just 10 draws. With equal weights,
+        // there's ~0.2% chance all 10 selections hit the same endpoint.
+        // This test focuses on concurrency safety, not distribution.
+    }
+
+    #[test]
+    fn test_selector_zero_weight_fallback() {
+        // Create config where all endpoints have zero weight
+        let mut config = create_test_config();
+        config.models.fast[0].weight = 0.0;
+        config.models.fast[1].weight = 0.0;
+
+        let selector = ModelSelector::new(Arc::new(config));
+
+        // Should fall back to uniform random selection, not panic
+        for _ in 0..10 {
+            let result = selector.select(TargetModel::Fast);
+            assert!(
+                result.is_some(),
+                "should return endpoint even with zero total weight"
+            );
+
+            let endpoint = result.unwrap();
+            assert!(
+                endpoint.name == "fast-1" || endpoint.name == "fast-2",
+                "should select valid endpoint"
+            );
+        }
+    }
+
+    #[test]
+    fn test_selector_negative_weight_fallback() {
+        // Create config with negative weights (misconfiguration)
+        let mut config = create_test_config();
+        config.models.fast[0].weight = -1.0;
+        config.models.fast[1].weight = -2.0;
+
+        let selector = ModelSelector::new(Arc::new(config));
+
+        // Should fall back to uniform random selection, not panic
+        let result = selector.select(TargetModel::Fast);
         assert!(
-            has_fast1 && has_fast2,
-            "both endpoints should be selected during concurrent access, got: {:?}",
-            endpoint_names
+            result.is_some(),
+            "should return endpoint even with negative weights"
         );
     }
 
