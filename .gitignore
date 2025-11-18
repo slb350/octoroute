@@ -1,6 +1,7 @@
 # CLAUDE.md - Project documentation (keep local only)
 CLAUDE.md
 agents.md
+.claude/
 
 # Rust
 target/
