@@ -75,12 +75,12 @@ impl<'de> Deserialize<'de> for ChatRequest {
             ));
         }
 
-        // Validate message length
-        if raw.message.len() > MAX_MESSAGE_LENGTH {
+        // Validate message length (count Unicode characters, not bytes)
+        let char_count = raw.message.chars().count();
+        if char_count > MAX_MESSAGE_LENGTH {
             return Err(serde::de::Error::custom(format!(
                 "message exceeds maximum length of {} characters (got {})",
-                MAX_MESSAGE_LENGTH,
-                raw.message.len()
+                MAX_MESSAGE_LENGTH, char_count
             )));
         }
 
@@ -139,19 +139,20 @@ pub async fn handler(
     // Convert to metadata for routing
     let metadata = request.to_metadata();
 
-    // Use rule-based router to determine target tier, with fallback to default
-    let target = state.router().route(&metadata).unwrap_or_else(|| {
-        // When no rule matches, fall back to balanced tier as a sensible default
-        // This handles common cases like simple questions that don't match specific rules
-        tracing::warn!(
+    // Use rule-based router to determine target tier
+    // If no routing rule matches, return an error to expose configuration issues
+    let target = state.router().route(&metadata).ok_or_else(|| {
+        tracing::error!(
             task_type = ?metadata.task_type,
             importance = ?metadata.importance,
             token_estimate = metadata.token_estimate,
-            "No routing rule matched, falling back to Balanced tier"
+            "ROUTING FAILED: No routing rule matched request. Check routing configuration."
         );
-        use crate::router::TargetModel;
-        TargetModel::Balanced
-    });
+        AppError::RoutingFailed(format!(
+            "No routing rule for task_type={:?}, importance={:?}. Configuration error.",
+            metadata.task_type, metadata.importance
+        ))
+    })?;
 
     tracing::info!(
         target_tier = ?target,
@@ -222,7 +223,11 @@ pub async fn handler(
                     tracing::error!(
                         endpoint_name = %endpoint.name,
                         error = %e,
-                        "Failed to mark endpoint as healthy - this should never happen"
+                        selected_tier = ?target,
+                        attempt = attempt,
+                        "CRITICAL BUG: mark_success failed after successful request. \
+                        Endpoint will remain unhealthy despite working. This indicates a race \
+                        condition or typo in endpoint naming. Investigate immediately!"
                     );
                 }
 
@@ -266,7 +271,11 @@ pub async fn handler(
                     tracing::error!(
                         endpoint_name = %endpoint.name,
                         error = %e,
-                        "Failed to mark endpoint as failed - this should never happen"
+                        selected_tier = ?target,
+                        attempt = attempt,
+                        "CRITICAL BUG: mark_failure failed. Endpoint won't be marked unhealthy \
+                        and will continue receiving traffic despite failures. This indicates a race \
+                        condition or typo in endpoint naming. Investigate immediately!"
                     );
                 }
 
@@ -340,7 +349,7 @@ async fn try_query_model(
     let timeout_duration = Duration::from_secs(timeout_seconds);
 
     use futures::StreamExt;
-    let response_text = tokio::time::timeout(
+    let timeout_result = tokio::time::timeout(
         timeout_duration,
         async {
             // Query model and get stream
@@ -400,26 +409,32 @@ async fn try_query_model(
             Ok::<String, AppError>(response_text)
         }
     )
-    .await
-    .map_err(|_| {
-        tracing::error!(
-            endpoint_name = %endpoint.name,
-            endpoint_url = %endpoint.base_url,
-            timeout_seconds = timeout_seconds,
-            message_length = request.message().len(),
-            task_type = ?request.task_type(),
-            importance = ?request.importance(),
-            attempt = attempt,
-            max_retries = max_retries,
-            "Request timed out (including streaming). Endpoint: {} - \
-            consider increasing timeout or check endpoint connectivity (attempt {}/{})",
-            endpoint.base_url, attempt, max_retries
-        );
-        AppError::Internal(format!(
-            "Request to {} timed out after {} seconds (attempt {}/{})",
-            endpoint.base_url, timeout_seconds, attempt, max_retries
-        ))
-    })??;
+    .await;
+
+    // Handle timeout result with explicit match for clarity
+    let response_text = match timeout_result {
+        Ok(Ok(text)) => text,
+        Ok(Err(e)) => return Err(e),
+        Err(_elapsed) => {
+            tracing::error!(
+                endpoint_name = %endpoint.name,
+                endpoint_url = %endpoint.base_url,
+                timeout_seconds = timeout_seconds,
+                message_length = request.message().len(),
+                task_type = ?request.task_type(),
+                importance = ?request.importance(),
+                attempt = attempt,
+                max_retries = max_retries,
+                "Request timed out (including streaming). Endpoint: {} - \
+                consider increasing timeout or check endpoint connectivity (attempt {}/{})",
+                endpoint.base_url, attempt, max_retries
+            );
+            return Err(AppError::Internal(format!(
+                "Request to {} timed out after {} seconds (attempt {}/{})",
+                endpoint.base_url, timeout_seconds, attempt, max_retries
+            )));
+        }
+    };
 
     tracing::info!(
         endpoint_name = %endpoint.name,
@@ -491,7 +506,7 @@ mod tests {
 
     #[test]
     fn test_chat_request_rejects_message_too_long() {
-        let long_message = "a".repeat(100_001); // Exceeds MAX_MESSAGE_LENGTH
+        let long_message = "a".repeat(100_001); // Exceeds MAX_MESSAGE_LENGTH (characters)
         let json = format!(r#"{{"message": "{}"}}"#, long_message);
         let result = serde_json::from_str::<ChatRequest>(&json);
 
@@ -501,6 +516,66 @@ mod tests {
             err_msg.contains("exceeds maximum length") || err_msg.contains("100000"),
             "error message should mention exceeds maximum length, got: {}",
             err_msg
+        );
+    }
+
+    #[test]
+    fn test_chat_request_accepts_emoji_at_char_limit() {
+        // Emoji are 4 bytes each in UTF-8, but should count as 1 character
+        // 100,000 emojis = 400,000 bytes but only 100,000 characters
+        let emoji_message = "👋".repeat(100_000);
+        let json = format!(r#"{{"message": "{}"}}"#, emoji_message);
+        let result = serde_json::from_str::<ChatRequest>(&json);
+
+        assert!(
+            result.is_ok(),
+            "100K emoji chars (400K bytes) should be accepted. Error: {:?}",
+            result.err()
+        );
+        let req = result.unwrap();
+        assert_eq!(req.message().chars().count(), 100_000);
+    }
+
+    #[test]
+    fn test_chat_request_rejects_emoji_over_char_limit() {
+        // 100,001 emojis = 400,004 bytes but 100,001 characters
+        let emoji_message = "👋".repeat(100_001);
+        let json = format!(r#"{{"message": "{}"}}"#, emoji_message);
+        let result = serde_json::from_str::<ChatRequest>(&json);
+
+        assert!(
+            result.is_err(),
+            "100,001 emoji chars should be rejected regardless of byte count"
+        );
+    }
+
+    #[test]
+    fn test_chat_request_accepts_cjk_at_char_limit() {
+        // CJK characters are 3 bytes each in UTF-8, but should count as 1 character
+        // 100,000 Chinese chars = 300,000 bytes but only 100,000 characters
+        let cjk_message = "你".repeat(100_000);
+        let json = format!(r#"{{"message": "{}"}}"#, cjk_message);
+        let result = serde_json::from_str::<ChatRequest>(&json);
+
+        assert!(
+            result.is_ok(),
+            "100K CJK chars (300K bytes) should be accepted. Error: {:?}",
+            result.err()
+        );
+        let req = result.unwrap();
+        assert_eq!(req.message().chars().count(), 100_000);
+    }
+
+    #[test]
+    fn test_chat_request_rejects_cjk_over_char_limit() {
+        // 100,001 Chinese characters = 300,003 bytes but 100,001 characters
+        let cjk_message = "你".repeat(100_001);
+        let json = format!(r#"{{"message": "{}"}}"#, cjk_message);
+        let result = serde_json::from_str::<ChatRequest>(&json);
+
+        assert!(
+            result.is_err(),
+            "100,001 CJK chars should be rejected regardless of byte count"
         );
     }
 

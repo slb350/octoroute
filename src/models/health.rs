@@ -136,18 +136,20 @@ impl HealthChecker {
     pub async fn mark_failure(&self, endpoint_name: &str) -> Result<(), HealthError> {
         let mut status = self.health_status.write().await;
 
-        // Check if endpoint exists before mutably borrowing
-        if !status.contains_key(endpoint_name) {
-            let available: Vec<_> = status.keys().collect();
-            tracing::error!(
-                endpoint_name = %endpoint_name,
-                available_endpoints = ?available,
-                "Unknown endpoint in mark_failure - this is a BUG"
-            );
-            return Err(HealthError::UnknownEndpoint(endpoint_name.to_string()));
-        }
-
-        let health = status.get_mut(endpoint_name).unwrap();
+        // Get mutable reference to endpoint health, returning error if unknown
+        let health = match status.get_mut(endpoint_name) {
+            Some(h) => h,
+            None => {
+                let available: Vec<_> = status.keys().collect();
+                tracing::error!(
+                    endpoint_name = %endpoint_name,
+                    available_endpoints = ?available,
+                    "Unknown endpoint '{}' in mark_failure - available: {:?}",
+                    endpoint_name, available
+                );
+                return Err(HealthError::UnknownEndpoint(endpoint_name.to_string()));
+            }
+        };
 
         health.consecutive_failures += 1;
         health.last_check = Instant::now();
@@ -182,18 +184,20 @@ impl HealthChecker {
     pub async fn mark_success(&self, endpoint_name: &str) -> Result<(), HealthError> {
         let mut status = self.health_status.write().await;
 
-        // Check if endpoint exists before mutably borrowing
-        if !status.contains_key(endpoint_name) {
-            let available: Vec<_> = status.keys().collect();
-            tracing::error!(
-                endpoint_name = %endpoint_name,
-                available_endpoints = ?available,
-                "Unknown endpoint in mark_success - this is a BUG"
-            );
-            return Err(HealthError::UnknownEndpoint(endpoint_name.to_string()));
-        }
-
-        let health = status.get_mut(endpoint_name).unwrap();
+        // Get mutable reference to endpoint health, returning error if unknown
+        let health = match status.get_mut(endpoint_name) {
+            Some(h) => h,
+            None => {
+                let available: Vec<_> = status.keys().collect();
+                tracing::error!(
+                    endpoint_name = %endpoint_name,
+                    available_endpoints = ?available,
+                    "Unknown endpoint '{}' in mark_success - available: {:?}",
+                    endpoint_name, available
+                );
+                return Err(HealthError::UnknownEndpoint(endpoint_name.to_string()));
+            }
+        };
 
         let was_unhealthy = !health.healthy;
 

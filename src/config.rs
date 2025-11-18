@@ -167,6 +167,18 @@ impl Config {
                     )));
                 }
 
+                // Validate max_tokens: must not exceed u32::MAX (required for open-agent-sdk)
+                if endpoint.max_tokens > u32::MAX as usize {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: Endpoint '{}' in tier '{}' has max_tokens={} which exceeds u32::MAX ({}). \
+                        max_tokens must fit in u32 for compatibility with open-agent-sdk.",
+                        endpoint.name,
+                        tier_name,
+                        endpoint.max_tokens,
+                        u32::MAX
+                    )));
+                }
+
                 // Validate base_url: must start with http:// or https://
                 if !endpoint.base_url.starts_with("http://")
                     && !endpoint.base_url.starts_with("https://")
@@ -175,6 +187,19 @@ impl Config {
                         "Configuration error: Endpoint '{}' in tier '{}' has invalid base_url '{}'. \
                         base_url must start with 'http://' or 'https://'.",
                         endpoint.name, tier_name, endpoint.base_url
+                    )));
+                }
+
+                // Validate temperature: must be between 0.0 and 2.0 (standard LLM range)
+                if endpoint.temperature < 0.0
+                    || endpoint.temperature > 2.0
+                    || endpoint.temperature.is_nan()
+                    || endpoint.temperature.is_infinite()
+                {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: Endpoint '{}' in tier '{}' has invalid temperature {}. \
+                        temperature must be a finite number between 0.0 and 2.0.",
+                        endpoint.name, tier_name, endpoint.temperature
                     )));
                 }
             }

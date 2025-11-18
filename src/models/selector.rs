@@ -914,6 +914,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_exclusion_all_tiers_returns_none() {
+        // Test that excluding all endpoints across multiple priority tiers returns None
+        // This ensures the selection algorithm doesn't infinite loop when all tiers are excluded
+        let mut config = create_test_config();
+        config.models.fast = vec![
+            ModelEndpoint {
+                name: "fast-priority-10".to_string(),
+                base_url: "http://localhost:1234/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 1.0,
+                priority: 10,
+            },
+            ModelEndpoint {
+                name: "fast-priority-5".to_string(),
+                base_url: "http://localhost:1235/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 1.0,
+                priority: 5,
+            },
+            ModelEndpoint {
+                name: "fast-priority-1".to_string(),
+                base_url: "http://localhost:1236/v1".to_string(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                weight: 1.0,
+                priority: 1,
+            },
+        ];
+
+        let selector = ModelSelector::new(Arc::new(config));
+
+        // Exclude ALL endpoints from ALL priority tiers
+        let mut exclude = ExclusionSet::new();
+        exclude.insert("fast-priority-10".into());
+        exclude.insert("fast-priority-5".into());
+        exclude.insert("fast-priority-1".into());
+
+        let result = selector.select(TargetModel::Fast, &exclude).await;
+        assert!(
+            result.is_none(),
+            "Should return None when all endpoints across all priority tiers are excluded (no infinite loop)"
+        );
+    }
+
+    #[tokio::test]
     async fn test_exclusion_preserves_priority_and_weight() {
         // Test that exclusion works with priority and weighted selection
         let mut config = create_test_config();
