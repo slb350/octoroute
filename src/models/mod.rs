@@ -4,7 +4,9 @@
 //! model selection from multi-model configuration.
 
 pub mod client;
+pub mod health;
 pub mod selector;
 
 pub use client::ModelClient;
+pub use health::{EndpointHealth, HealthChecker};
 pub use selector::ModelSelector;

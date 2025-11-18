@@ -42,8 +42,8 @@ async fn mock_chat_handler(
         TargetModel::Balanced
     });
 
-    // Use real selector to test endpoint selection
-    let endpoint = state.selector().select(target).ok_or_else(|| {
+    // Use real selector to test endpoint selection (with health filtering)
+    let endpoint = state.selector().select(target).await.ok_or_else(|| {
         AppError::RoutingFailed(format!("No available endpoints for tier {:?}", target))
     })?;
 

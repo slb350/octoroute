@@ -105,13 +105,17 @@ pub async fn handler(
         "Routing decision made"
     );
 
-    // Select specific endpoint from the target tier
+    // Select specific endpoint from the target tier (with health filtering)
     let endpoint = state
         .selector()
         .select(target)
+        .await
         .ok_or_else(|| {
-            tracing::error!(tier = ?target, "No available endpoints for tier");
-            AppError::RoutingFailed(format!("No available endpoints for tier {:?}", target))
+            tracing::error!(tier = ?target, "No available healthy endpoints for tier");
+            AppError::RoutingFailed(format!(
+                "No available healthy endpoints for tier {:?}",
+                target
+            ))
         })?
         .clone();
 

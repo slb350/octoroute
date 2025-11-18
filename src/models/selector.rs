@@ -1,8 +1,9 @@
 //! Model selection logic for choosing from multiple endpoints
 //!
-//! Implements weighted random selection (Phase 2b)
+//! Phase 2c: Priority + weighted selection with health checking
 
 use crate::config::{Config, ModelEndpoint};
+use crate::models::health::HealthChecker;
 use crate::router::TargetModel;
 use rand::Rng;
 use std::sync::Arc;
@@ -10,11 +11,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Selects appropriate model endpoint from multi-model configuration
 ///
-/// Phase 2b: Weighted random selection respecting endpoint weight configuration.
-/// Higher weight values receive proportionally more traffic.
+/// Phase 2c: Priority-based selection with health filtering and weighted distribution.
+/// - Filters out unhealthy endpoints
+/// - Selects from highest available priority tier
+/// - Uses weighted random selection within priority tier
 pub struct ModelSelector {
     config: Arc<Config>,
-    // Selection counters for metrics tracking (not used for round-robin)
+    health_checker: Arc<HealthChecker>,
+    // Selection counters for metrics tracking
     fast_counter: AtomicUsize,
     balanced_counter: AtomicUsize,
     deep_counter: AtomicUsize,
@@ -22,24 +26,38 @@ pub struct ModelSelector {
 
 impl ModelSelector {
     /// Create a new ModelSelector from configuration
+    ///
+    /// Automatically creates and starts background health checking.
     pub fn new(config: Arc<Config>) -> Self {
+        let health_checker = Arc::new(HealthChecker::new(config.clone()));
+
+        // Start background health checking
+        health_checker.clone().start_background_checks();
+
         Self {
             config,
+            health_checker,
             fast_counter: AtomicUsize::new(0),
             balanced_counter: AtomicUsize::new(0),
             deep_counter: AtomicUsize::new(0),
         }
     }
 
+    /// Get a reference to the health checker for external use (e.g., retry logic)
+    pub fn health_checker(&self) -> &Arc<HealthChecker> {
+        &self.health_checker
+    }
+
     /// Select an endpoint for the given target model tier using priority + weighted random selection
     ///
-    /// Phase 2c: Priority-based selection with weighted distribution within priority tier.
-    /// - Filters endpoints to only the highest available priority
+    /// Phase 2c: Priority-based selection with health filtering and weighted distribution.
+    /// - Filters out unhealthy endpoints first
+    /// - Filters to only the highest available priority tier
     /// - Within that priority tier, uses weighted random selection
     /// - Higher priority = tried first, higher weight = more traffic within priority tier
     ///
-    /// Returns None if the requested tier has no available endpoints.
-    pub fn select(&self, target: TargetModel) -> Option<&ModelEndpoint> {
+    /// Returns None if the requested tier has no healthy endpoints available.
+    pub async fn select(&self, target: TargetModel) -> Option<&ModelEndpoint> {
         let (endpoints, counter) = match target {
             TargetModel::Fast => (&self.config.models.fast, &self.fast_counter),
             TargetModel::Balanced => (&self.config.models.balanced, &self.balanced_counter),
@@ -54,20 +72,45 @@ impl ModelSelector {
             return None;
         }
 
-        // Phase 2c: Find highest priority and filter to only that tier
-        let max_priority = endpoints.iter().map(|e| e.priority).max().unwrap(); // Safe because we already checked endpoints is not empty
+        // Phase 2c: Filter to only healthy endpoints first
+        let mut healthy_endpoints = Vec::new();
+        for endpoint in endpoints.iter() {
+            if self.health_checker.is_healthy(&endpoint.name).await {
+                healthy_endpoints.push(endpoint);
+            }
+        }
 
-        let highest_priority_endpoints: Vec<&ModelEndpoint> = endpoints
+        if healthy_endpoints.is_empty() {
+            tracing::error!(
+                tier = ?target,
+                total_endpoints = endpoints.len(),
+                "No healthy endpoints available for tier - all endpoints unhealthy"
+            );
+            return None;
+        }
+
+        tracing::debug!(
+            tier = ?target,
+            total_endpoints = endpoints.len(),
+            healthy_endpoints = healthy_endpoints.len(),
+            "Filtered to healthy endpoints"
+        );
+
+        // Phase 2c: Find highest priority among healthy endpoints and filter to only that tier
+        let max_priority = healthy_endpoints.iter().map(|e| e.priority).max().unwrap(); // Safe because we already checked healthy_endpoints is not empty
+
+        let highest_priority_endpoints: Vec<&ModelEndpoint> = healthy_endpoints
             .iter()
             .filter(|e| e.priority == max_priority)
+            .copied()
             .collect();
 
         tracing::debug!(
             tier = ?target,
             max_priority = max_priority,
-            total_endpoints = endpoints.len(),
+            healthy_endpoints = healthy_endpoints.len(),
             priority_tier_endpoints = highest_priority_endpoints.len(),
-            "Filtered to highest priority tier"
+            "Filtered to highest priority tier among healthy endpoints"
         );
 
         // Increment selection counter for metrics (atomic operation)
@@ -207,8 +250,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_selector_new_creates_selector() {
+    #[tokio::test]
+    async fn test_selector_new_creates_selector() {
         let config = Arc::new(create_test_config());
         let selector = ModelSelector::new(config);
 
@@ -218,19 +261,19 @@ mod tests {
         assert_eq!(selector.endpoint_count(TargetModel::Deep), 1);
     }
 
-    #[test]
-    fn test_selector_select_returns_endpoint() {
+    #[tokio::test]
+    async fn test_selector_select_returns_endpoint() {
         let config = Arc::new(create_test_config());
         let selector = ModelSelector::new(config);
 
         // Should return some endpoint for each tier
-        assert!(selector.select(TargetModel::Fast).is_some());
-        assert!(selector.select(TargetModel::Balanced).is_some());
-        assert!(selector.select(TargetModel::Deep).is_some());
+        assert!(selector.select(TargetModel::Fast).await.is_some());
+        assert!(selector.select(TargetModel::Balanced).await.is_some());
+        assert!(selector.select(TargetModel::Deep).await.is_some());
     }
 
-    #[test]
-    fn test_selector_weighted_fast_tier_both_endpoints_selectable() {
+    #[tokio::test]
+    async fn test_selector_weighted_fast_tier_both_endpoints_selectable() {
         let config = Arc::new(create_test_config());
         let selector = ModelSelector::new(config);
 
@@ -240,7 +283,7 @@ mod tests {
         let mut fast2_seen = false;
 
         for _ in 0..100 {
-            let selected = selector.select(TargetModel::Fast).unwrap();
+            let selected = selector.select(TargetModel::Fast).await.unwrap();
             if selected.name == "fast-1" {
                 fast1_seen = true;
             }
@@ -263,21 +306,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_selector_single_endpoint_tier() {
+    #[tokio::test]
+    async fn test_selector_single_endpoint_tier() {
         let config = Arc::new(create_test_config());
         let selector = ModelSelector::new(config);
 
         // Balanced tier has only one endpoint, should return same one
-        let first = selector.select(TargetModel::Balanced).unwrap();
-        let second = selector.select(TargetModel::Balanced).unwrap();
+        let first = selector.select(TargetModel::Balanced).await.unwrap();
+        let second = selector.select(TargetModel::Balanced).await.unwrap();
 
         assert_eq!(first.name, "balanced-1");
         assert_eq!(second.name, "balanced-1");
     }
 
-    #[test]
-    fn test_selector_endpoint_count() {
+    #[tokio::test]
+    async fn test_selector_endpoint_count() {
         let config = Arc::new(create_test_config());
         let selector = ModelSelector::new(config);
 
@@ -286,13 +329,13 @@ mod tests {
         assert_eq!(selector.endpoint_count(TargetModel::Deep), 1);
     }
 
-    #[test]
-    fn test_selector_returns_none_for_empty_tier() {
+    #[tokio::test]
+    async fn test_selector_returns_none_for_empty_tier() {
         let mut config = create_test_config();
         config.models.fast = vec![]; // Empty tier
         let selector = ModelSelector::new(Arc::new(config));
 
-        let result = selector.select(TargetModel::Fast);
+        let result = selector.select(TargetModel::Fast).await;
         assert!(result.is_none(), "should return None for empty tier");
     }
 
@@ -306,7 +349,7 @@ mod tests {
         for _ in 0..10 {
             let sel = selector.clone();
             handles.push(tokio::spawn(async move {
-                sel.select(TargetModel::Fast).map(|e| e.name.clone())
+                sel.select(TargetModel::Fast).await.map(|e| e.name.clone())
             }));
         }
 
@@ -343,8 +386,8 @@ mod tests {
         // This test focuses on concurrency safety, not distribution.
     }
 
-    #[test]
-    fn test_selector_zero_weight_fallback() {
+    #[tokio::test]
+    async fn test_selector_zero_weight_fallback() {
         // Create config where all endpoints have zero weight
         let mut config = create_test_config();
         config.models.fast[0].weight = 0.0;
@@ -354,7 +397,7 @@ mod tests {
 
         // Should fall back to uniform random selection, not panic
         for _ in 0..10 {
-            let result = selector.select(TargetModel::Fast);
+            let result = selector.select(TargetModel::Fast).await;
             assert!(
                 result.is_some(),
                 "should return endpoint even with zero total weight"
@@ -368,8 +411,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_selector_negative_weight_fallback() {
+    #[tokio::test]
+    async fn test_selector_negative_weight_fallback() {
         // Create config with negative weights (misconfiguration)
         let mut config = create_test_config();
         config.models.fast[0].weight = -1.0;
@@ -378,15 +421,15 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Should fall back to uniform random selection, not panic
-        let result = selector.select(TargetModel::Fast);
+        let result = selector.select(TargetModel::Fast).await;
         assert!(
             result.is_some(),
             "should return endpoint even with negative weights"
         );
     }
 
-    #[test]
-    fn test_weighted_selection_distribution() {
+    #[tokio::test]
+    async fn test_weighted_selection_distribution() {
         // Create config with different weights: 2.0 vs 1.0 (2:1 ratio)
         let mut config = create_test_config();
         config.models.fast[0].weight = 2.0;
@@ -397,7 +440,7 @@ mod tests {
         // Sample 3000 times to get statistically significant distribution
         let mut counts = std::collections::HashMap::new();
         for _ in 0..3000 {
-            let endpoint = selector.select(TargetModel::Fast).unwrap();
+            let endpoint = selector.select(TargetModel::Fast).await.unwrap();
             *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
         }
 
@@ -418,8 +461,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_weighted_selection_heavily_skewed() {
+    #[tokio::test]
+    async fn test_weighted_selection_heavily_skewed() {
         // Create config with heavily skewed weights: 9.0 vs 1.0 (9:1 ratio)
         let mut config = create_test_config();
         config.models.fast[0].weight = 9.0;
@@ -430,7 +473,7 @@ mod tests {
         // Sample 1000 times
         let mut counts = std::collections::HashMap::new();
         for _ in 0..1000 {
-            let endpoint = selector.select(TargetModel::Fast).unwrap();
+            let endpoint = selector.select(TargetModel::Fast).await.unwrap();
             *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
         }
 
@@ -451,8 +494,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_weighted_selection_all_equal_weights() {
+    #[tokio::test]
+    async fn test_weighted_selection_all_equal_weights() {
         // When all weights are equal, should behave like uniform distribution
         let config = create_test_config(); // Both have weight 1.0
 
@@ -461,7 +504,7 @@ mod tests {
         // Sample 2000 times
         let mut counts = std::collections::HashMap::new();
         for _ in 0..2000 {
-            let endpoint = selector.select(TargetModel::Fast).unwrap();
+            let endpoint = selector.select(TargetModel::Fast).await.unwrap();
             *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
         }
 
@@ -482,8 +525,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_weighted_selection_three_endpoints() {
+    #[tokio::test]
+    async fn test_weighted_selection_three_endpoints() {
         // Test with three endpoints with weights 3.0, 2.0, 1.0 (3:2:1 ratio)
         let mut config = create_test_config();
         config.models.fast = vec![
@@ -518,7 +561,7 @@ mod tests {
         // Sample 6000 times (divisible by 6 for clean expected values)
         let mut counts = std::collections::HashMap::new();
         for _ in 0..6000 {
-            let endpoint = selector.select(TargetModel::Fast).unwrap();
+            let endpoint = selector.select(TargetModel::Fast).await.unwrap();
             *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
         }
 
@@ -547,8 +590,8 @@ mod tests {
 
     // Phase 2c: Priority-based selection tests
 
-    #[test]
-    fn test_priority_selection_highest_chosen() {
+    #[tokio::test]
+    async fn test_priority_selection_highest_chosen() {
         // Config with three priority levels: 10, 5, 1
         // All endpoints healthy, should always select priority 10
         let mut config = create_test_config();
@@ -583,7 +626,7 @@ mod tests {
 
         // Sample 100 times - should ALWAYS select priority 10 endpoint
         for _ in 0..100 {
-            let endpoint = selector.select(TargetModel::Fast).unwrap();
+            let endpoint = selector.select(TargetModel::Fast).await.unwrap();
             assert_eq!(
                 endpoint.name, "fast-priority-10",
                 "Should always select highest priority (10) endpoint"
@@ -591,8 +634,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_priority_with_weighted_distribution() {
+    #[tokio::test]
+    async fn test_priority_with_weighted_distribution() {
         // Config: Two priority 5 endpoints with 2:1 weight ratio, one priority 1
         // Should only select from priority 5 tier with weighted distribution
         let mut config = create_test_config();
@@ -628,7 +671,7 @@ mod tests {
         // Sample 3000 times
         let mut counts = std::collections::HashMap::new();
         for _ in 0..3000 {
-            let endpoint = selector.select(TargetModel::Fast).unwrap();
+            let endpoint = selector.select(TargetModel::Fast).await.unwrap();
             *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
         }
 
@@ -656,8 +699,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_priority_all_same_uses_weighted() {
+    #[tokio::test]
+    async fn test_priority_all_same_uses_weighted() {
         // When all endpoints have same priority, should use weighted selection
         let mut config = create_test_config();
         config.models.fast = vec![
@@ -684,7 +727,7 @@ mod tests {
         // Sample 4000 times
         let mut counts = std::collections::HashMap::new();
         for _ in 0..4000 {
-            let endpoint = selector.select(TargetModel::Fast).unwrap();
+            let endpoint = selector.select(TargetModel::Fast).await.unwrap();
             *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
         }
 

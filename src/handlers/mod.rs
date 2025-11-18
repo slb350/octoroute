@@ -100,8 +100,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_appstate_new_creates_state() {
+    #[tokio::test]
+    async fn test_appstate_new_creates_state() {
         let config = create_test_config();
         let state = AppState::new(config);
 
@@ -115,8 +115,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_appstate_is_clonable() {
+    #[tokio::test]
+    async fn test_appstate_is_clonable() {
         let config = create_test_config();
         let state = AppState::new(config);
 
@@ -125,8 +125,8 @@ mod tests {
         assert_eq!(state2.config().server.port, 3000);
     }
 
-    #[test]
-    fn test_appstate_provides_access_to_components() {
+    #[tokio::test]
+    async fn test_appstate_provides_access_to_components() {
         let config = create_test_config();
         let state = AppState::new(config);
 

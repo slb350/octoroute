@@ -32,6 +32,9 @@ futures = "0.3"
 # Random number generation (for weighted load balancing)
 rand = "0.8"
 
+# HTTP client (for health checks)
+reqwest = { version = "0.12", features = ["json"] }
+
 [dev-dependencies]
 proptest = "1.4"
 tokio-test = "0.4"
