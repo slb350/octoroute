@@ -34,6 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/health", get(handlers::health::handler))
         .route("/chat", post(handlers::chat::handler))
+        .route("/models", get(handlers::models::handler))
         .with_state(state);
 
     // Create socket address
@@ -53,6 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Listening on {}", addr);
     tracing::info!("Health check available at http://{}/health", addr);
     tracing::info!("Chat endpoint available at http://{}/chat", addr);
+    tracing::info!("Models status available at http://{}/models", addr);
 
     // Start server
     let listener = tokio::net::TcpListener::bind(addr).await?;

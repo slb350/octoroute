@@ -2,6 +2,7 @@
 //!
 //! Handles POST /chat requests with intelligent model routing.
 
+use crate::config::ModelEndpoint;
 use crate::error::{AppError, AppResult};
 use crate::handlers::AppState;
 use crate::router::{Importance, RouteMetadata, TaskType};
@@ -105,27 +106,108 @@ pub async fn handler(
         "Routing decision made"
     );
 
-    // Select specific endpoint from the target tier (with health filtering)
-    let endpoint = state
-        .selector()
-        .select(target)
-        .await
-        .ok_or_else(|| {
-            tracing::error!(tier = ?target, "No available healthy endpoints for tier");
-            AppError::RoutingFailed(format!(
-                "No available healthy endpoints for tier {:?}",
-                target
-            ))
-        })?
-        .clone();
+    // Retry logic: Attempt up to MAX_RETRIES times with different endpoints
+    const MAX_RETRIES: usize = 3;
+    let mut last_error = None;
 
-    tracing::info!(
-        endpoint_name = %endpoint.name,
-        endpoint_url = %endpoint.base_url,
-        max_tokens = endpoint.max_tokens,
-        "Endpoint selected"
+    for attempt in 1..=MAX_RETRIES {
+        // Select endpoint from target tier (with health filtering + priority)
+        let endpoint = match state.selector().select(target).await {
+            Some(ep) => ep.clone(),
+            None => {
+                tracing::error!(
+                    tier = ?target,
+                    attempt = attempt,
+                    max_retries = MAX_RETRIES,
+                    "No available healthy endpoints for tier"
+                );
+                last_error = Some(AppError::RoutingFailed(format!(
+                    "No available healthy endpoints for tier {:?}",
+                    target
+                )));
+                continue; // Try again (may have different healthy endpoints)
+            }
+        };
+
+        tracing::debug!(
+            endpoint_name = %endpoint.name,
+            endpoint_url = %endpoint.base_url,
+            attempt = attempt,
+            max_retries = MAX_RETRIES,
+            "Attempting model query"
+        );
+
+        // Try to query this endpoint
+        match try_query_model(
+            &endpoint,
+            &request,
+            state.config().server.request_timeout_seconds,
+        )
+        .await
+        {
+            Ok(response_text) => {
+                // Success! Build and return response
+                tracing::info!(
+                    endpoint_name = %endpoint.name,
+                    response_length = response_text.len(),
+                    model_tier = ?target,
+                    attempt = attempt,
+                    "Request completed successfully"
+                );
+
+                let response = ChatResponse {
+                    content: response_text,
+                    model_tier: format!("{:?}", target).to_lowercase(),
+                    model_name: endpoint.name.clone(),
+                };
+
+                return Ok(Json(response));
+            }
+            Err(e) => {
+                // Failure - mark endpoint as unhealthy and retry
+                tracing::warn!(
+                    endpoint_name = %endpoint.name,
+                    attempt = attempt,
+                    max_retries = MAX_RETRIES,
+                    error = %e,
+                    "Endpoint query failed, marking unhealthy and will retry with different endpoint"
+                );
+
+                // Mark this endpoint as failed for health tracking
+                state
+                    .selector()
+                    .health_checker()
+                    .mark_failure(&endpoint.name)
+                    .await;
+
+                last_error = Some(e);
+
+                // Continue to next attempt (will select different endpoint due to health filtering)
+            }
+        }
+    }
+
+    // All retries exhausted
+    tracing::error!(
+        tier = ?target,
+        max_retries = MAX_RETRIES,
+        "All retry attempts exhausted"
     );
 
+    Err(last_error.unwrap_or_else(|| {
+        AppError::Internal(format!("All {} retry attempts exhausted", MAX_RETRIES))
+    }))
+}
+
+/// Helper function to attempt querying a single endpoint
+///
+/// Extracted to support retry logic - attempts to query the endpoint
+/// and returns the response text or an error.
+async fn try_query_model(
+    endpoint: &ModelEndpoint,
+    request: &ChatRequest,
+    timeout_seconds: u64,
+) -> AppResult<String> {
     // Build AgentOptions from selected endpoint
     let options = open_agent::AgentOptions::builder()
         .model(&endpoint.name)
@@ -148,16 +230,15 @@ pub async fn handler(
             ))
         })?;
 
-    // Query the model using the standalone function (avoids !Sync issues)
     tracing::debug!(
         endpoint_name = %endpoint.name,
         message_length = request.message.len(),
-        timeout_seconds = state.config().server.request_timeout_seconds,
+        timeout_seconds = timeout_seconds,
         "Starting model query"
     );
 
-    // Enforce request timeout from config - wrap ENTIRE operation including streaming
-    let timeout_duration = Duration::from_secs(state.config().server.request_timeout_seconds);
+    // Enforce request timeout - wrap ENTIRE operation including streaming
+    let timeout_duration = Duration::from_secs(timeout_seconds);
 
     use futures::StreamExt;
     let response_text = tokio::time::timeout(
@@ -212,7 +293,7 @@ pub async fn handler(
     .map_err(|_| {
         tracing::error!(
             endpoint_name = %endpoint.name,
-            timeout_seconds = state.config().server.request_timeout_seconds,
+            timeout_seconds = timeout_seconds,
             message_length = request.message.len(),
             task_type = ?request.task_type,
             importance = ?request.importance,
@@ -220,25 +301,17 @@ pub async fn handler(
         );
         AppError::Internal(format!(
             "Request timed out after {} seconds",
-            state.config().server.request_timeout_seconds
+            timeout_seconds
         ))
     })??;
 
     tracing::info!(
         endpoint_name = %endpoint.name,
         response_length = response_text.len(),
-        model_tier = ?target,
-        "Request completed successfully"
+        "Model query completed successfully"
     );
 
-    // Build response
-    let response = ChatResponse {
-        content: response_text,
-        model_tier: format!("{:?}", target).to_lowercase(),
-        model_name: endpoint.name.clone(),
-    };
-
-    Ok(Json(response))
+    Ok(response_text)
 }
 
 #[cfg(test)]

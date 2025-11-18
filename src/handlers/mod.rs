@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 pub mod chat;
 pub mod health;
+pub mod models;
 
 /// Application state shared across all handlers
 ///
