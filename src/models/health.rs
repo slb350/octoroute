@@ -7,7 +7,15 @@ use crate::config::{Config, ModelEndpoint};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use thiserror::Error;
 use tokio::sync::RwLock;
+
+/// Errors that can occur during health checking operations
+#[derive(Error, Debug)]
+pub enum HealthError {
+    #[error("Unknown endpoint: {0}")]
+    UnknownEndpoint(String),
+}
 
 /// Health status for a single endpoint
 ///
@@ -123,70 +131,90 @@ impl HealthChecker {
     ///
     /// Increments consecutive failure count.
     /// After 3 consecutive failures, marks endpoint as unhealthy.
-    pub async fn mark_failure(&self, endpoint_name: &str) {
+    ///
+    /// Returns an error if the endpoint name is unknown.
+    pub async fn mark_failure(&self, endpoint_name: &str) -> Result<(), HealthError> {
         let mut status = self.health_status.write().await;
 
-        if let Some(health) = status.get_mut(endpoint_name) {
-            health.consecutive_failures += 1;
-            health.last_check = Instant::now();
+        // Check if endpoint exists before mutably borrowing
+        if !status.contains_key(endpoint_name) {
+            let available: Vec<_> = status.keys().collect();
+            tracing::error!(
+                endpoint_name = %endpoint_name,
+                available_endpoints = ?available,
+                "Unknown endpoint in mark_failure - this is a BUG"
+            );
+            return Err(HealthError::UnknownEndpoint(endpoint_name.to_string()));
+        }
 
-            // After 3 consecutive failures, mark as unhealthy
-            if health.consecutive_failures >= 3 {
-                if health.healthy {
-                    // Log only on transition to unhealthy
-                    tracing::warn!(
-                        endpoint_name = %health.name,
-                        consecutive_failures = health.consecutive_failures,
-                        "Endpoint marked as unhealthy after 3 consecutive failures"
-                    );
-                }
-                health.healthy = false;
-            } else {
-                tracing::debug!(
+        let health = status.get_mut(endpoint_name).unwrap();
+
+        health.consecutive_failures += 1;
+        health.last_check = Instant::now();
+
+        // After 3 consecutive failures, mark as unhealthy
+        if health.consecutive_failures >= 3 {
+            if health.healthy {
+                // Log only on transition to unhealthy
+                tracing::warn!(
                     endpoint_name = %health.name,
                     consecutive_failures = health.consecutive_failures,
-                    "Endpoint failure recorded (still healthy)"
+                    "Endpoint marked as unhealthy after 3 consecutive failures"
                 );
             }
+            health.healthy = false;
         } else {
-            tracing::warn!(
-                endpoint_name = %endpoint_name,
-                "Attempted to mark failure for unknown endpoint"
+            tracing::debug!(
+                endpoint_name = %health.name,
+                consecutive_failures = health.consecutive_failures,
+                "Endpoint failure recorded (still healthy)"
             );
         }
+
+        Ok(())
     }
 
     /// Mark an endpoint as having succeeded
     ///
     /// Resets consecutive failure count and marks endpoint as healthy.
-    pub async fn mark_success(&self, endpoint_name: &str) {
+    ///
+    /// Returns an error if the endpoint name is unknown.
+    pub async fn mark_success(&self, endpoint_name: &str) -> Result<(), HealthError> {
         let mut status = self.health_status.write().await;
 
-        if let Some(health) = status.get_mut(endpoint_name) {
-            let was_unhealthy = !health.healthy;
-
-            health.consecutive_failures = 0;
-            health.healthy = true;
-            health.last_check = Instant::now();
-
-            if was_unhealthy {
-                // Log recovery
-                tracing::info!(
-                    endpoint_name = %health.name,
-                    "Endpoint recovered to healthy state"
-                );
-            } else {
-                tracing::debug!(
-                    endpoint_name = %health.name,
-                    "Endpoint health check succeeded"
-                );
-            }
-        } else {
-            tracing::warn!(
+        // Check if endpoint exists before mutably borrowing
+        if !status.contains_key(endpoint_name) {
+            let available: Vec<_> = status.keys().collect();
+            tracing::error!(
                 endpoint_name = %endpoint_name,
-                "Attempted to mark success for unknown endpoint"
+                available_endpoints = ?available,
+                "Unknown endpoint in mark_success - this is a BUG"
+            );
+            return Err(HealthError::UnknownEndpoint(endpoint_name.to_string()));
+        }
+
+        let health = status.get_mut(endpoint_name).unwrap();
+
+        let was_unhealthy = !health.healthy;
+
+        health.consecutive_failures = 0;
+        health.healthy = true;
+        health.last_check = Instant::now();
+
+        if was_unhealthy {
+            // Log recovery
+            tracing::info!(
+                endpoint_name = %health.name,
+                "Endpoint recovered to healthy state"
+            );
+        } else {
+            tracing::debug!(
+                endpoint_name = %health.name,
+                "Endpoint health check succeeded"
             );
         }
+
+        Ok(())
     }
 
     /// Get all health statuses for display/debugging
@@ -217,8 +245,10 @@ impl HealthChecker {
             }
         };
 
-        // base_url already includes /v1 (e.g., "http://host:port/v1")
-        // so we only append /models to get the correct path
+        // CRITICAL: base_url already includes /v1 (e.g., "http://host:port/v1")
+        // We append "/models" to get "http://host:port/v1/models"
+        // DO NOT append "/v1/models" - that would create "http://host:port/v1/v1/models" (404!)
+        // This bug caused all endpoints to fail health checks after 90 seconds.
         let url = format!("{}/models", endpoint.base_url);
 
         match client.head(&url).send().await {
@@ -259,10 +289,18 @@ impl HealthChecker {
         for endpoint in endpoints {
             let is_healthy = self.check_endpoint(&endpoint).await;
 
-            if is_healthy {
-                self.mark_success(&endpoint.name).await;
+            let result = if is_healthy {
+                self.mark_success(&endpoint.name).await
             } else {
-                self.mark_failure(&endpoint.name).await;
+                self.mark_failure(&endpoint.name).await
+            };
+
+            if let Err(e) = result {
+                tracing::error!(
+                    endpoint_name = %endpoint.name,
+                    error = %e,
+                    "Failed to update health status - this should never happen"
+                );
             }
         }
     }
@@ -270,38 +308,73 @@ impl HealthChecker {
     /// Start background health checking task
     ///
     /// Spawns a tokio task that runs health checks every 30 seconds.
-    /// Also spawns a monitoring task to detect if the health check task fails.
+    /// Includes automatic restart logic with exponential backoff (max 5 attempts).
+    /// If the task fails repeatedly, health monitoring stops and endpoints will not recover.
     pub fn start_background_checks(self: Arc<Self>) {
-        let handle = tokio::spawn(async move {
-            tracing::info!("Starting background health checks (30s interval)");
+        const MAX_RESTART_ATTEMPTS: u32 = 5;
+
+        tokio::spawn(async move {
+            let mut restart_count = 0;
 
             loop {
-                tokio::time::sleep(Duration::from_secs(30)).await;
-
-                tracing::debug!("Running scheduled health checks");
-                self.run_health_checks().await;
-            }
-        });
-
-        // Monitor the health check task to detect failures
-        tokio::spawn(async move {
-            match handle.await {
-                Ok(_) => {
-                    tracing::error!(
-                        "Background health check task terminated unexpectedly. \
-                        Health monitoring has stopped. Endpoints marked unhealthy \
-                        will remain unhealthy until server restart."
+                let checker = Arc::clone(&self);
+                let handle = tokio::spawn(async move {
+                    tracing::info!(
+                        attempt = restart_count + 1,
+                        "Starting background health checks (30s interval)"
                     );
+
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+
+                        tracing::debug!("Running scheduled health checks");
+                        checker.run_health_checks().await;
+                    }
+                });
+
+                // Monitor the health check task to detect failures
+                match handle.await {
+                    Ok(_) => {
+                        // Task terminated normally (shouldn't happen - it's an infinite loop)
+                        tracing::error!(
+                            restart_count = restart_count,
+                            "Background health check task terminated unexpectedly"
+                        );
+                    }
+                    Err(e) => {
+                        // Task panicked
+                        tracing::error!(
+                            error = %e,
+                            restart_count = restart_count,
+                            "Background health check task panicked"
+                        );
+                    }
                 }
-                Err(e) => {
+
+                restart_count += 1;
+
+                if restart_count >= MAX_RESTART_ATTEMPTS {
                     tracing::error!(
-                        error = %e,
-                        "Background health check task panicked. \
-                        Health monitoring has stopped. This indicates a bug in \
-                        the health check logic. Endpoints marked unhealthy will \
-                        remain unhealthy until server restart."
+                        max_attempts = MAX_RESTART_ATTEMPTS,
+                        "Background health check task failed {} times. \
+                        Health monitoring has stopped permanently. Endpoints marked \
+                        unhealthy will remain unhealthy until server restart. \
+                        This indicates a critical bug in the health check logic.",
+                        MAX_RESTART_ATTEMPTS
                     );
+                    break;
                 }
+
+                // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+                let backoff_seconds = 2_u64.pow(restart_count - 1);
+                tracing::warn!(
+                    restart_count = restart_count,
+                    backoff_seconds = backoff_seconds,
+                    max_attempts = MAX_RESTART_ATTEMPTS,
+                    "Restarting background health check task after {}s backoff",
+                    backoff_seconds
+                );
+                tokio::time::sleep(Duration::from_secs(backoff_seconds)).await;
             }
         });
     }
@@ -394,14 +467,14 @@ mod tests {
         let checker = HealthChecker::new(config);
 
         // Should still be healthy after 1-2 failures
-        checker.mark_failure("fast-1").await;
+        checker.mark_failure("fast-1").await.unwrap();
         assert!(checker.is_healthy("fast-1").await);
 
-        checker.mark_failure("fast-1").await;
+        checker.mark_failure("fast-1").await.unwrap();
         assert!(checker.is_healthy("fast-1").await);
 
         // After 3rd consecutive failure, should be unhealthy
-        checker.mark_failure("fast-1").await;
+        checker.mark_failure("fast-1").await.unwrap();
         assert!(!checker.is_healthy("fast-1").await);
     }
 
@@ -411,13 +484,13 @@ mod tests {
         let checker = HealthChecker::new(config);
 
         // Mark unhealthy with 3 failures
-        checker.mark_failure("fast-1").await;
-        checker.mark_failure("fast-1").await;
-        checker.mark_failure("fast-1").await;
+        checker.mark_failure("fast-1").await.unwrap();
+        checker.mark_failure("fast-1").await.unwrap();
+        checker.mark_failure("fast-1").await.unwrap();
         assert!(!checker.is_healthy("fast-1").await);
 
         // One success should recover
-        checker.mark_success("fast-1").await;
+        checker.mark_success("fast-1").await.unwrap();
         assert!(checker.is_healthy("fast-1").await);
 
         // Consecutive failure count should be reset
@@ -450,21 +523,21 @@ mod tests {
         let checker = HealthChecker::new(config);
 
         // 2 failures (not enough to mark unhealthy)
-        checker.mark_failure("fast-1").await;
-        checker.mark_failure("fast-1").await;
+        checker.mark_failure("fast-1").await.unwrap();
+        checker.mark_failure("fast-1").await.unwrap();
 
         // Success should reset counter
-        checker.mark_success("fast-1").await;
+        checker.mark_success("fast-1").await.unwrap();
 
         // Should still be healthy and counter reset
         assert!(checker.is_healthy("fast-1").await);
 
         // Verify counter is actually reset by checking we need 3 more failures
-        checker.mark_failure("fast-1").await;
-        checker.mark_failure("fast-1").await;
+        checker.mark_failure("fast-1").await.unwrap();
+        checker.mark_failure("fast-1").await.unwrap();
         assert!(checker.is_healthy("fast-1").await); // Still healthy after 2
 
-        checker.mark_failure("fast-1").await;
+        checker.mark_failure("fast-1").await.unwrap();
         assert!(!checker.is_healthy("fast-1").await); // Now unhealthy after 3rd
     }
 }

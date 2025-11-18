@@ -139,6 +139,47 @@ impl Config {
 
     /// Validate configuration after parsing
     fn validate(&self) -> crate::error::AppResult<()> {
+        // Validate ModelEndpoint fields across all tiers
+        for (tier_name, endpoints) in [
+            ("fast", &self.models.fast),
+            ("balanced", &self.models.balanced),
+            ("deep", &self.models.deep),
+        ] {
+            for endpoint in endpoints {
+                // Validate weight: must be positive and not NaN
+                if endpoint.weight <= 0.0
+                    || endpoint.weight.is_nan()
+                    || endpoint.weight.is_infinite()
+                {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: Endpoint '{}' in tier '{}' has invalid weight {}. \
+                        Weight must be a positive finite number.",
+                        endpoint.name, tier_name, endpoint.weight
+                    )));
+                }
+
+                // Validate max_tokens: must be positive
+                if endpoint.max_tokens == 0 {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: Endpoint '{}' in tier '{}' has max_tokens=0. \
+                        max_tokens must be greater than 0.",
+                        endpoint.name, tier_name
+                    )));
+                }
+
+                // Validate base_url: must start with http:// or https://
+                if !endpoint.base_url.starts_with("http://")
+                    && !endpoint.base_url.starts_with("https://")
+                {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: Endpoint '{}' in tier '{}' has invalid base_url '{}'. \
+                        base_url must start with 'http://' or 'https://'.",
+                        endpoint.name, tier_name, endpoint.base_url
+                    )));
+                }
+            }
+        }
+
         // Validate that each model tier has at least one endpoint
         if self.models.fast.is_empty() {
             return Err(crate::error::AppError::Config(
@@ -439,5 +480,76 @@ metrics_port = 3000
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("metrics_port"));
         assert!(err_msg.contains("3000"));
+    }
+
+    #[test]
+    fn test_config_validation_negative_weight_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.fast[0].weight = -1.0; // Invalid: negative weight
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("weight"));
+        assert!(err_msg.contains("positive"));
+    }
+
+    #[test]
+    fn test_config_validation_zero_weight_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.balanced[0].weight = 0.0; // Invalid: zero weight
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("weight"));
+        assert!(err_msg.contains("positive"));
+    }
+
+    #[test]
+    fn test_config_validation_nan_weight_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.deep[0].weight = f64::NAN; // Invalid: NaN weight
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("weight"));
+    }
+
+    #[test]
+    fn test_config_validation_zero_max_tokens_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.fast[0].max_tokens = 0; // Invalid: zero max_tokens
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("max_tokens"));
+        assert!(err_msg.contains("greater than 0"));
+    }
+
+    #[test]
+    fn test_config_validation_invalid_base_url_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.balanced[0].base_url = "ftp://invalid.com".to_string(); // Invalid: not http/https
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("base_url"));
+        assert!(err_msg.contains("http"));
+    }
+
+    #[test]
+    fn test_config_validation_missing_protocol_base_url_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.deep[0].base_url = "localhost:1234/v1".to_string(); // Invalid: missing protocol
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("base_url"));
+        assert!(err_msg.contains("http"));
     }
 }

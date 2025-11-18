@@ -42,7 +42,7 @@ async fn mock_chat_handler(
     });
 
     // Use real selector to test endpoint selection (with health filtering)
-    let no_exclude = std::collections::HashSet::new();
+    let no_exclude = octoroute::models::ExclusionSet::new();
     let endpoint = state
         .selector()
         .select(target, &no_exclude)

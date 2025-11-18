@@ -10,6 +10,41 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Type-safe wrapper for endpoint names
+///
+/// Prevents typos and wrong-tier endpoint names in exclusion sets.
+/// Use `EndpointName::from(endpoint)` to create from a ModelEndpoint reference.
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct EndpointName(String);
+
+impl EndpointName {
+    /// Get the inner string value
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&ModelEndpoint> for EndpointName {
+    fn from(endpoint: &ModelEndpoint) -> Self {
+        Self(endpoint.name.clone())
+    }
+}
+
+impl From<String> for EndpointName {
+    fn from(name: String) -> Self {
+        Self(name)
+    }
+}
+
+impl From<&str> for EndpointName {
+    fn from(name: &str) -> Self {
+        Self(name.to_string())
+    }
+}
+
+/// Type alias for exclusion sets used in retry logic
+pub type ExclusionSet = HashSet<EndpointName>;
+
 /// Selects appropriate model endpoint from multi-model configuration
 ///
 /// Phase 2c: Priority-based selection with health filtering and weighted distribution.
@@ -66,7 +101,7 @@ impl ModelSelector {
     pub async fn select(
         &self,
         target: TargetModel,
-        exclude: &HashSet<String>,
+        exclude: &ExclusionSet,
     ) -> Option<&ModelEndpoint> {
         let (endpoints, counter) = match target {
             TargetModel::Fast => (&self.config.models.fast, &self.fast_counter),
@@ -91,7 +126,7 @@ impl ModelSelector {
             }
 
             // Skip excluded endpoints (e.g., already failed in this request)
-            if exclude.contains(&endpoint.name) {
+            if exclude.contains(&EndpointName::from(endpoint)) {
                 tracing::debug!(
                     tier = ?target,
                     endpoint_name = %endpoint.name,
@@ -296,7 +331,7 @@ mod tests {
         let selector = ModelSelector::new(config);
 
         // Should return some endpoint for each tier (no exclusions)
-        let no_exclude = HashSet::new();
+        let no_exclude = ExclusionSet::new();
         assert!(
             selector
                 .select(TargetModel::Fast, &no_exclude)
@@ -326,7 +361,7 @@ mod tests {
         // Sample 100 times to verify both can be selected
         let mut fast1_seen = false;
         let mut fast2_seen = false;
-        let no_exclude = HashSet::new();
+        let no_exclude = ExclusionSet::new();
 
         for _ in 0..100 {
             let selected = selector
@@ -361,7 +396,7 @@ mod tests {
         let selector = ModelSelector::new(config);
 
         // Balanced tier has only one endpoint, should return same one
-        let no_exclude = HashSet::new();
+        let no_exclude = ExclusionSet::new();
         let first = selector
             .select(TargetModel::Balanced, &no_exclude)
             .await
@@ -391,7 +426,7 @@ mod tests {
         config.models.fast = vec![]; // Empty tier
         let selector = ModelSelector::new(Arc::new(config));
 
-        let no_exclude = HashSet::new();
+        let no_exclude = ExclusionSet::new();
         let result = selector.select(TargetModel::Fast, &no_exclude).await;
         assert!(result.is_none(), "should return None for empty tier");
     }
@@ -406,7 +441,7 @@ mod tests {
         for _ in 0..10 {
             let sel = selector.clone();
             handles.push(tokio::spawn(async move {
-                let no_exclude = HashSet::new();
+                let no_exclude = ExclusionSet::new();
                 sel.select(TargetModel::Fast, &no_exclude)
                     .await
                     .map(|e| e.name.clone())
@@ -456,7 +491,7 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Should fall back to uniform random selection, not panic
-        let no_exclude = HashSet::new();
+        let no_exclude = ExclusionSet::new();
         for _ in 0..10 {
             let result = selector.select(TargetModel::Fast, &no_exclude).await;
             assert!(
@@ -482,7 +517,7 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Should fall back to uniform random selection, not panic
-        let no_exclude = HashSet::new();
+        let no_exclude = ExclusionSet::new();
         let result = selector.select(TargetModel::Fast, &no_exclude).await;
         assert!(
             result.is_some(),
@@ -500,7 +535,7 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 3000 times to get statistically significant distribution
-        let no_exclude = HashSet::new();
+        let no_exclude = ExclusionSet::new();
         let mut counts = std::collections::HashMap::new();
         for _ in 0..3000 {
             let endpoint = selector
@@ -537,7 +572,7 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 1000 times
-        let no_exclude = HashSet::new();
+        let no_exclude = ExclusionSet::new();
         let mut counts = std::collections::HashMap::new();
         for _ in 0..1000 {
             let endpoint = selector
@@ -572,7 +607,7 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 2000 times
-        let no_exclude = HashSet::new();
+        let no_exclude = ExclusionSet::new();
         let mut counts = std::collections::HashMap::new();
         for _ in 0..2000 {
             let endpoint = selector
@@ -633,7 +668,7 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 6000 times (divisible by 6 for clean expected values)
-        let no_exclude = HashSet::new();
+        let no_exclude = ExclusionSet::new();
         let mut counts = std::collections::HashMap::new();
         for _ in 0..6000 {
             let endpoint = selector
@@ -703,7 +738,7 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 100 times - should ALWAYS select priority 10 endpoint
-        let no_exclude = HashSet::new();
+        let no_exclude = ExclusionSet::new();
         for _ in 0..100 {
             let endpoint = selector
                 .select(TargetModel::Fast, &no_exclude)
@@ -751,7 +786,7 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 3000 times
-        let no_exclude = HashSet::new();
+        let no_exclude = ExclusionSet::new();
         let mut counts = std::collections::HashMap::new();
         for _ in 0..3000 {
             let endpoint = selector
@@ -811,7 +846,7 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 4000 times
-        let no_exclude = HashSet::new();
+        let no_exclude = ExclusionSet::new();
         let mut counts = std::collections::HashMap::new();
         for _ in 0..4000 {
             let endpoint = selector
@@ -847,8 +882,8 @@ mod tests {
         let selector = ModelSelector::new(config);
 
         // Exclude fast-1, should only select fast-2
-        let mut exclude = HashSet::new();
-        exclude.insert("fast-1".to_string());
+        let mut exclude = ExclusionSet::new();
+        exclude.insert("fast-1".into());
 
         // Sample 100 times - should NEVER select fast-1
         for _ in 0..100 {
@@ -867,9 +902,9 @@ mod tests {
         let selector = ModelSelector::new(config);
 
         // Exclude both fast endpoints
-        let mut exclude = HashSet::new();
-        exclude.insert("fast-1".to_string());
-        exclude.insert("fast-2".to_string());
+        let mut exclude = ExclusionSet::new();
+        exclude.insert("fast-1".into());
+        exclude.insert("fast-2".into());
 
         let result = selector.select(TargetModel::Fast, &exclude).await;
         assert!(
@@ -912,8 +947,8 @@ mod tests {
         let selector = ModelSelector::new(Arc::new(config));
 
         // Exclude the heavy priority-10 endpoint
-        let mut exclude = HashSet::new();
-        exclude.insert("fast-priority-10-heavy".to_string());
+        let mut exclude = ExclusionSet::new();
+        exclude.insert("fast-priority-10-heavy".into());
 
         // Should only select fast-priority-10-light (same priority tier, not excluded)
         // Should NEVER select fast-priority-5 (lower priority, even though not excluded)
@@ -926,7 +961,7 @@ mod tests {
         }
 
         // Now exclude both priority-10 endpoints
-        exclude.insert("fast-priority-10-light".to_string());
+        exclude.insert("fast-priority-10-light".into());
 
         // Now should fall back to priority-5
         for _ in 0..100 {

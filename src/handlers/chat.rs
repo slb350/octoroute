@@ -5,10 +5,10 @@
 use crate::config::ModelEndpoint;
 use crate::error::{AppError, AppResult};
 use crate::handlers::AppState;
+use crate::models::{EndpointName, ExclusionSet};
 use crate::router::{Importance, RouteMetadata, TaskType};
 use axum::{Json, extract::State, response::IntoResponse};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::HashSet;
 use std::time::Duration;
 
 /// Maximum allowed message length in characters (100K chars)
@@ -163,7 +163,7 @@ pub async fn handler(
     // Track endpoints that have failed in THIS request to avoid retrying them
     const MAX_RETRIES: usize = 3;
     let mut last_error = None;
-    let mut failed_endpoints = HashSet::new();
+    let mut failed_endpoints = ExclusionSet::new();
 
     for attempt in 1..=MAX_RETRIES {
         // Select endpoint from target tier (with health filtering + priority + exclusion)
@@ -213,11 +213,18 @@ pub async fn handler(
         {
             Ok(response_text) => {
                 // Success! Mark endpoint as healthy to enable immediate recovery
-                state
+                if let Err(e) = state
                     .selector()
                     .health_checker()
                     .mark_success(&endpoint.name)
-                    .await;
+                    .await
+                {
+                    tracing::error!(
+                        endpoint_name = %endpoint.name,
+                        error = %e,
+                        "Failed to mark endpoint as healthy - this should never happen"
+                    );
+                }
 
                 tracing::info!(
                     endpoint_name = %endpoint.name,
@@ -236,7 +243,9 @@ pub async fn handler(
                 return Ok(Json(response));
             }
             Err(e) => {
-                // Failure - mark endpoint as unhealthy and exclude from retries
+                // Failure - use two separate exclusion mechanisms:
+                // 1. Request-scoped exclusion (immediate, this request only)
+                // 2. Global health tracking (after 3 consecutive failures across all requests)
                 tracing::warn!(
                     endpoint_name = %endpoint.name,
                     attempt = attempt,
@@ -245,15 +254,26 @@ pub async fn handler(
                     "Endpoint query failed, excluding from retries and marking for health tracking"
                 );
 
-                // Mark this endpoint as failed for long-term health tracking
-                state
+                // Mark this endpoint as failed for GLOBAL health tracking.
+                // After 3 consecutive failures (across all requests), endpoint becomes unhealthy
+                // and won't be selected by ANY request until it recovers.
+                if let Err(e) = state
                     .selector()
                     .health_checker()
                     .mark_failure(&endpoint.name)
-                    .await;
+                    .await
+                {
+                    tracing::error!(
+                        endpoint_name = %endpoint.name,
+                        error = %e,
+                        "Failed to mark endpoint as failed - this should never happen"
+                    );
+                }
 
-                // Exclude this endpoint from subsequent retry attempts in THIS request
-                failed_endpoints.insert(endpoint.name.clone());
+                // Exclude this endpoint from subsequent retry attempts in THIS REQUEST ONLY.
+                // This is request-scoped exclusion - prevents retrying the same endpoint
+                // within a single request, even if it hasn't reached 3 global failures yet.
+                failed_endpoints.insert(EndpointName::from(&endpoint));
 
                 last_error = Some(e);
 
@@ -314,7 +334,9 @@ async fn try_query_model(
         "Starting model query"
     );
 
-    // Enforce request timeout - wrap ENTIRE operation including streaming
+    // Enforce request timeout - wraps the ENTIRE operation: connection establishment,
+    // query initiation, and streaming all response chunks. If any part exceeds the timeout,
+    // the request fails and is eligible for retry with a different endpoint.
     let timeout_duration = Duration::from_secs(timeout_seconds);
 
     use futures::StreamExt;

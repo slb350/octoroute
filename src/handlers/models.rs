@@ -3,6 +3,7 @@
 //! Exposes model endpoint health status via GET /models
 
 use crate::handlers::AppState;
+use crate::handlers::chat::ModelTier;
 use axum::{Json, extract::State};
 use serde::Serialize;
 
@@ -16,7 +17,7 @@ pub struct ModelsResponse {
 #[derive(Serialize)]
 pub struct ModelStatus {
     pub name: String,
-    pub tier: String, // "fast", "balanced", or "deep"
+    pub tier: ModelTier,
     pub endpoint: String,
     pub healthy: bool,
     pub last_check_seconds_ago: u64,
@@ -36,13 +37,18 @@ pub async fn handler(State(state): State<AppState>) -> Json<ModelsResponse> {
         .map(|h| {
             // Determine tier by checking config
             let tier = if config.models.fast.iter().any(|e| e.name == h.name()) {
-                "fast".to_string()
+                ModelTier::Fast
             } else if config.models.balanced.iter().any(|e| e.name == h.name()) {
-                "balanced".to_string()
+                ModelTier::Balanced
             } else if config.models.deep.iter().any(|e| e.name == h.name()) {
-                "deep".to_string()
+                ModelTier::Deep
             } else {
-                "unknown".to_string()
+                // Default to Balanced if not found (shouldn't happen in practice)
+                tracing::warn!(
+                    endpoint_name = %h.name(),
+                    "Endpoint not found in any tier, defaulting to Balanced"
+                );
+                ModelTier::Balanced
             };
 
             ModelStatus {

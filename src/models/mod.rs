@@ -8,5 +8,5 @@ pub mod health;
 pub mod selector;
 
 pub use client::ModelClient;
-pub use health::{EndpointHealth, HealthChecker};
-pub use selector::ModelSelector;
+pub use health::{EndpointHealth, HealthChecker, HealthError};
+pub use selector::{EndpointName, ExclusionSet, ModelSelector};
