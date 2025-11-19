@@ -1,6 +1,6 @@
 //! Model selection logic for choosing from multiple endpoints
 //!
-//! Phase 2c: Priority + weighted selection with health checking
+//! Implements priority-based selection with weighted distribution and health checking.
 //!
 //! Production code is in this file, tests are organized in sibling modules:
 //! - tests_basic: Basic selection, endpoint counting, empty tiers
@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Selects appropriate model endpoint from multi-model configuration
 ///
-/// Phase 2c: Priority-based selection with health filtering and weighted distribution.
+/// Implements priority-based selection with health filtering and weighted distribution:
 /// - Filters out unhealthy endpoints
 /// - Selects from highest available priority tier
 /// - Uses weighted random selection within priority tier
@@ -57,7 +57,7 @@ impl ModelSelector {
 
     /// Select an endpoint for the given target model tier using priority + weighted random selection
     ///
-    /// Phase 2c: Priority-based selection with health filtering, exclusion, and weighted distribution.
+    /// Implements priority-based selection with health filtering, exclusion, and weighted distribution:
     /// - Filters out unhealthy endpoints first
     /// - Filters out endpoints in the exclusion set (for retry logic)
     /// - Filters to only the highest available priority tier
@@ -94,7 +94,7 @@ impl ModelSelector {
             return None;
         }
 
-        // Phase 2c: Filter to only healthy and non-excluded endpoints
+        // Filter to only healthy and non-excluded endpoints
         let mut available_endpoints = Vec::new();
         for endpoint in endpoints.iter() {
             // Skip unhealthy endpoints
@@ -133,7 +133,7 @@ impl ModelSelector {
             "Filtered to healthy and non-excluded endpoints"
         );
 
-        // Phase 2c: Find highest priority among available endpoints and filter to only that tier
+        // Find highest priority among available endpoints and filter to only that tier
         let max_priority = available_endpoints
             .iter()
             .map(|e| e.priority())

@@ -104,7 +104,7 @@ router_model = "balanced"
 /// Helper to create test app with mock handler
 fn create_test_app() -> Router {
     let config = Arc::new(create_test_config());
-    let state = AppState::new(config);
+    let state = AppState::new(config).expect("AppState::new should succeed");
 
     Router::new()
         .route("/chat", post(mock_chat_handler))
@@ -235,13 +235,14 @@ async fn test_chat_endpoint_with_invalid_json() {
 
 #[tokio::test]
 async fn test_chat_endpoint_with_no_available_endpoints() {
-    // Create config with all empty tiers to trigger "no available endpoints" error
+    // Create config with only balanced tier (required for router construction)
+    // but all endpoints will be non-routable to trigger "no available endpoints" error
     let mut config = create_test_config();
     config.models.fast.clear();
-    config.models.balanced.clear();
+    // Keep balanced tier (required for LlmBasedRouter construction)
     config.models.deep.clear();
 
-    let state = AppState::new(Arc::new(config));
+    let state = AppState::new(Arc::new(config)).expect("AppState::new should succeed");
     let app = Router::new()
         .route("/chat", post(mock_chat_handler))
         .with_state(state);

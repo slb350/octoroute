@@ -80,7 +80,7 @@ async fn test_stream_interruption_documentation() {
     // When an endpoint is unreachable, the connection fails which simulates a stream error.
 
     let config = Arc::new(create_test_config());
-    let app_state = AppState::new(config);
+    let app_state = AppState::new(config).expect("AppState::new should succeed");
     let app = Router::new()
         .route("/chat", post(chat::handler))
         .with_state(app_state)
@@ -161,7 +161,7 @@ async fn test_partial_response_never_returned_to_user() {
     // never the partial content.
 
     let config = Arc::new(create_test_config());
-    let app_state = AppState::new(config);
+    let app_state = AppState::new(config).expect("AppState::new should succeed");
     let app = Router::new()
         .route("/chat", post(chat::handler))
         .with_state(app_state)
@@ -214,7 +214,7 @@ async fn test_stream_error_triggers_retry_logic() {
     // in the error message or logs.
 
     let config = Arc::new(create_test_config());
-    let app_state = AppState::new(config);
+    let app_state = AppState::new(config).expect("AppState::new should succeed");
     let app = Router::new()
         .route("/chat", post(chat::handler))
         .with_state(app_state)

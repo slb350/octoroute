@@ -1,6 +1,7 @@
 //! HTTP request handlers for Octoroute API
 
 use crate::config::Config;
+use crate::error::AppResult;
 use crate::models::ModelSelector;
 use crate::router::HybridRouter;
 use std::sync::Arc;
@@ -14,11 +15,7 @@ pub mod models;
 /// Contains configuration, model selector, and router instances.
 /// All fields are Arc'd for cheap cloning across Axum handlers.
 ///
-/// # Changes (Phase 3, PR #2)
-///
-/// - `router` field changed from `RuleBasedRouter` to `HybridRouter`
-///   - Rationale: Hybrid router provides intelligent LLM fallback for ambiguous cases
-///   - Impact: All routing now uses hybrid strategy (rule-based first, LLM fallback)
+/// Uses `HybridRouter` for intelligent routing (rule-based with LLM fallback for ambiguous cases).
 #[derive(Clone)]
 pub struct AppState {
     config: Arc<Config>,
@@ -31,15 +28,17 @@ impl AppState {
     ///
     /// Accepts `Arc<Config>` to avoid unnecessary cloning when the configuration
     /// is already wrapped in an Arc.
-    pub fn new(config: Arc<Config>) -> Self {
+    ///
+    /// Returns an error if router construction fails (e.g., no balanced tier endpoints).
+    pub fn new(config: Arc<Config>) -> AppResult<Self> {
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router = Arc::new(HybridRouter::new(config.clone(), selector.clone()));
+        let router = Arc::new(HybridRouter::new(config.clone(), selector.clone())?);
 
-        Self {
+        Ok(Self {
             config,
             selector,
             router,
-        }
+        })
     }
 
     /// Get reference to the configuration
@@ -105,7 +104,7 @@ router_model = "balanced"
     #[tokio::test]
     async fn test_appstate_new_creates_state() {
         let config = Arc::new(create_test_config());
-        let state = AppState::new(config);
+        let state = AppState::new(config).expect("AppState::new should succeed with balanced tier");
 
         // Verify we can create state and access components
         assert_eq!(state.config().server.port, 3000);
@@ -120,7 +119,7 @@ router_model = "balanced"
     #[tokio::test]
     async fn test_appstate_is_clonable() {
         let config = Arc::new(create_test_config());
-        let state = AppState::new(config);
+        let state = AppState::new(config).expect("AppState::new should succeed with balanced tier");
 
         // Clone should work (cheap Arc clone)
         let state2 = state.clone();
@@ -130,7 +129,7 @@ router_model = "balanced"
     #[tokio::test]
     async fn test_appstate_provides_access_to_components() {
         let config = Arc::new(create_test_config());
-        let state = AppState::new(config);
+        let state = AppState::new(config).expect("AppState::new should succeed with balanced tier");
 
         // Should be able to access all components
         let _ = state.config();

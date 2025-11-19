@@ -513,7 +513,7 @@ async fn try_query_model(
                                     endpoint_name = %endpoint.name(),
                                     block_type = ?other_block,
                                     block_number = block_count,
-                                    "Received non-text content block, skipping (not yet supported through Phase 2c)"
+                                    "Received non-text content block, skipping (not supported - text blocks only)"
                                 );
                             }
                         }

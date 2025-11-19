@@ -62,7 +62,7 @@ async fn test_all_tiers_exhausted_returns_error() {
     // 5. Request returns error indicating no available endpoints
 
     let config = Arc::new(create_test_config());
-    let state = AppState::new(config.clone());
+    let state = AppState::new(config.clone()).expect("AppState::new should succeed");
     let health_checker = state.selector().health_checker();
 
     // Mark ALL endpoints as unhealthy across ALL tiers (simulate service-wide outage)
@@ -116,7 +116,7 @@ async fn test_recovery_after_all_tiers_exhausted() {
     // outage when endpoints become healthy again.
 
     let config = Arc::new(create_test_config());
-    let state = AppState::new(config.clone());
+    let state = AppState::new(config.clone()).expect("AppState::new should succeed");
     let health_checker = state.selector().health_checker();
 
     // Mark all endpoints unhealthy

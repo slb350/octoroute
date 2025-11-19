@@ -22,11 +22,14 @@ pub struct HybridRouter {
 
 impl HybridRouter {
     /// Create a new hybrid router
-    pub fn new(_config: Arc<Config>, selector: Arc<ModelSelector>) -> Self {
-        Self {
+    ///
+    /// Returns an error if LLM router construction fails
+    /// (e.g., no balanced tier endpoints configured).
+    pub fn new(_config: Arc<Config>, selector: Arc<ModelSelector>) -> AppResult<Self> {
+        Ok(Self {
             rule_router: RuleBasedRouter::new(),
-            llm_router: LlmBasedRouter::new(selector),
-        }
+            llm_router: LlmBasedRouter::new(selector)?,
+        })
     }
 
     /// Route using hybrid strategy
@@ -132,7 +135,8 @@ mod tests {
     async fn test_hybrid_router_creation() {
         let config = test_config();
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let _router = HybridRouter::new(config, selector);
+        let _router = HybridRouter::new(config, selector)
+            .expect("HybridRouter::new should succeed with balanced tier");
         // If we get here without panic, creation succeeded
     }
 
@@ -140,7 +144,7 @@ mod tests {
     async fn test_hybrid_router_uses_rule_when_matched() {
         let config = test_config();
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router = HybridRouter::new(config, selector);
+        let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
 
         // Simple casual chat should match rule-based routing
         let meta = RouteMetadata {
@@ -161,7 +165,7 @@ mod tests {
     async fn test_hybrid_router_uses_rule_for_code() {
         let config = test_config();
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router = HybridRouter::new(config, selector);
+        let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
 
         // Short code task should match rule-based routing
         let meta = RouteMetadata {
@@ -182,7 +186,7 @@ mod tests {
     async fn test_hybrid_router_uses_rule_for_high_importance() {
         let config = test_config();
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router = HybridRouter::new(config, selector);
+        let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
 
         // High importance should match rule-based routing
         let meta = RouteMetadata {
@@ -207,7 +211,7 @@ mod tests {
     async fn test_hybrid_router_has_both_routers() {
         let config = test_config();
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router = HybridRouter::new(config, selector);
+        let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
 
         // Verify router has both components (indirectly via compilation)
         // If this compiles and creates, both routers were constructed successfully

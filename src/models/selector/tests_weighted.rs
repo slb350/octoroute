@@ -390,7 +390,7 @@ router_model = "balanced"
     );
 }
 
-// Phase 2c: Priority-based selection tests
+// Priority-based selection tests
 
 #[tokio::test]
 async fn test_weighted_selection_statistical_validation() {
