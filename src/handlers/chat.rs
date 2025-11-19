@@ -251,10 +251,10 @@ pub async fn handler(
             Ok(response_text) => {
                 // Success! Mark endpoint as healthy to enable immediate recovery
                 //
-                // CRITICAL: If mark_success fails, this indicates a serious bug (race condition,
-                // typo in endpoint naming, etc.). We propagate the error to fail the request
-                // rather than silently continuing, which would leave the system in an
-                // inconsistent state where the endpoint remains unhealthy despite working.
+                // DEFENSIVE: mark_success should never fail in normal operation (endpoint names come
+                // from ModelSelector which only returns valid endpoints). If it fails, this indicates
+                // a serious bug (race condition, typo, or config reload during request). Propagate the
+                // error to expose the bug immediately rather than silently continuing.
                 state
                     .selector()
                     .health_checker()
@@ -266,13 +266,13 @@ pub async fn handler(
                             error = %e,
                             selected_tier = ?target,
                             attempt = attempt,
-                            "CRITICAL BUG: mark_success failed after successful request. \
-                            Endpoint will remain unhealthy despite working. This indicates a race \
-                            condition or typo in endpoint naming. Failing request to expose bug."
+                            "DEFENSIVE ERROR: mark_success failed after successful request. \
+                            Endpoint will remain unhealthy despite working. This indicates a bug \
+                            (race condition or naming mismatch). Failing request to expose issue."
                         );
                         AppError::HealthCheckFailed {
                             endpoint: endpoint.name().to_string(),
-                            reason: format!("mark_success failed: {}. This is a critical bug.", e),
+                            reason: format!("mark_success failed: {}. This should not happen.", e),
                         }
                     })?;
 
@@ -308,10 +308,10 @@ pub async fn handler(
                 // After 3 consecutive failures (across all requests), endpoint becomes unhealthy
                 // and won't be selected by ANY request until it recovers.
                 //
-                // CRITICAL: If mark_failure fails, this indicates a serious bug (race condition,
-                // typo in endpoint naming, etc.). We propagate the error to fail the request
-                // rather than silently continuing, which would allow the failing endpoint to
-                // keep receiving traffic.
+                // DEFENSIVE: mark_failure should never fail in normal operation (endpoint names come
+                // from ModelSelector which only returns valid endpoints). If it fails, this indicates
+                // a serious bug (race condition, typo, or config reload during request). Propagate the
+                // error to expose the bug immediately rather than silently continuing.
                 state
                     .selector()
                     .health_checker()
@@ -323,13 +323,13 @@ pub async fn handler(
                             error = %e,
                             selected_tier = ?target,
                             attempt = attempt,
-                            "CRITICAL BUG: mark_failure failed. Endpoint won't be marked unhealthy \
-                            and will continue receiving traffic despite failures. This indicates a race \
-                            condition or typo in endpoint naming. Failing request to expose bug."
+                            "DEFENSIVE ERROR: mark_failure failed. Endpoint won't be marked unhealthy \
+                            and will continue receiving traffic despite failures. This indicates a bug \
+                            (race condition or naming mismatch). Failing request to expose issue."
                         );
                         AppError::HealthCheckFailed {
                             endpoint: endpoint.name().to_string(),
-                            reason: format!("mark_failure failed: {}. This is a critical bug.", e),
+                            reason: format!("mark_failure failed: {}. This should not happen.", e),
                         }
                     })?;
 
