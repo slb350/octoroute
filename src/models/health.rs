@@ -413,10 +413,11 @@ impl HealthChecker {
                 HealthError::HttpClientCreationFailed(e.to_string())
             })?;
 
-        // CRITICAL: base_url already includes /v1 (e.g., "http://host:port/v1")
+        // IMPORTANT: Health check URL construction (fixed bug - see commit history)
+        // base_url already includes /v1 (e.g., "http://host:port/v1")
         // We append "/models" to get "http://host:port/v1/models"
         // DO NOT append "/v1/models" - that would create "http://host:port/v1/v1/models" (404!)
-        // This bug caused all endpoints to fail health checks after 90 seconds.
+        // Historical note: This bug previously caused all endpoints to fail after 90 seconds.
         let url = format!("{}/models", endpoint.base_url());
 
         match client.head(&url).send().await {

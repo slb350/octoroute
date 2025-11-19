@@ -266,9 +266,10 @@ pub async fn handler(
                             error = %e,
                             selected_tier = ?target,
                             attempt = attempt,
-                            "DEFENSIVE ERROR: mark_success failed after successful request. \
-                            Endpoint will remain unhealthy despite working. This indicates a bug \
-                            (race condition or naming mismatch). Failing request to expose issue."
+                            "DEFENSIVE CHECK: mark_success should never fail (endpoint names come from \
+                            ModelSelector which only returns valid endpoints). If this error occurs, it \
+                            indicates a serious bug (race condition, naming mismatch, or memory corruption). \
+                            Failing request to expose issue."
                         );
                         AppError::HealthCheckFailed {
                             endpoint: endpoint.name().to_string(),
@@ -438,7 +439,7 @@ async fn try_query_model(
                                     endpoint_name = %endpoint.name(),
                                     block_type = ?other_block,
                                     block_number = block_count,
-                                    "Received non-text content block, skipping (not yet supported in Phase 2a)"
+                                    "Received non-text content block, skipping (not yet supported through Phase 2c)"
                                 );
                             }
                         }

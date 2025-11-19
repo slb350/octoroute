@@ -194,7 +194,7 @@ impl ModelSelector {
             .iter()
             .map(|e| e.priority())
             .max()
-            .unwrap();
+            .expect("BUG: available_endpoints should not be empty (checked at line 174)");
 
         let highest_priority_endpoints: Vec<&ModelEndpoint> = available_endpoints
             .iter()
@@ -216,30 +216,19 @@ impl ModelSelector {
         // Calculate total weight of endpoints in highest priority tier
         let total_weight: f64 = highest_priority_endpoints.iter().map(|e| e.weight()).sum();
 
-        // Handle zero or negative total weight (all endpoints disabled/misconfigured)
+        // Handle zero or negative total weight (configuration error or memory corruption)
         if total_weight <= 0.0 {
-            tracing::warn!(
+            tracing::error!(
                 tier = ?target,
                 priority = max_priority,
                 total_weight = total_weight,
                 endpoints_count = highest_priority_endpoints.len(),
-                "All endpoints in priority tier have zero/negative weight, falling back to uniform selection"
+                "CONFIGURATION ERROR: All endpoints in priority tier {} have total weight {}. \
+                This indicates corrupted in-memory state (config validation should prevent this at startup). \
+                Refusing to select endpoint - failing request to expose issue.",
+                max_priority, total_weight
             );
-
-            // Fall back to uniform random selection within priority tier
-            let mut rng = rand::thread_rng();
-            let index = rng.gen_range(0..highest_priority_endpoints.len());
-            let endpoint = highest_priority_endpoints[index];
-
-            tracing::info!(
-                tier = ?target,
-                priority = max_priority,
-                endpoint_name = %endpoint.name(),
-                endpoint_index = index,
-                "Selected endpoint via uniform fallback (zero total weight)"
-            );
-
-            return Some(endpoint);
+            return None;
         }
 
         // Generate random number in range [0, total_weight)
@@ -568,21 +557,14 @@ router_model = "balanced"
         let config: Config = toml::from_str(toml_config).expect("should parse TOML");
         let selector = ModelSelector::new(Arc::new(config));
 
-        // Should fall back to uniform random selection, not panic
+        // Should return None (refuse to select) when all weights are zero
+        // This indicates a configuration error or memory corruption
         let no_exclude = ExclusionSet::new();
-        for _ in 0..10 {
-            let result = selector.select(TargetModel::Fast, &no_exclude).await;
-            assert!(
-                result.is_some(),
-                "should return endpoint even with zero total weight"
-            );
-
-            let endpoint = result.unwrap();
-            assert!(
-                endpoint.name() == "fast-1" || endpoint.name() == "fast-2",
-                "should select valid endpoint"
-            );
-        }
+        let result = selector.select(TargetModel::Fast, &no_exclude).await;
+        assert!(
+            result.is_none(),
+            "should return None when all endpoints have zero weight (config error)"
+        );
     }
 
     #[tokio::test]
@@ -624,12 +606,13 @@ router_model = "balanced"
         let config: Config = toml::from_str(toml_config).expect("should parse TOML");
         let selector = ModelSelector::new(Arc::new(config));
 
-        // Should fall back to uniform random selection, not panic
+        // Should return None (refuse to select) when all weights are negative
+        // This indicates a configuration error or memory corruption
         let no_exclude = ExclusionSet::new();
         let result = selector.select(TargetModel::Fast, &no_exclude).await;
         assert!(
-            result.is_some(),
-            "should return endpoint even with negative weights"
+            result.is_none(),
+            "should return None when all endpoints have negative weights (config error)"
         );
     }
 
