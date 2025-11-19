@@ -15,19 +15,39 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// Prevents typos and wrong-tier endpoint names in exclusion sets.
 ///
 /// # Preferred Usage
-/// - **Production code**: Use `EndpointName::from(endpoint)` to create from a ModelEndpoint reference (always valid)
-/// - **Test code**: Use string conversions, but be aware they don't validate endpoint existence
+/// - **Production code with Config**: Use `EndpointName::new(name, config)` for validated construction
+/// - **Production code with ModelEndpoint**: Use `EndpointName::from(endpoint)` (always valid)
+/// - **Test code**: Use string conversions `From<String>` or `From<&str>`, but be aware they don't validate
 ///
 /// # Validation
-/// String conversions (`From<&str>`, `From<String>`) don't validate that the endpoint exists
-/// in the configuration. Invalid names will cause runtime errors (`HealthError::UnknownEndpoint`)
-/// when used with health checking methods (`mark_success`, `mark_failure`), which will propagate
-/// to request handlers and fail requests with detailed logging.
-/// For validated construction, prefer creating from `&ModelEndpoint` references.
+/// - `new()`: Validates at construction time, returns `Result`
+/// - `From<&ModelEndpoint>`: Always valid (endpoint comes from config)
+/// - `From<String>` and `From<&str>`: No validation - invalid names cause runtime errors
+///   (`HealthError::UnknownEndpoint`) when used with health checking methods
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct EndpointName(String);
 
 impl EndpointName {
+    /// Create a validated EndpointName from a string
+    ///
+    /// Validates that the endpoint name exists in the configuration.
+    /// Use this in production code to catch invalid endpoint names early.
+    ///
+    /// # Errors
+    /// Returns an error if the endpoint name doesn't match any configured endpoint.
+    pub fn new(name: String, config: &Config) -> Result<Self, String> {
+        let endpoint_name = Self(name.clone());
+        if endpoint_name.is_valid(config) {
+            Ok(endpoint_name)
+        } else {
+            Err(format!(
+                "Unknown endpoint: '{}'. Available endpoints: {}",
+                name,
+                Self::list_available(config).join(", ")
+            ))
+        }
+    }
+
     /// Get the inner string value
     pub fn as_str(&self) -> &str {
         &self.0
@@ -41,6 +61,15 @@ impl EndpointName {
         config.models.fast.iter().any(|e| e.name() == self.0)
             || config.models.balanced.iter().any(|e| e.name() == self.0)
             || config.models.deep.iter().any(|e| e.name() == self.0)
+    }
+
+    /// List all available endpoint names in the configuration
+    fn list_available(config: &Config) -> Vec<String> {
+        let mut names = Vec::new();
+        names.extend(config.models.fast.iter().map(|e| e.name().to_string()));
+        names.extend(config.models.balanced.iter().map(|e| e.name().to_string()));
+        names.extend(config.models.deep.iter().map(|e| e.name().to_string()));
+        names
     }
 }
 
@@ -1458,5 +1487,50 @@ router_model = "balanced"
             heavy_count,
             (heavy_count as f64 / SAMPLE_SIZE as f64) * 100.0
         );
+    }
+
+    #[test]
+    fn test_endpoint_name_new_valid() {
+        let config = create_test_config();
+
+        // Valid endpoint names should succeed
+        let result = EndpointName::new("fast-1".to_string(), &config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().as_str(), "fast-1");
+
+        let result = EndpointName::new("balanced-1".to_string(), &config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().as_str(), "balanced-1");
+
+        let result = EndpointName::new("deep-1".to_string(), &config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().as_str(), "deep-1");
+    }
+
+    #[test]
+    fn test_endpoint_name_new_invalid() {
+        let config = create_test_config();
+
+        // Invalid endpoint name should fail with helpful error message
+        let result = EndpointName::new("nonexistent".to_string(), &config);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Unknown endpoint: 'nonexistent'"));
+        assert!(err.contains("Available endpoints:"));
+        assert!(err.contains("fast-1"));
+        assert!(err.contains("balanced-1"));
+        assert!(err.contains("deep-1"));
+    }
+
+    #[test]
+    fn test_endpoint_name_new_typo() {
+        let config = create_test_config();
+
+        // Typo in endpoint name should fail
+        let result = EndpointName::new("fast-3".to_string(), &config);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("fast-3"));
+        assert!(err.contains("fast-1")); // Shows correct name
     }
 }
