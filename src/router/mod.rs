@@ -52,18 +52,32 @@ impl RoutingStrategy {
 /// Combines the target model tier with the strategy that was used
 /// to make the decision. Provides better type safety and clarity
 /// than returning a tuple.
+///
+/// Fields are private to enable future validation logic and maintain
+/// encapsulation. Use accessor methods `target()` and `strategy()` to
+/// read the values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoutingDecision {
     /// Which model tier to use
-    pub target: TargetModel,
+    target: TargetModel,
     /// Which routing strategy made the decision
-    pub strategy: RoutingStrategy,
+    strategy: RoutingStrategy,
 }
 
 impl RoutingDecision {
     /// Create a new routing decision
     pub fn new(target: TargetModel, strategy: RoutingStrategy) -> Self {
         Self { target, strategy }
+    }
+
+    /// Get the target model tier for this routing decision
+    pub fn target(&self) -> TargetModel {
+        self.target
+    }
+
+    /// Get the routing strategy that made this decision
+    pub fn strategy(&self) -> RoutingStrategy {
+        self.strategy
     }
 }
 
@@ -91,7 +105,7 @@ pub enum TaskType {
 }
 
 /// Metadata extracted from a request to inform routing decisions
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct RouteMetadata {
     /// Estimated token count for the request
     pub token_estimate: usize,
@@ -249,8 +263,54 @@ mod tests {
     #[test]
     fn test_routing_decision_new() {
         let decision = RoutingDecision::new(TargetModel::Fast, RoutingStrategy::Rule);
-        assert_eq!(decision.target, TargetModel::Fast);
-        assert_eq!(decision.strategy, RoutingStrategy::Rule);
+        assert_eq!(decision.target(), TargetModel::Fast);
+        assert_eq!(decision.strategy(), RoutingStrategy::Rule);
+    }
+
+    #[test]
+    fn test_routing_decision_accessors() {
+        // ISSUE #1a: Test accessor methods (to support private fields)
+        //
+        // This test verifies that RoutingDecision provides proper accessor methods
+        // for its fields, enabling encapsulation and future validation logic.
+
+        let decision = RoutingDecision::new(TargetModel::Balanced, RoutingStrategy::Llm);
+
+        // Test target() accessor
+        assert_eq!(
+            decision.target(),
+            TargetModel::Balanced,
+            "target() should return the target model"
+        );
+
+        // Test strategy() accessor
+        assert_eq!(
+            decision.strategy(),
+            RoutingStrategy::Llm,
+            "strategy() should return the routing strategy"
+        );
+    }
+
+    #[test]
+    fn test_routing_decision_accessors_all_variants() {
+        // ISSUE #1a: Verify accessors work for all enum variants
+        //
+        // Ensures accessor methods correctly return all possible values
+
+        let test_cases = vec![
+            (TargetModel::Fast, RoutingStrategy::Rule),
+            (TargetModel::Balanced, RoutingStrategy::Rule),
+            (TargetModel::Deep, RoutingStrategy::Rule),
+            (TargetModel::Fast, RoutingStrategy::Llm),
+            (TargetModel::Balanced, RoutingStrategy::Llm),
+            (TargetModel::Deep, RoutingStrategy::Llm),
+        ];
+
+        for (target, strategy) in test_cases {
+            let decision = RoutingDecision::new(target, strategy);
+            assert_eq!(decision.target(), target);
+            assert_eq!(decision.strategy(), strategy);
+        }
     }
 
     #[test]

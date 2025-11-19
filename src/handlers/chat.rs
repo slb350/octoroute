@@ -176,8 +176,8 @@ pub async fn handler(
 
     tracing::info!(
         request_id = %request_id,
-        target_tier = ?decision.target,
-        routing_strategy = ?decision.strategy,
+        target_tier = ?decision.target(),
+        routing_strategy = ?decision.strategy(),
         token_estimate = metadata.token_estimate,
         "Routing decision made"
     );
@@ -204,6 +204,9 @@ pub async fn handler(
     // - Request-scoped exclusion ensures no wasted retries on known-bad endpoints in THIS request
     // - Global health tracking prevents all requests from hitting persistently failing endpoints
     // - Without request-scoped: Could retry the same failed endpoint on attempts 1, 2, 3
+    //   (Example: With 2 endpoints where 1 is down, 50% chance per attempt. Probability of
+    //   hitting the down endpoint on all 3 attempts: 0.5³ = 12.5%. Request-scoped exclusion
+    //   eliminates this by forcing different endpoints on each attempt.)
     // - Without global health: Every request would independently discover failing endpoints
     //
     // RETRY FLOW:
@@ -228,17 +231,17 @@ pub async fn handler(
         // Select endpoint from target tier (with health filtering + priority + exclusion)
         let endpoint = match state
             .selector()
-            .select(decision.target, &failed_endpoints)
+            .select(decision.target(), &failed_endpoints)
             .await
         {
             Some(ep) => ep.clone(),
             None => {
-                let total_configured = state.selector().endpoint_count(decision.target);
+                let total_configured = state.selector().endpoint_count(decision.target());
                 let excluded_count = failed_endpoints.len();
 
                 tracing::error!(
                     request_id = %request_id,
-                    tier = ?decision.target,
+                    tier = ?decision.target(),
                     attempt = attempt,
                     max_retries = MAX_RETRIES,
                     total_configured_endpoints = total_configured,
@@ -251,7 +254,11 @@ pub async fn handler(
                 last_error = Some(AppError::RoutingFailed(format!(
                     "No available healthy endpoints for tier {:?} \
                     (configured: {}, excluded: {}, attempt {}/{})",
-                    decision.target, total_configured, excluded_count, attempt, MAX_RETRIES
+                    decision.target(),
+                    total_configured,
+                    excluded_count,
+                    attempt,
+                    MAX_RETRIES
                 )));
                 continue; // Try again (may have different healthy endpoints)
             }
@@ -297,7 +304,7 @@ pub async fn handler(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     unknown_name = %name,
-                                    selected_tier = ?decision.target,
+                                    selected_tier = ?decision.target(),
                                     attempt = attempt,
                                     "INVARIANT VIOLATION: mark_success called with unknown endpoint name. \
                                     Endpoint names come from ModelSelector which only returns valid endpoints. \
@@ -310,7 +317,7 @@ pub async fn handler(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     error = %msg,
-                                    selected_tier = ?decision.target,
+                                    selected_tier = ?decision.target(),
                                     attempt = attempt,
                                     "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
                                     This indicates a systemic issue (TLS configuration, resource exhaustion) \
@@ -329,13 +336,17 @@ pub async fn handler(
                     request_id = %request_id,
                     endpoint_name = %endpoint.name(),
                     response_length = response_text.len(),
-                    model_tier = ?decision.target,
+                    model_tier = ?decision.target(),
                     attempt = attempt,
                     "Request completed successfully"
                 );
 
-                let response =
-                    ChatResponse::new(response_text, &endpoint, decision.target, decision.strategy);
+                let response = ChatResponse::new(
+                    response_text,
+                    &endpoint,
+                    decision.target(),
+                    decision.strategy(),
+                );
 
                 return Ok(Json(response));
             }
@@ -373,7 +384,7 @@ pub async fn handler(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     unknown_name = %name,
-                                    selected_tier = ?decision.target,
+                                    selected_tier = ?decision.target(),
                                     attempt = attempt,
                                     "INVARIANT VIOLATION: mark_failure called with unknown endpoint name. \
                                     Endpoint won't be marked unhealthy and will continue receiving traffic. \
@@ -387,7 +398,7 @@ pub async fn handler(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     error = %msg,
-                                    selected_tier = ?decision.target,
+                                    selected_tier = ?decision.target(),
                                     attempt = attempt,
                                     "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
                                     This indicates a systemic issue (TLS configuration, resource exhaustion) \
@@ -417,7 +428,7 @@ pub async fn handler(
     // All retries exhausted
     tracing::error!(
         request_id = %request_id,
-        tier = ?decision.target,
+        tier = ?decision.target(),
         max_retries = MAX_RETRIES,
         "All retry attempts exhausted"
     );
@@ -471,8 +482,15 @@ async fn try_query_model(
     );
 
     // Enforce request timeout - wraps the ENTIRE operation: connection establishment,
-    // query initiation, and streaming all response chunks. If any part exceeds the timeout,
-    // the request fails and is eligible for retry with a different endpoint.
+    // query initiation, and streaming all response chunks.
+    //
+    // IMPORTANT: When timeout triggers, Tokio cancels the Future, which drops the HTTP
+    // stream and closes the connection to the endpoint. The endpoint may continue processing
+    // the request (we don't send HTTP cancellation), so timeouts are billed as full requests
+    // by most LLM APIs. This is why timeout is per-request configurable.
+    //
+    // If any part exceeds the timeout, the request fails and is eligible for retry with
+    // a different endpoint.
     let timeout_duration = Duration::from_secs(timeout_seconds);
 
     use futures::StreamExt;

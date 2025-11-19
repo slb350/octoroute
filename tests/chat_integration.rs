@@ -39,12 +39,12 @@ async fn mock_chat_handler(
     let no_exclude = octoroute::models::ExclusionSet::new();
     let endpoint = state
         .selector()
-        .select(decision.target, &no_exclude)
+        .select(decision.target(), &no_exclude)
         .await
         .ok_or_else(|| {
             AppError::RoutingFailed(format!(
                 "No available endpoints for tier {:?}",
-                decision.target
+                decision.target()
             ))
         })?;
 
@@ -52,9 +52,9 @@ async fn mock_chat_handler(
     // This tests validation, routing, selection, and response serialization
     let response = ChatResponse {
         content: "Mock response for testing".to_string(),
-        model_tier: decision.target.into(),
+        model_tier: decision.target().into(),
         model_name: endpoint.name().to_string(),
-        routing_strategy: decision.strategy,
+        routing_strategy: decision.strategy(),
     };
 
     Ok(Json(response))

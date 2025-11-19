@@ -160,22 +160,22 @@ router_model = "balanced"
     // CRITICAL ASSERTION - Verify routing strategy is Rule (not Llm)
     // ═══════════════════════════════════════════════════════════════════════════
     assert_eq!(
-        decision.strategy,
+        decision.strategy(),
         RoutingStrategy::Rule,
         "Strategy should be Rule when rule-based routing matches, got: {:?}",
-        decision.strategy
+        decision.strategy()
     );
 
     assert_eq!(
-        decision.target,
+        decision.target(),
         octoroute::router::TargetModel::Fast,
         "Should route to Fast tier for casual chat with low importance"
     );
 
     println!("✅ Verified rule-based routing returns RoutingStrategy::Rule");
     println!("   - Metadata matched rule");
-    println!("   - Strategy: {:?}", decision.strategy);
-    println!("   - Target: {:?}", decision.target);
+    println!("   - Strategy: {:?}", decision.strategy());
+    println!("   - Target: {:?}", decision.target());
 }
 
 #[test]
@@ -185,9 +185,9 @@ fn test_routing_decision_preserves_llm_strategy() {
 
     let decision = RoutingDecision::new(TargetModel::Balanced, RoutingStrategy::Llm);
 
-    assert_eq!(decision.strategy, RoutingStrategy::Llm);
-    assert_eq!(decision.strategy.as_str(), "llm");
-    assert_eq!(decision.target, TargetModel::Balanced);
+    assert_eq!(decision.strategy(), RoutingStrategy::Llm);
+    assert_eq!(decision.strategy().as_str(), "llm");
+    assert_eq!(decision.target(), TargetModel::Balanced);
 
     println!("✅ RoutingDecision correctly preserves LLM strategy");
 }

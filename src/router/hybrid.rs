@@ -62,7 +62,21 @@ impl HybridRouter {
             "No rule matched, delegating to LLM router"
         );
 
-        let target = self.llm_router.route(user_prompt, meta).await?;
+        let target = self
+            .llm_router
+            .route(user_prompt, meta)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    user_prompt_preview = &user_prompt.chars().take(100).collect::<String>(),
+                    task_type = ?meta.task_type,
+                    importance = ?meta.importance,
+                    token_estimate = meta.token_estimate,
+                    "LLM router failed after rule router returned None"
+                );
+                e
+            })?;
 
         tracing::info!(
             target = ?target,
@@ -157,8 +171,8 @@ mod tests {
         assert!(result.is_ok());
 
         let decision = result.unwrap();
-        assert_eq!(decision.target, TargetModel::Fast);
-        assert_eq!(decision.strategy, RoutingStrategy::Rule);
+        assert_eq!(decision.target(), TargetModel::Fast);
+        assert_eq!(decision.strategy(), RoutingStrategy::Rule);
     }
 
     #[tokio::test]
@@ -178,8 +192,8 @@ mod tests {
         assert!(result.is_ok());
 
         let decision = result.unwrap();
-        assert_eq!(decision.target, TargetModel::Balanced);
-        assert_eq!(decision.strategy, RoutingStrategy::Rule);
+        assert_eq!(decision.target(), TargetModel::Balanced);
+        assert_eq!(decision.strategy(), RoutingStrategy::Rule);
     }
 
     #[tokio::test]
@@ -199,8 +213,8 @@ mod tests {
         assert!(result.is_ok());
 
         let decision = result.unwrap();
-        assert_eq!(decision.target, TargetModel::Deep);
-        assert_eq!(decision.strategy, RoutingStrategy::Rule);
+        assert_eq!(decision.target(), TargetModel::Deep);
+        assert_eq!(decision.strategy(), RoutingStrategy::Rule);
     }
 
     // Note: We cannot easily test the LLM fallback path without mocking

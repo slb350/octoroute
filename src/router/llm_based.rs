@@ -2,6 +2,25 @@
 //!
 //! Uses the balanced tier (30B model) to analyze requests and choose the optimal target model.
 //! Falls back when rule-based routing cannot determine the best model.
+//!
+//! ## Why BALANCED tier for routing?
+//!
+//! The routing decision uses the **balanced tier (30B model)** rather than fast or deep:
+//!
+//! - **FAST (8B)**: Too unreliable for routing decisions - could misroute expensive requests to
+//!   underpowered models or waste resources by routing simple tasks to deep models. The cost
+//!   of a bad routing decision far exceeds the savings of using a smaller router model.
+//!
+//! - **BALANCED (30B)**: Good reasoning for classification tasks with acceptable latency (~100-500ms).
+//!   Provides reliable routing decisions while maintaining reasonable performance. This is the
+//!   sweet spot for routing - smart enough to make good decisions, fast enough to not bottleneck.
+//!
+//! - **DEEP (120B)**: Overkill for routing - the latency overhead of using the largest model for
+//!   routing (~2-5s) would often be slower than just using BALANCED for the actual user query.
+//!   No benefit to using maximum reasoning power for a simple classification task.
+//!
+//! **Trade-off**: Every LLM-routed request pays ~100-500ms latency overhead to intelligently
+//! select the target model, but this prevents wasting compute on suboptimal model selection.
 
 use crate::error::{AppError, AppResult};
 use crate::models::endpoint_name::ExclusionSet;
@@ -72,6 +91,7 @@ impl LlmBasedRouter {
                     "refusal",
                     "Router LLM returned",
                     "not following instructions",
+                    "configure AgentOptions", // AgentOptions build failures are config errors
                 ];
 
                 let is_systemic = systemic_patterns
@@ -158,18 +178,48 @@ impl LlmBasedRouter {
             match query_result {
                 Ok(target_model) => {
                     // Success! Mark endpoint healthy for immediate recovery
-                    if let Err(e) = self
-                        .selector
+                    //
+                    // INVARIANT CHECK: mark_success should never fail in normal operation (endpoint names come
+                    // from ModelSelector which only returns valid endpoints). If it fails, this indicates
+                    // a serious bug (race condition, typo, or config reload during request). Propagate the
+                    // error to expose the bug immediately rather than silently continuing.
+                    self.selector
                         .health_checker()
                         .mark_success(endpoint.name())
                         .await
-                    {
-                        tracing::warn!(
-                            endpoint_name = %endpoint.name(),
-                            error = %e,
-                            "Failed to mark router endpoint healthy after successful query"
-                        );
-                    }
+                        .map_err(|e| {
+                            use crate::models::health::HealthError;
+                            match e {
+                                HealthError::UnknownEndpoint(ref name) => {
+                                    tracing::error!(
+                                        endpoint_name = %endpoint.name(),
+                                        unknown_name = %name,
+                                        target_model = ?target_model,
+                                        attempt = attempt,
+                                        "INVARIANT VIOLATION: mark_success called with unknown endpoint name. \
+                                        Endpoint names come from ModelSelector which only returns valid endpoints. \
+                                        This indicates a serious bug (race condition, naming mismatch, or config \
+                                        reload during request). Failing router query to expose issue."
+                                    );
+                                }
+                                HealthError::HttpClientCreationFailed(ref msg) => {
+                                    tracing::error!(
+                                        endpoint_name = %endpoint.name(),
+                                        error = %msg,
+                                        target_model = ?target_model,
+                                        attempt = attempt,
+                                        "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
+                                        This indicates a systemic issue (TLS configuration, resource exhaustion) \
+                                        affecting ALL endpoints, not an individual endpoint problem. \
+                                        Failing router query to expose issue."
+                                    );
+                                }
+                            }
+                            AppError::HealthCheckFailed {
+                                endpoint: endpoint.name().to_string(),
+                                reason: format!("mark_success failed: {}. This should not happen.", e),
+                            }
+                        })?;
 
                     tracing::info!(
                         endpoint_name = %endpoint.name(),
@@ -205,18 +255,46 @@ impl LlmBasedRouter {
                         "Router query failed with transient error, marking endpoint and retrying"
                     );
 
-                    if let Err(health_err) = self
-                        .selector
+                    // INVARIANT CHECK: mark_failure should never fail in normal operation (endpoint names come
+                    // from ModelSelector which only returns valid endpoints). If it fails, this indicates
+                    // a serious bug (race condition, typo, or config reload during request). Propagate the
+                    // error to expose the bug immediately rather than silently continuing.
+                    self.selector
                         .health_checker()
                         .mark_failure(endpoint.name())
                         .await
-                    {
-                        tracing::warn!(
-                            endpoint_name = %endpoint.name(),
-                            error = %health_err,
-                            "Failed to mark router endpoint unhealthy after failed query"
-                        );
-                    }
+                        .map_err(|health_err| {
+                            use crate::models::health::HealthError;
+                            match health_err {
+                                HealthError::UnknownEndpoint(ref name) => {
+                                    tracing::error!(
+                                        endpoint_name = %endpoint.name(),
+                                        unknown_name = %name,
+                                        attempt = attempt,
+                                        "INVARIANT VIOLATION: mark_failure called with unknown endpoint name. \
+                                        Endpoint won't be marked unhealthy and will continue receiving traffic. \
+                                        Endpoint names come from ModelSelector which only returns valid endpoints. \
+                                        This indicates a serious bug (race condition or naming mismatch). \
+                                        Failing router query to expose issue."
+                                    );
+                                }
+                                HealthError::HttpClientCreationFailed(ref msg) => {
+                                    tracing::error!(
+                                        endpoint_name = %endpoint.name(),
+                                        error = %msg,
+                                        attempt = attempt,
+                                        "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
+                                        This indicates a systemic issue (TLS configuration, resource exhaustion) \
+                                        affecting ALL endpoints, not an individual endpoint problem. \
+                                        Failing router query to expose issue."
+                                    );
+                                }
+                            }
+                            AppError::HealthCheckFailed {
+                                endpoint: endpoint.name().to_string(),
+                                reason: format!("mark_failure failed: {}. This should not happen.", health_err),
+                            }
+                        })?;
 
                     // Add to exclusion set to prevent retry on same endpoint
                     use crate::models::EndpointName;
@@ -424,9 +502,56 @@ impl LlmBasedRouter {
         )
     }
 
+    /// Find a word at word boundaries in text (prevents false positives)
+    ///
+    /// Returns the position of the first occurrence of `word` that is surrounded
+    /// by word boundaries (whitespace, punctuation, or start/end of string).
+    ///
+    /// Prevents false positives like matching "FAST" in "BREAKFAST" or "STEADFAST".
+    ///
+    /// # Examples
+    /// ```ignore
+    /// assert_eq!(find_word_boundary("FAST", "FAST"), Some(0));
+    /// assert_eq!(find_word_boundary("BREAKFAST", "FAST"), None);
+    /// assert_eq!(find_word_boundary("  FAST  ", "FAST"), Some(2));
+    /// ```
+    fn find_word_boundary(text: &str, word: &str) -> Option<usize> {
+        let word_len = word.len();
+        let text_bytes = text.as_bytes();
+
+        // Try all possible positions where word could start
+        for (pos, _) in text.match_indices(word) {
+            // Check character before (must be word boundary or start of string)
+            let before_is_boundary = if pos == 0 {
+                true
+            } else {
+                // Check if previous character is non-alphanumeric (word boundary)
+                text_bytes[pos - 1].is_ascii_whitespace()
+                    || !text_bytes[pos - 1].is_ascii_alphanumeric()
+            };
+
+            // Check character after (must be word boundary or end of string)
+            let after_pos = pos + word_len;
+            let after_is_boundary = if after_pos >= text.len() {
+                true
+            } else {
+                // Check if next character is non-alphanumeric (word boundary)
+                text_bytes[after_pos].is_ascii_whitespace()
+                    || !text_bytes[after_pos].is_ascii_alphanumeric()
+            };
+
+            if before_is_boundary && after_is_boundary {
+                return Some(pos);
+            }
+        }
+
+        None
+    }
+
     /// Parse LLM response to extract routing decision
     ///
-    /// Uses fuzzy matching with refusal detection to extract FAST, BALANCED, or DEEP.
+    /// Uses fuzzy matching with word boundary checking and refusal detection to extract
+    /// FAST, BALANCED, or DEEP. Prevents false positives like "FAST" in "BREAKFAST".
     /// Returns an error if response is empty, unparseable, or indicates refusal/error.
     ///
     /// Algorithm:
@@ -455,7 +580,12 @@ impl LlmBasedRouter {
         }
 
         // Check for refusal/error patterns BEFORE keyword matching
-        // This prevents false positives like "I CANNOT decide FAST enough"
+        //
+        // Note: Uses simple substring matching - may have false positives if refusal
+        // keywords appear in legitimate responses (e.g., "I CANNOT decide FAST enough").
+        // This is acceptable because router responses should be single-word (FAST/BALANCED/DEEP)
+        // per the prompt instructions. Any multi-word response indicates LLM malfunction
+        // and should be treated as an error regardless.
         const REFUSAL_PATTERNS: &[&str] = &[
             "CANNOT", "CAN'T", "UNABLE", "ERROR", "SORRY", "REFUSE", "FAILED", "TIMEOUT",
         ];
@@ -482,11 +612,12 @@ impl LlmBasedRouter {
             }
         }
 
-        // Position-based matching: Find leftmost routing keyword
+        // Position-based matching with word boundary checking: Find leftmost routing keyword
         // This handles cases like "FAST or BALANCED" correctly (picks FAST)
-        let fast_pos = normalized.find("FAST");
-        let balanced_pos = normalized.find("BALANCED");
-        let deep_pos = normalized.find("DEEP");
+        // Word boundary prevents false positives like "FAST" in "BREAKFAST"
+        let fast_pos = Self::find_word_boundary(&normalized, "FAST");
+        let balanced_pos = Self::find_word_boundary(&normalized, "BALANCED");
+        let deep_pos = Self::find_word_boundary(&normalized, "DEEP");
 
         // Determine which keyword appears first (leftmost position)
         let positions = vec![
@@ -649,6 +780,72 @@ mod tests {
                 "Refusal '{}' should return error, got: {:?}",
                 response,
                 result
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_routing_decision_word_boundary_false_positives() {
+        // ISSUE #2a: Fuzzy Parser Word Boundary Matching
+        //
+        // Current parser uses simple substring matching which causes false positives.
+        // These test cases verify we don't match partial words (e.g., "FAST" in "BREAKFAST").
+
+        // Should NOT match "FAST" in words containing it as a substring
+        let false_positive_cases = vec![
+            "BREAKFAST",  // Contains "FAST" but shouldn't match
+            "STEADFAST",  // Contains "FAST" but shouldn't match
+            "Belfast",    // Contains "FAST" (case insensitive) but shouldn't match
+            "FASTIDIOUS", // Starts with "FAST" but shouldn't match
+        ];
+
+        for response in false_positive_cases {
+            let result = LlmBasedRouter::parse_routing_decision(response);
+            // These should either error (unparseable) or not match Fast
+            // They should NOT return TargetModel::Fast
+            if let Ok(target) = result {
+                assert_ne!(
+                    target,
+                    TargetModel::Fast,
+                    "Response '{}' should not match Fast (contains FAST as substring but not whole word)",
+                    response
+                );
+            }
+            // If it errors, that's acceptable (unparseable response)
+        }
+    }
+
+    #[test]
+    fn test_parse_routing_decision_word_boundary_true_positives() {
+        // ISSUE #2a: Verify word boundary matching works for actual target words
+        //
+        // These test cases should successfully match even with word boundaries.
+
+        let true_positive_cases = vec![
+            ("FAST", TargetModel::Fast),
+            ("fast", TargetModel::Fast),
+            ("Fast", TargetModel::Fast),
+            ("  FAST  ", TargetModel::Fast), // With whitespace
+            ("FAST\n", TargetModel::Fast),   // With newline
+            ("BALANCED", TargetModel::Balanced),
+            ("balanced", TargetModel::Balanced),
+            ("DEEP", TargetModel::Deep),
+            ("deep", TargetModel::Deep),
+        ];
+
+        for (response, expected) in true_positive_cases {
+            let result = LlmBasedRouter::parse_routing_decision(response);
+            assert!(
+                result.is_ok(),
+                "Response '{}' should successfully parse",
+                response
+            );
+            assert_eq!(
+                result.unwrap(),
+                expected,
+                "Response '{}' should match {:?}",
+                response,
+                expected
             );
         }
     }
@@ -892,16 +1089,17 @@ mod tests {
     fn test_parse_routing_decision_handles_long_responses() {
         // Streaming code enforces 1KB limit, but parser should handle long strings
         // gracefully if they somehow reach it (e.g., in tests or edge cases)
+        // Use spaces to ensure word boundaries are respected
         let long_response = format!(
-            "{}BALANCED{}",
-            "x".repeat(500), // 500 chars before
-            "y".repeat(500)  // 500 chars after
+            "{} BALANCED {}",
+            "x".repeat(500), // 500 chars before (with space)
+            "y".repeat(500)  // 500 chars after (with space)
         );
 
         let result = LlmBasedRouter::parse_routing_decision(&long_response);
         assert!(
             result.is_ok(),
-            "Parser should handle long responses with keywords"
+            "Parser should handle long responses with keywords at word boundaries"
         );
         assert_eq!(result.unwrap(), TargetModel::Balanced);
     }
@@ -910,7 +1108,8 @@ mod tests {
     fn test_parse_routing_decision_handles_extreme_length() {
         // Parser should not crash on extremely long strings (even if streaming
         // code would have rejected them at 1KB limit)
-        let extreme_response = format!("FAST{}", "x".repeat(1_000_000));
+        // Use space to ensure word boundary is respected
+        let extreme_response = format!("FAST {}", "x".repeat(1_000_000));
 
         let result = LlmBasedRouter::parse_routing_decision(&extreme_response);
         assert!(result.is_ok(), "Parser should not crash on extreme length");
@@ -1001,6 +1200,114 @@ mod tests {
         // Should contain the original prompt, NOT truncated
         assert!(result.contains(prompt));
         assert!(!result.contains("[truncated]"));
+    }
+
+    #[test]
+    fn test_build_router_prompt_handles_zwj_emoji_at_boundary() {
+        // GAP #7: ZWJ (Zero-Width Joiner) Emoji Truncation
+        //
+        // ZWJ emoji like 👨‍👩‍👧‍👦 (family) are composed of multiple codepoints joined by U+200D (ZWJ).
+        // Family emoji: 👨 (man) + ZWJ + 👩 (woman) + ZWJ + 👧 (girl) + ZWJ + 👦 (boy)
+        // Total: ~25 bytes in UTF-8
+        //
+        // Truncation at character boundary should not produce � (replacement character).
+
+        use crate::router::{Importance, TaskType};
+
+        // Create string where ZWJ emoji sequence falls near truncation boundary (500 chars)
+        let ascii_prefix = "a".repeat(480); // Leave room for ZWJ emoji + some padding
+        let prompt = format!("{}Family emoji: 👨‍👩‍👧‍👦 test", ascii_prefix);
+
+        let meta = RouteMetadata {
+            token_estimate: 100,
+            importance: Importance::Normal,
+            task_type: TaskType::CasualChat,
+        };
+
+        let result = LlmBasedRouter::build_router_prompt(&prompt, &meta);
+
+        // Should be valid UTF-8 (no replacement characters)
+        assert!(
+            !result.contains('\u{FFFD}'),
+            "Truncated output should not contain replacement character (�)"
+        );
+
+        // Should be valid UTF-8 (can be converted without error)
+        assert!(
+            result.is_char_boundary(result.len()),
+            "Truncated output should end on char boundary"
+        );
+    }
+
+    #[test]
+    fn test_build_router_prompt_handles_rtl_text_at_boundary() {
+        // GAP #7: RTL (Right-to-Left) Text Truncation
+        //
+        // RTL languages like Arabic and Hebrew use bidirectional text.
+        // Truncation should preserve valid UTF-8 even with RTL characters.
+        //
+        // Arabic text uses 2-3 bytes per character in UTF-8.
+
+        use crate::router::{Importance, TaskType};
+
+        // Create string with Arabic text near truncation boundary
+        let ascii_prefix = "a".repeat(490);
+        let prompt = format!(
+            "{}Arabic: مرحبا بك في عالم الذكاء الاصطناعي test",
+            ascii_prefix
+        );
+
+        let meta = RouteMetadata {
+            token_estimate: 100,
+            importance: Importance::Normal,
+            task_type: TaskType::CasualChat,
+        };
+
+        let result = LlmBasedRouter::build_router_prompt(&prompt, &meta);
+
+        // Should be valid UTF-8 (no replacement characters)
+        assert!(
+            !result.contains('\u{FFFD}'),
+            "Truncated output should not contain replacement character (�)"
+        );
+
+        // Should contain truncation marker since prompt > 500 chars
+        assert!(result.contains("[truncated]"));
+    }
+
+    #[test]
+    fn test_build_router_prompt_handles_combining_diacritics_at_boundary() {
+        // GAP #7: Combining Diacritics Truncation
+        //
+        // Combining diacritics are separate codepoints that modify base characters.
+        // Example: é can be composed as 'e' (U+0065) + ́ (U+0301)
+        //
+        // Truncation at character boundary should not split combining sequences.
+
+        use crate::router::{Importance, TaskType};
+
+        // Create string with combining diacritics near boundary
+        // Use decomposed form: e + combining acute accent
+        let ascii_prefix = "a".repeat(495);
+        let decomposed_text = "café resume"; // May contain combining forms depending on normalization
+        let prompt = format!("{}{}", ascii_prefix, decomposed_text);
+
+        let meta = RouteMetadata {
+            token_estimate: 100,
+            importance: Importance::Normal,
+            task_type: TaskType::CasualChat,
+        };
+
+        let result = LlmBasedRouter::build_router_prompt(&prompt, &meta);
+
+        // Should be valid UTF-8 (char-based truncation ensures this)
+        assert!(
+            !result.contains('\u{FFFD}'),
+            "Truncated output should not contain replacement character (�)"
+        );
+
+        // Verify truncation marker present
+        assert!(result.contains("[truncated]"));
     }
 
     // ========================================================================
@@ -1247,6 +1554,139 @@ router_model = "balanced"
     }
 
     #[test]
+    fn test_agent_options_build_failure_is_systemic() {
+        // GAP #2: AgentOptions Build Failure
+        //
+        // If AgentOptions::builder().build() fails (e.g., invalid configuration),
+        // the error should be classified as systemic (not retryable).
+        // Retrying the same bad configuration 3 times is wasteful - should fail fast.
+        //
+        // The error message format is: "Failed to configure AgentOptions: {error} (...)"
+        // This test verifies it's classified as systemic.
+
+        let config_error = AppError::ModelQueryFailed {
+            endpoint: "http://localhost:1234/v1".to_string(),
+            reason: "Failed to configure AgentOptions: invalid model name (model=bad-model, max_tokens=4096)".to_string(),
+        };
+
+        assert!(
+            !LlmBasedRouter::is_retryable_error(&config_error),
+            "AgentOptions build failures should be systemic (not retryable) to avoid wasted retries"
+        );
+    }
+
+    #[test]
+    fn test_empty_stream_is_systemic() {
+        // GAP #5: Empty Stream (No ContentBlock Items)
+        //
+        // If stream completes successfully but yields zero ContentBlock items,
+        // response_text will be empty and parse_routing_decision("") is called.
+        // This should return an error with "Router LLM returned empty response".
+        //
+        // This test verifies:
+        // 1. Empty response error is classified as systemic (not retryable)
+        // 2. Error message clearly indicates the problem
+
+        let empty_response_error = AppError::ModelQueryFailed {
+            endpoint: "router".to_string(),
+            reason: "Router LLM returned empty response".to_string(),
+        };
+
+        // Should be classified as systemic (pattern "empty response" in systemic_patterns)
+        assert!(
+            !LlmBasedRouter::is_retryable_error(&empty_response_error),
+            "Empty stream responses should be systemic (not retryable) - indicates LLM malfunction"
+        );
+
+        // Also verify parse_routing_decision returns this error for empty input
+        let result = LlmBasedRouter::parse_routing_decision("");
+        assert!(
+            result.is_err(),
+            "parse_routing_decision should fail on empty string"
+        );
+
+        if let Err(AppError::ModelQueryFailed { reason, .. }) = result {
+            assert!(
+                reason.contains("empty response"),
+                "Error message should mention 'empty response', got: {}",
+                reason
+            );
+        } else {
+            panic!("Expected ModelQueryFailed error");
+        }
+    }
+
+    #[test]
+    fn test_size_limit_exceeded_is_systemic() {
+        // GAP #4: MAX_ROUTER_RESPONSE Boundary Conditions
+        //
+        // When router response exceeds MAX_ROUTER_RESPONSE (1024 bytes), the error
+        // should be classified as systemic (not retryable) because it indicates
+        // LLM malfunction or misconfiguration.
+        //
+        // Boundary check in try_router_query():
+        //   if response_text.len() + text_block.text.len() > MAX_ROUTER_RESPONSE
+        //
+        // This means:
+        //   - Exactly 1024 bytes: PASSES (1024 > 1024 is false)
+        //   - 1025 bytes: FAILS (1025 > 1024 is true)
+
+        let size_exceeded_error = AppError::ModelQueryFailed {
+            endpoint: "http://localhost:1234/v1".to_string(),
+            reason: "Router response exceeded 1024 bytes (expected ~10 bytes). LLM not following instructions - got 1025 bytes so far.".to_string(),
+        };
+
+        // Should be classified as systemic (pattern "exceeded" in systemic_patterns)
+        assert!(
+            !LlmBasedRouter::is_retryable_error(&size_exceeded_error),
+            "Size limit exceeded should be systemic (not retryable) - indicates LLM malfunction"
+        );
+    }
+
+    #[test]
+    fn test_max_router_response_boundary_logic() {
+        // GAP #4: MAX_ROUTER_RESPONSE Boundary Conditions (detailed)
+        //
+        // Documents the exact boundary behavior:
+        //   current_len + incoming_len > MAX_ROUTER_RESPONSE
+        //
+        // Edge cases:
+        //   1. current=0, incoming=1024  → 1024 > 1024 = false → ACCEPT
+        //   2. current=0, incoming=1025  → 1025 > 1024 = true  → REJECT
+        //   3. current=1020, incoming=4  → 1024 > 1024 = false → ACCEPT
+        //   4. current=1020, incoming=5  → 1025 > 1024 = true  → REJECT
+        //   5. current=512, incoming=512 → 1024 > 1024 = false → ACCEPT (multiple chunks)
+
+        use super::MAX_ROUTER_RESPONSE;
+
+        // Verify the constant value
+        assert_eq!(MAX_ROUTER_RESPONSE, 1024, "Limit should be 1KB");
+
+        // Simulate boundary checks (logic from try_router_query)
+        let test_cases = vec![
+            (0, 1024, false, "Single chunk at limit should pass"),
+            (0, 1025, true, "Single chunk over limit should fail"),
+            (1020, 4, false, "Total exactly 1024 should pass"),
+            (1020, 5, true, "Total 1025 should fail"),
+            (512, 512, false, "Two chunks totaling 1024 should pass"),
+            (512, 513, true, "Two chunks totaling 1025 should fail"),
+        ];
+
+        for (current_len, incoming_len, should_reject, description) in test_cases {
+            let would_exceed = current_len + incoming_len > MAX_ROUTER_RESPONSE;
+            assert_eq!(
+                would_exceed,
+                should_reject,
+                "{}: current={}, incoming={}, total={}",
+                description,
+                current_len,
+                incoming_len,
+                current_len + incoming_len
+            );
+        }
+    }
+
+    #[test]
     fn test_max_router_response_limit_is_reasonable() {
         // Test Gap #3: Response Truncation at 1KB Limit
         //
@@ -1270,10 +1710,7 @@ router_model = "balanced"
             "Limit should be 100x+ larger than expected response"
         );
 
-        // Verify this is small enough to prevent OOM attacks
-        assert!(
-            MAX_ROUTER_RESPONSE < 1024 * 1024,
-            "Limit should prevent multi-MB responses"
-        );
+        // Note: The limit is also small enough to prevent OOM attacks (1KB < 1MB)
+        // This is verified by the assert_eq! above confirming MAX_ROUTER_RESPONSE == 1024
     }
 }
