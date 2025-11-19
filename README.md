@@ -304,16 +304,28 @@ RUST_LOG=debug cargo run
 
 ## Project Status
 
-**Current Phase**: Architecture & initial design
+**Current Phase**: Phase 2c - Priority-based selection with health checking
 
 **Roadmap**:
 
 - [x] Project setup and design
-- [ ] Phase 1: Rule-based router + HTTP server
-- [ ] Phase 2: Model integration with `open-agent-sdk`
+- [x] Phase 1: Rule-based router + HTTP server
+- [x] Phase 2a: Model integration with `open-agent-sdk` (round-robin selection)
+- [x] Phase 2b: Weighted load balancing
+- [x] Phase 2c: Priority-based selection with health checking
 - [ ] Phase 3: LLM-based routing
 - [ ] Phase 4: Tool-based routing (experimental)
 - [ ] Phase 5: Observability & production hardening
+
+**Features implemented**:
+- ✅ HTTP API with `/chat`, `/health`, `/models` endpoints
+- ✅ Multi-tier model selection (fast/balanced/deep)
+- ✅ Priority-based routing with weighted distribution
+- ✅ Health checking with automatic endpoint recovery
+- ✅ Retry logic with request-scoped exclusion
+- ✅ Timeout enforcement (connection + streaming)
+- ✅ Comprehensive config validation
+- ✅ 99 tests passing (unit + integration)
 
 See `CLAUDE.md` for detailed development workflow.
 
@@ -385,10 +397,11 @@ Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guideli
 **Areas for contribution**:
 
 - Additional routing strategies (e.g., RL-based)
-- Model health checks and failover
+- Streaming response support (SSE/WebSocket)
 - Caching layer for repeated prompts
 - Web UI for routing visualization
 - More comprehensive benchmarks
+- LLM-based routing implementation
 
 ---
 

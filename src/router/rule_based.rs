@@ -231,4 +231,122 @@ mod tests {
             }
         }
     }
+
+    // Boundary condition tests for token thresholds
+    #[test]
+    fn test_boundary_255_tokens_casual_chat_routes_to_fast() {
+        let router = RuleBasedRouter::new();
+        let meta = RouteMetadata::new(255)
+            .with_task_type(TaskType::CasualChat)
+            .with_importance(Importance::Normal);
+
+        let target = router.route(&meta);
+        assert_eq!(
+            target,
+            Some(TargetModel::Fast),
+            "255 tokens should match Rule 1 (< 256)"
+        );
+    }
+
+    #[test]
+    fn test_boundary_256_tokens_casual_chat_no_match() {
+        let router = RuleBasedRouter::new();
+        let meta = RouteMetadata::new(256)
+            .with_task_type(TaskType::CasualChat)
+            .with_importance(Importance::Normal);
+
+        let target = router.route(&meta);
+        assert_eq!(
+            target, None,
+            "256 tokens should NOT match Rule 1 (requires < 256)"
+        );
+    }
+
+    #[test]
+    fn test_boundary_1024_tokens_code_routes_to_balanced() {
+        let router = RuleBasedRouter::new();
+        let meta = RouteMetadata::new(1024)
+            .with_task_type(TaskType::Code)
+            .with_importance(Importance::Normal);
+
+        let target = router.route(&meta);
+        assert_eq!(
+            target,
+            Some(TargetModel::Balanced),
+            "1024 tokens should match Code → Balanced (not > 1024)"
+        );
+    }
+
+    #[test]
+    fn test_boundary_1025_tokens_code_routes_to_deep() {
+        let router = RuleBasedRouter::new();
+        let meta = RouteMetadata::new(1025)
+            .with_task_type(TaskType::Code)
+            .with_importance(Importance::Normal);
+
+        let target = router.route(&meta);
+        assert_eq!(
+            target,
+            Some(TargetModel::Deep),
+            "1025 tokens should match Code → Deep (> 1024)"
+        );
+    }
+
+    #[test]
+    fn test_boundary_199_tokens_question_answer_no_match() {
+        let router = RuleBasedRouter::new();
+        let meta = RouteMetadata::new(199)
+            .with_task_type(TaskType::QuestionAnswer)
+            .with_importance(Importance::Normal);
+
+        let target = router.route(&meta);
+        assert_eq!(
+            target, None,
+            "199 tokens should NOT match Rule 4 (requires >= 200)"
+        );
+    }
+
+    #[test]
+    fn test_boundary_200_tokens_question_answer_routes_to_balanced() {
+        let router = RuleBasedRouter::new();
+        let meta = RouteMetadata::new(200)
+            .with_task_type(TaskType::QuestionAnswer)
+            .with_importance(Importance::Normal);
+
+        let target = router.route(&meta);
+        assert_eq!(
+            target,
+            Some(TargetModel::Balanced),
+            "200 tokens should match Rule 4 (>= 200)"
+        );
+    }
+
+    #[test]
+    fn test_boundary_2047_tokens_question_answer_routes_to_balanced() {
+        let router = RuleBasedRouter::new();
+        let meta = RouteMetadata::new(2047)
+            .with_task_type(TaskType::QuestionAnswer)
+            .with_importance(Importance::Normal);
+
+        let target = router.route(&meta);
+        assert_eq!(
+            target,
+            Some(TargetModel::Balanced),
+            "2047 tokens should match Rule 4 (< 2048)"
+        );
+    }
+
+    #[test]
+    fn test_boundary_2048_tokens_question_answer_no_match() {
+        let router = RuleBasedRouter::new();
+        let meta = RouteMetadata::new(2048)
+            .with_task_type(TaskType::QuestionAnswer)
+            .with_importance(Importance::Normal);
+
+        let target = router.route(&meta);
+        assert_eq!(
+            target, None,
+            "2048 tokens should NOT match Rule 4 (requires < 2048)"
+        );
+    }
 }

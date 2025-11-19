@@ -41,19 +41,55 @@ pub struct ModelsConfig {
 }
 
 /// Individual model endpoint configuration
+///
+/// All fields are private to enforce invariants. Configuration is loaded via
+/// deserialization and validated via Config::validate(). After construction,
+/// fields cannot be mutated, ensuring validated data remains valid.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ModelEndpoint {
-    pub name: String,
-    pub base_url: String,
-    pub max_tokens: usize,
+    name: String,
+    base_url: String,
+    max_tokens: usize,
     #[serde(default = "default_temperature")]
-    pub temperature: f64,
-    /// Load balancing weight (Phase 2 feature)
+    temperature: f64,
+    /// Load balancing weight (Phase 2b/2c feature)
     #[serde(default = "default_weight")]
-    pub weight: f64,
-    /// Priority level (higher = tried first, Phase 2 feature)
+    weight: f64,
+    /// Priority level (higher = tried first, Phase 2b/2c feature)
     #[serde(default = "default_priority")]
-    pub priority: u8,
+    priority: u8,
+}
+
+impl ModelEndpoint {
+    /// Get the endpoint name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the endpoint base URL
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Get the maximum number of tokens for this endpoint
+    pub fn max_tokens(&self) -> usize {
+        self.max_tokens
+    }
+
+    /// Get the temperature parameter for this endpoint
+    pub fn temperature(&self) -> f64 {
+        self.temperature
+    }
+
+    /// Get the load balancing weight for this endpoint
+    pub fn weight(&self) -> f64 {
+        self.weight
+    }
+
+    /// Get the priority level for this endpoint (higher = tried first)
+    pub fn priority(&self) -> u8 {
+        self.priority
+    }
 }
 
 fn default_temperature() -> f64 {
@@ -139,6 +175,85 @@ impl Config {
 
     /// Validate configuration after parsing
     fn validate(&self) -> crate::error::AppResult<()> {
+        // Validate ModelEndpoint fields across all tiers
+        for (tier_name, endpoints) in [
+            ("fast", &self.models.fast),
+            ("balanced", &self.models.balanced),
+            ("deep", &self.models.deep),
+        ] {
+            for endpoint in endpoints {
+                // Validate weight: must be positive and not NaN
+                if endpoint.weight <= 0.0
+                    || endpoint.weight.is_nan()
+                    || endpoint.weight.is_infinite()
+                {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: Endpoint '{}' in tier '{}' has invalid weight {}. \
+                        Weight must be a positive finite number.",
+                        endpoint.name, tier_name, endpoint.weight
+                    )));
+                }
+
+                // Validate max_tokens: must be positive
+                if endpoint.max_tokens == 0 {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: Endpoint '{}' in tier '{}' has max_tokens=0. \
+                        max_tokens must be greater than 0.",
+                        endpoint.name, tier_name
+                    )));
+                }
+
+                // Validate max_tokens: must not exceed u32::MAX (required for open-agent-sdk)
+                if endpoint.max_tokens > u32::MAX as usize {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: Endpoint '{}' in tier '{}' has max_tokens={} which exceeds u32::MAX ({}). \
+                        max_tokens must fit in u32 for compatibility with open-agent-sdk.",
+                        endpoint.name,
+                        tier_name,
+                        endpoint.max_tokens,
+                        u32::MAX
+                    )));
+                }
+
+                // Validate base_url: must start with http:// or https://
+                if !endpoint.base_url.starts_with("http://")
+                    && !endpoint.base_url.starts_with("https://")
+                {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: Endpoint '{}' in tier '{}' has invalid base_url '{}'. \
+                        base_url must start with 'http://' or 'https://'.",
+                        endpoint.name, tier_name, endpoint.base_url
+                    )));
+                }
+
+                // Validate base_url: must end with /v1
+                // This is required because health checks append "/models" to get "/v1/models"
+                // Without this validation, users might configure "http://host:port" which would
+                // result in health checks trying "/models" (404) instead of "/v1/models"
+                if !endpoint.base_url.ends_with("/v1") {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: Endpoint '{}' in tier '{}' has invalid base_url '{}'. \
+                        base_url must end with '/v1' (e.g., 'http://host:port/v1'). \
+                        This is required for health checks to work correctly.",
+                        endpoint.name, tier_name, endpoint.base_url
+                    )));
+                }
+
+                // Validate temperature: must be between 0.0 and 2.0 (standard LLM range)
+                if endpoint.temperature < 0.0
+                    || endpoint.temperature > 2.0
+                    || endpoint.temperature.is_nan()
+                    || endpoint.temperature.is_infinite()
+                {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: Endpoint '{}' in tier '{}' has invalid temperature {}. \
+                        temperature must be a finite number between 0.0 and 2.0.",
+                        endpoint.name, tier_name, endpoint.temperature
+                    )));
+                }
+            }
+        }
+
         // Validate that each model tier has at least one endpoint
         if self.models.fast.is_empty() {
             return Err(crate::error::AppError::Config(
@@ -173,6 +288,19 @@ impl Config {
             return Err(crate::error::AppError::Config(format!(
                 "Configuration error: metrics_port ({}) cannot be the same as server port ({})",
                 self.observability.metrics_port, self.server.port
+            )));
+        }
+
+        // Validate request timeout
+        if self.server.request_timeout_seconds == 0 {
+            return Err(crate::error::AppError::Config(
+                "Configuration error: request_timeout_seconds must be greater than 0".to_string(),
+            ));
+        }
+        if self.server.request_timeout_seconds > 300 {
+            return Err(crate::error::AppError::Config(format!(
+                "Configuration error: request_timeout_seconds cannot exceed 300 seconds (5 minutes), got {}",
+                self.server.request_timeout_seconds
             )));
         }
 
@@ -439,5 +567,136 @@ metrics_port = 3000
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("metrics_port"));
         assert!(err_msg.contains("3000"));
+    }
+
+    #[test]
+    fn test_config_validation_negative_weight_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.fast[0].weight = -1.0; // Invalid: negative weight
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("weight"));
+        assert!(err_msg.contains("positive"));
+    }
+
+    #[test]
+    fn test_config_validation_zero_weight_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.balanced[0].weight = 0.0; // Invalid: zero weight
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("weight"));
+        assert!(err_msg.contains("positive"));
+    }
+
+    #[test]
+    fn test_config_validation_nan_weight_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.deep[0].weight = f64::NAN; // Invalid: NaN weight
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("weight"));
+    }
+
+    #[test]
+    fn test_config_validation_zero_max_tokens_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.fast[0].max_tokens = 0; // Invalid: zero max_tokens
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("max_tokens"));
+        assert!(err_msg.contains("greater than 0"));
+    }
+
+    #[test]
+    fn test_config_validation_invalid_base_url_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.balanced[0].base_url = "ftp://invalid.com".to_string(); // Invalid: not http/https
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("base_url"));
+        assert!(err_msg.contains("http"));
+    }
+
+    #[test]
+    fn test_config_validation_missing_protocol_base_url_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.deep[0].base_url = "localhost:1234/v1".to_string(); // Invalid: missing protocol
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("base_url"));
+        assert!(err_msg.contains("http"));
+    }
+
+    #[test]
+    fn test_config_validation_base_url_must_end_with_v1() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.fast[0].base_url = "http://localhost:1234".to_string(); // Invalid: missing /v1
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("base_url"));
+        assert!(err_msg.contains("/v1"));
+        assert!(err_msg.contains("health checks"));
+    }
+
+    #[test]
+    fn test_config_validation_zero_timeout_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.server.request_timeout_seconds = 0; // Invalid: zero timeout
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("request_timeout_seconds") && err_msg.contains("greater than 0"),
+            "Expected error about request_timeout_seconds > 0, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_config_validation_excessive_timeout_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.server.request_timeout_seconds = 301; // Invalid: exceeds 300 second limit
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("request_timeout_seconds") && err_msg.contains("300"),
+            "Expected error about request_timeout_seconds max 300, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_config_validation_valid_timeout_succeeds() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+
+        // Test lower bound (1 second)
+        config.server.request_timeout_seconds = 1;
+        assert!(config.validate().is_ok());
+
+        // Test upper bound (300 seconds)
+        config.server.request_timeout_seconds = 300;
+        assert!(config.validate().is_ok());
+
+        // Test typical value (30 seconds)
+        config.server.request_timeout_seconds = 30;
+        assert!(config.validate().is_ok());
     }
 }
