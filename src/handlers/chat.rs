@@ -6,7 +6,7 @@ use crate::config::ModelEndpoint;
 use crate::error::{AppError, AppResult};
 use crate::handlers::AppState;
 use crate::models::{EndpointName, ExclusionSet};
-use crate::router::{Importance, RouteMetadata, TaskType};
+use crate::router::{Importance, RouteMetadata, TargetModel, TaskType};
 use axum::{Json, extract::State, response::IntoResponse};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::time::Duration;
@@ -120,6 +120,25 @@ pub struct ChatResponse {
     pub model_tier: ModelTier,
     /// Which specific endpoint was used
     pub model_name: String,
+}
+
+impl ChatResponse {
+    /// Create a new ChatResponse with guaranteed consistency between endpoint and model_name
+    ///
+    /// Use this constructor in production code to ensure `model_name` always matches
+    /// an actual endpoint from the configuration.
+    ///
+    /// # Arguments
+    /// * `content` - The model's response text
+    /// * `endpoint` - The endpoint that generated the response (guarantees valid model_name)
+    /// * `tier` - The tier used for routing (fast, balanced, deep)
+    pub fn new(content: String, endpoint: &ModelEndpoint, tier: TargetModel) -> Self {
+        Self {
+            content,
+            model_tier: tier.into(),
+            model_name: endpoint.name().to_string(),
+        }
+    }
 }
 
 /// POST /chat handler
@@ -302,11 +321,7 @@ pub async fn handler(
                     "Request completed successfully"
                 );
 
-                let response = ChatResponse {
-                    content: response_text,
-                    model_tier: target.into(),
-                    model_name: endpoint.name().to_string(),
-                };
+                let response = ChatResponse::new(response_text, &endpoint, target);
 
                 return Ok(Json(response));
             }
