@@ -157,3 +157,66 @@ async fn test_failures_dont_hang_indefinitely() {
         elapsed
     );
 }
+
+#[tokio::test]
+async fn test_timeout_enforced_across_full_retry_sequence() {
+    // This test verifies that when a request times out on each retry attempt,
+    // the total time across all 3 retries is bounded and doesn't exceed
+    // a reasonable limit (timeout * retries + overhead).
+    //
+    // With MAX_RETRIES = 3 and timeout = 1 second:
+    // - Theoretical max: 3 seconds (1 second per attempt)
+    // - Practical max: ~4 seconds (allowing for overhead)
+    //
+    // This ensures we don't have unbounded waiting that could hang the system.
+
+    let config = Arc::new(create_short_timeout_config());
+    let state = AppState::new(config.clone());
+
+    // Use non-routable IP that will timeout (won't get immediate connection refused)
+    // 192.0.2.0/24 is TEST-NET-1, reserved for documentation, guaranteed to timeout
+    let json = r#"{"message": "Test message that will timeout", "importance": "low", "task_type": "casual_chat"}"#;
+    let request: octoroute::handlers::chat::ChatRequest = serde_json::from_str(json).unwrap();
+
+    let start = std::time::Instant::now();
+
+    let result = octoroute::handlers::chat::handler(
+        axum::extract::State(state),
+        axum::Extension(octoroute::middleware::RequestId::new()),
+        axum::Json(request),
+    )
+    .await;
+
+    let elapsed = start.elapsed();
+
+    // Should fail (all retries exhausted due to timeouts)
+    assert!(result.is_err(), "Request should fail after all retries");
+
+    // Total time should be bounded
+    // With 3 retries and 1-second timeout per attempt:
+    // - Minimum: 3 seconds (if each times out exactly at 1 second)
+    // - Maximum: 4 seconds (allowing ~1 second total overhead for retry logic)
+    //
+    // Note: Connection timeouts to non-routable IPs can sometimes fail faster
+    // than the configured timeout, so we check the upper bound only
+    assert!(
+        elapsed.as_secs() <= 4,
+        "Total retry sequence should complete within reasonable time (3-4s), took {:?}",
+        elapsed
+    );
+
+    // If all 3 attempts actually timed out (rather than connection refused),
+    // we'd expect at least ~3 seconds total
+    // However, non-routable IPs might fail faster, so this is informational only
+    if elapsed.as_secs() >= 3 {
+        println!(
+            "✓ All retry attempts likely timed out (took {:?}, expected ~3s)",
+            elapsed
+        );
+    } else {
+        println!(
+            "ℹ Retry attempts failed quickly (took {:?}), likely connection refused rather than timeout",
+            elapsed
+        );
+    }
+}
