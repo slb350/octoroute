@@ -250,22 +250,33 @@ pub async fn handler(
         {
             Ok(response_text) => {
                 // Success! Mark endpoint as healthy to enable immediate recovery
-                if let Err(e) = state
+                //
+                // CRITICAL: If mark_success fails, this indicates a serious bug (race condition,
+                // typo in endpoint naming, etc.). We propagate the error to fail the request
+                // rather than silently continuing, which would leave the system in an
+                // inconsistent state where the endpoint remains unhealthy despite working.
+                state
                     .selector()
                     .health_checker()
                     .mark_success(endpoint.name())
                     .await
-                {
-                    tracing::error!(
-                        endpoint_name = %endpoint.name(),
-                        error = %e,
-                        selected_tier = ?target,
-                        attempt = attempt,
-                        "CRITICAL BUG: mark_success failed after successful request. \
-                        Endpoint will remain unhealthy despite working. This indicates a race \
-                        condition or typo in endpoint naming. Investigate immediately!"
-                    );
-                }
+                    .map_err(|e| {
+                        tracing::error!(
+                            endpoint_name = %endpoint.name(),
+                            error = %e,
+                            selected_tier = ?target,
+                            attempt = attempt,
+                            "CRITICAL BUG: mark_success failed after successful request. \
+                            Endpoint will remain unhealthy despite working. This indicates a race \
+                            condition or typo in endpoint naming. Failing request to expose bug."
+                        );
+                        AppError::Internal(format!(
+                            "Health tracking failed for endpoint '{}': {}. \
+                            This is a critical bug - please report to developers.",
+                            endpoint.name(),
+                            e
+                        ))
+                    })?;
 
                 tracing::info!(
                     endpoint_name = %endpoint.name(),
@@ -298,22 +309,32 @@ pub async fn handler(
                 // Mark this endpoint as failed for GLOBAL health tracking.
                 // After 3 consecutive failures (across all requests), endpoint becomes unhealthy
                 // and won't be selected by ANY request until it recovers.
-                if let Err(e) = state
+                //
+                // CRITICAL: If mark_failure fails, this indicates a serious bug (race condition,
+                // typo in endpoint naming, etc.). We propagate the error to fail the request
+                // rather than silently continuing, which would allow the failing endpoint to
+                // keep receiving traffic.
+                state
                     .selector()
                     .health_checker()
                     .mark_failure(endpoint.name())
                     .await
-                {
-                    tracing::error!(
-                        endpoint_name = %endpoint.name(),
-                        error = %e,
-                        selected_tier = ?target,
-                        attempt = attempt,
-                        "CRITICAL BUG: mark_failure failed. Endpoint won't be marked unhealthy \
-                        and will continue receiving traffic despite failures. This indicates a race \
-                        condition or typo in endpoint naming. Investigate immediately!"
-                    );
-                }
+                    .map_err(|e| {
+                        tracing::error!(
+                            endpoint_name = %endpoint.name(),
+                            error = %e,
+                            selected_tier = ?target,
+                            attempt = attempt,
+                            "CRITICAL BUG: mark_failure failed. Endpoint won't be marked unhealthy \
+                            and will continue receiving traffic despite failures. This indicates a race \
+                            condition or typo in endpoint naming. Failing request to expose bug."
+                        );
+                        AppError::Internal(format!(
+                            "Health tracking failed for endpoint '{}': {}. \
+                            This is a critical bug - please report to developers.",
+                            endpoint.name(), e
+                        ))
+                    })?;
 
                 // Exclude this endpoint from subsequent retry attempts in THIS REQUEST ONLY.
                 // This is request-scoped exclusion - prevents retrying the same endpoint
