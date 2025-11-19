@@ -570,21 +570,19 @@ impl HealthChecker {
 
                     tracing::error!(
                         max_attempts = MAX_BACKGROUND_TASK_RESTARTS,
-                        "FATAL: Background health check task failed {} times. \
-                        Health monitoring cannot continue. Shutting down server to prevent \
-                        serving requests in degraded state. Operator intervention required. \
-                        This indicates a critical bug in the health check logic.",
+                        "DEGRADED: Background health check task failed {} times. \
+                        Health monitoring is now DISABLED to prevent infinite crash-loops. \
+                        Server will continue serving requests but without health monitoring. \
+                        Endpoints will not recover from failures automatically. \
+                        Operator intervention required - check TLS configuration, resource limits, and logs.",
                         MAX_BACKGROUND_TASK_RESTARTS
                     );
 
-                    // Panic to trigger process restart (if using process supervisor like systemd)
-                    // This prevents the server from continuing to run without health monitoring,
-                    // which would lead to endpoints never recovering from failures.
-                    panic!(
-                        "Background health check permanently failed after {} attempts. \
-                        Server cannot operate without health monitoring. Shutting down.",
-                        MAX_BACKGROUND_TASK_RESTARTS
-                    );
+                    // Graceful degradation: Disable health checking instead of panicking.
+                    // This prevents infinite crash-loops under process supervisors (systemd/Docker)
+                    // when the failure is systemic (e.g., corrupted TLS certs, resource exhaustion).
+                    // Server continues serving requests but without automatic endpoint recovery.
+                    break;
                 }
 
                 // Record restart attempt in metrics
