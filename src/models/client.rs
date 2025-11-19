@@ -11,9 +11,13 @@ use tokio::sync::Mutex;
 
 /// Wrapper around open_agent::Client with endpoint configuration
 ///
-/// **NOTE**: Currently unused in Phase 2a. The `/chat` handler uses the standalone
+/// **NOTE**: Unused through Phase 2c. The `/chat` handler uses the standalone
 /// `open_agent::query()` function to avoid `!Sync` issues with the stateful Client.
-/// This wrapper may be used in future phases (Phase 3+) for:
+///
+/// Retained for Phase 3 LLM-based routing which may require stateful conversation
+/// history. Will be removed if Phase 3 doesn't need it.
+///
+/// This wrapper may be used for:
 /// - Conversation history management
 /// - Stateful multi-turn conversations
 /// - Per-client session management
