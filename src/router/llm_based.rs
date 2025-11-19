@@ -567,14 +567,23 @@ impl LlmBasedRouter {
 
     /// Parse LLM response to extract routing decision
     ///
-    /// Uses fuzzy matching with word boundary checking and refusal detection to extract
-    /// FAST, BALANCED, or DEEP. Prevents false positives like "FAST" in "BREAKFAST".
+    /// Uses **word-boundary-aware fuzzy matching** with refusal detection to extract
+    /// FAST, BALANCED, or DEEP. Prevents false positives like "FAST" in "BREAKFAST" by
+    /// requiring keywords to be surrounded by word boundaries (whitespace, punctuation,
+    /// or start/end of string). See `find_word_boundary()` for matching logic.
+    ///
     /// Returns an error if response is empty, unparseable, or indicates refusal/error.
     ///
     /// Algorithm:
     /// 1. Check for refusal/error patterns (CANNOT, ERROR, UNABLE, SORRY) - return error
-    /// 2. Find leftmost routing keyword (FAST, BALANCED, DEEP) - return that tier
-    /// 3. If no keyword found - return error (unparseable)
+    /// 2. Find leftmost routing keyword (FAST, BALANCED, DEEP) at word boundary - return that tier
+    /// 3. If no keyword found at word boundaries - return error (unparseable)
+    ///
+    /// Examples:
+    /// - "FAST" → Fast (exact match)
+    /// - "I recommend FAST for this" → Fast (word boundary match)
+    /// - "BREAKFAST" → Error (no word boundary, substring ignored)
+    /// - "FAST or BALANCED" → Fast (leftmost at word boundary wins)
     ///
     /// Errors indicate serious problems:
     /// - LLM misconfiguration (wrong model/prompt)
