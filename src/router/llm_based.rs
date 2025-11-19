@@ -388,7 +388,11 @@ impl LlmBasedRouter {
                 );
                 AppError::ModelQueryFailed {
                     endpoint: endpoint.base_url().to_string(),
-                    reason: format!("Router query timeout after {} seconds", ROUTER_QUERY_TIMEOUT_SECS),
+                    reason: format!(
+                        "Router query timeout after {} seconds (attempt {}/{}). \
+                         Endpoint may be overloaded or unreachable.",
+                        ROUTER_QUERY_TIMEOUT_SECS, attempt, max_retries
+                    ),
                 }
             })?
             .map_err(|e| {
