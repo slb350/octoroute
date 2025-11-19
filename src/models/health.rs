@@ -145,6 +145,16 @@ impl HealthMetrics {
 pub enum HealthError {
     #[error("Unknown endpoint: {0}")]
     UnknownEndpoint(String),
+
+    /// Failed to create HTTP client for health checks
+    ///
+    /// This indicates a systemic issue (TLS configuration error, resource exhaustion,
+    /// library bug) rather than an individual endpoint failure. When this error occurs,
+    /// ALL subsequent health checks will fail.
+    #[error(
+        "Failed to create HTTP client: {0}. This indicates a systemic issue (TLS config, resource exhaustion)."
+    )]
+    HttpClientCreationFailed(String),
 }
 
 /// Health status for a single endpoint
@@ -383,26 +393,25 @@ impl HealthChecker {
     }
 
     /// Check a single endpoint's health via HTTP HEAD request
-    async fn check_endpoint(&self, endpoint: &ModelEndpoint) -> bool {
-        let client = match reqwest::Client::builder()
+    ///
+    /// Returns:
+    /// - `Ok(true)` if endpoint is healthy (2xx response)
+    /// - `Ok(false)` if endpoint is unhealthy (non-2xx, timeout, connection error)
+    /// - `Err(HealthError::HttpClientCreationFailed)` if HTTP client creation fails
+    ///   (indicates systemic issue, not endpoint-specific problem)
+    async fn check_endpoint(&self, endpoint: &ModelEndpoint) -> Result<bool, HealthError> {
+        let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
+            .map_err(|e| {
                 tracing::error!(
-                    endpoint_name = %endpoint.name(),
-                    endpoint_url = %endpoint.base_url(),
                     error = %e,
-                    error_debug = ?e,
-                    "CRITICAL: Failed to create HTTP client for health check. \
-                    This indicates a systemic issue (TLS config, resource exhaustion), \
-                    not just an unhealthy endpoint. Error: {:?}",
-                    e
+                    "FATAL: Failed to create HTTP client for health checks. \
+                    This indicates a systemic issue (TLS config, resource exhaustion, library bug), \
+                    not an endpoint failure. All health checks will fail."
                 );
-                return false;
-            }
-        };
+                HealthError::HttpClientCreationFailed(e.to_string())
+            })?;
 
         // CRITICAL: base_url already includes /v1 (e.g., "http://host:port/v1")
         // We append "/models" to get "http://host:port/v1/models"
@@ -420,7 +429,7 @@ impl HealthChecker {
                     healthy = is_success,
                     "Health check completed"
                 );
-                is_success
+                Ok(is_success)
             }
             Err(e) => {
                 tracing::debug!(
@@ -429,7 +438,7 @@ impl HealthChecker {
                     error = %e,
                     "Health check failed"
                 );
-                false
+                Ok(false)
             }
         }
     }
@@ -446,20 +455,48 @@ impl HealthChecker {
         };
 
         for endpoint in endpoints {
-            let is_healthy = self.check_endpoint(&endpoint).await;
-
-            let result = if is_healthy {
-                self.mark_success(endpoint.name()).await
-            } else {
-                self.mark_failure(endpoint.name()).await
-            };
-
-            if let Err(e) = result {
-                tracing::error!(
-                    endpoint_name = %endpoint.name(),
-                    error = %e,
-                    "Failed to update health status - this should never happen"
-                );
+            match self.check_endpoint(&endpoint).await {
+                Ok(true) => {
+                    // Endpoint is healthy
+                    if let Err(e) = self.mark_success(endpoint.name()).await {
+                        tracing::error!(
+                            endpoint_name = %endpoint.name(),
+                            error = %e,
+                            "Failed to update health status - this should never happen"
+                        );
+                    }
+                }
+                Ok(false) => {
+                    // Endpoint is unhealthy
+                    if let Err(e) = self.mark_failure(endpoint.name()).await {
+                        tracing::error!(
+                            endpoint_name = %endpoint.name(),
+                            error = %e,
+                            "Failed to update health status - this should never happen"
+                        );
+                    }
+                }
+                Err(HealthError::HttpClientCreationFailed(msg)) => {
+                    // Systemic failure - HTTP client creation failed
+                    // This will affect ALL endpoints, so we log the error and exit early
+                    // rather than marking individual endpoints as failed
+                    tracing::error!(
+                        error = %msg,
+                        "FATAL: HTTP client creation failed. All subsequent health checks \
+                        will fail. This is a systemic issue, not an endpoint-specific problem. \
+                        Background health checking cannot continue."
+                    );
+                    // Exit the loop early - don't check remaining endpoints
+                    return;
+                }
+                Err(e) => {
+                    // Other errors (currently none, but future-proofing)
+                    tracing::error!(
+                        endpoint_name = %endpoint.name(),
+                        error = %e,
+                        "Unexpected error during health check"
+                    );
+                }
             }
         }
 
