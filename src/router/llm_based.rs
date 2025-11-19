@@ -355,10 +355,14 @@ impl LlmBasedRouter {
                 AppError::ModelQueryFailed {
                     endpoint: endpoint.base_url().to_string(),
                     reason: format!(
-                        "Failed to configure AgentOptions: {} (model={}, max_tokens={})",
+                        "Failed to configure AgentOptions: {}. Check configuration:\n\
+                         - model: '{}' (must be non-empty)\n\
+                         - max_tokens: {} (must be > 0)\n\
+                         - base_url: '{}' (must end with /v1)",
                         e,
                         endpoint.name(),
-                        endpoint.max_tokens()
+                        endpoint.max_tokens(),
+                        endpoint.base_url()
                     ),
                 }
             })?;
