@@ -291,13 +291,9 @@ async fn test_concurrent_llm_routing_with_health_updates() {
     // Verify health state consistency - if we check endpoint health after all
     // concurrent requests, it should be in a consistent state (not corrupted)
     let health_checker = selector.health_checker();
-    let is_healthy = health_checker.is_healthy("balanced-1").await;
+    let _is_healthy = health_checker.is_healthy("balanced-1").await;
 
-    // Health state should be deterministic (either healthy or unhealthy, not corrupted)
-    // This is a smoke test - if health tracking has race conditions, this might fail
-    // or the test might panic/deadlock above
-    assert!(
-        is_healthy || !is_healthy,
-        "Health state should be consistent (boolean value)"
-    );
+    // If we got here without panicking, health tracking is consistent.
+    // The key test is that all 20 concurrent LLM routing requests completed
+    // without deadlocks or panics, which was verified above.
 }

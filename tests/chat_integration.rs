@@ -52,7 +52,7 @@ async fn mock_chat_handler(
     // This tests validation, routing, selection, and response serialization
     let response = ChatResponse::new(
         "Mock response for testing".to_string(),
-        &endpoint,
+        endpoint,
         decision.target(),
         decision.strategy(),
     );
