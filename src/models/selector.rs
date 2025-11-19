@@ -1346,4 +1346,129 @@ router_model = "balanced"
             );
         }
     }
+
+    #[tokio::test]
+    async fn test_weighted_selection_statistical_validation() {
+        // Statistical validation of weighted selection using chi-squared test
+        //
+        // This test verifies that weighted selection actually produces a distribution
+        // that matches the configured weights, not just that it CAN select each endpoint.
+        //
+        // Setup: Two endpoints with 1:3 weight ratio (0.25 vs 0.75)
+        // Run 10,000 selections and verify distribution matches weights statistically
+        // Use chi-squared test with significance level α = 0.05
+
+        let toml_config = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-light"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.fast]]
+name = "fast-heavy"
+base_url = "http://localhost:1235/v1"
+max_tokens = 2048
+weight = 3.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1237/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+"#;
+        let config: Config = toml::from_str(toml_config).expect("should parse TOML");
+        let selector = ModelSelector::new(Arc::new(config));
+
+        // Run 10,000 selections
+        const SAMPLE_SIZE: usize = 10_000;
+        let mut light_count = 0;
+        let mut heavy_count = 0;
+
+        let no_exclude = ExclusionSet::new();
+        for _ in 0..SAMPLE_SIZE {
+            let endpoint = selector
+                .select(TargetModel::Fast, &no_exclude)
+                .await
+                .unwrap();
+
+            match endpoint.name() {
+                "fast-light" => light_count += 1,
+                "fast-heavy" => heavy_count += 1,
+                other => panic!("Unexpected endpoint selected: {}", other),
+            }
+        }
+
+        // Calculate expected counts based on weights
+        // Total weight = 1.0 + 3.0 = 4.0
+        // Expected light: 10,000 * (1.0 / 4.0) = 2,500
+        // Expected heavy: 10,000 * (3.0 / 4.0) = 7,500
+        let expected_light = SAMPLE_SIZE as f64 * 0.25;
+        let expected_heavy = SAMPLE_SIZE as f64 * 0.75;
+
+        // Chi-squared test: χ² = Σ((observed - expected)² / expected)
+        let chi_squared = ((light_count as f64 - expected_light).powi(2) / expected_light)
+            + ((heavy_count as f64 - expected_heavy).powi(2) / expected_heavy);
+
+        // For 1 degree of freedom (2 categories - 1), critical value at α=0.05 is 3.841
+        // If χ² < 3.841, we accept the null hypothesis (distribution matches weights)
+        //
+        // We use a more lenient threshold of 10.0 to account for random variation
+        // in test runs while still catching gross distribution errors
+        const CHI_SQUARED_THRESHOLD: f64 = 10.0;
+
+        assert!(
+            chi_squared < CHI_SQUARED_THRESHOLD,
+            "Chi-squared test failed: χ² = {:.2} (threshold = {}). \
+            Distribution does not match configured weights. \
+            Observed: light={} ({:.1}%), heavy={} ({:.1}%). \
+            Expected: light={:.0} (25.0%), heavy={:.0} (75.0%)",
+            chi_squared,
+            CHI_SQUARED_THRESHOLD,
+            light_count,
+            (light_count as f64 / SAMPLE_SIZE as f64) * 100.0,
+            heavy_count,
+            (heavy_count as f64 / SAMPLE_SIZE as f64) * 100.0,
+            expected_light,
+            expected_heavy
+        );
+
+        // Also verify we got a reasonable distribution (sanity check)
+        // Light should be roughly 20-30% (2,000 - 3,000 selections)
+        // Heavy should be roughly 70-80% (7,000 - 8,000 selections)
+        assert!(
+            (2_000..=3_000).contains(&light_count),
+            "Light endpoint selected {} times, expected ~2,500 (20-30%)",
+            light_count
+        );
+        assert!(
+            (7_000..=8_000).contains(&heavy_count),
+            "Heavy endpoint selected {} times, expected ~7,500 (70-80%)",
+            heavy_count
+        );
+
+        println!(
+            "✓ Statistical validation passed: χ² = {:.2}, light={} ({:.1}%), heavy={} ({:.1}%)",
+            chi_squared,
+            light_count,
+            (light_count as f64 / SAMPLE_SIZE as f64) * 100.0,
+            heavy_count,
+            (heavy_count as f64 / SAMPLE_SIZE as f64) * 100.0
+        );
+    }
 }

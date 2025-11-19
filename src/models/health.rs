@@ -10,6 +10,12 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
+// Health check configuration constants
+const CONSECUTIVE_FAILURES_THRESHOLD: u32 = 3;
+const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
+const HEALTH_CHECK_STALE_THRESHOLD_SECS: u64 = 60;
+const MAX_BACKGROUND_TASK_RESTARTS: u32 = 5;
+
 /// Status of the background health checking task
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackgroundTaskStatus {
@@ -121,8 +127,8 @@ impl HealthMetrics {
         // Check if we've had a recent successful check
         if let Some(last_check) = state.last_successful_check {
             let elapsed = Instant::now().duration_since(last_check);
-            if elapsed > Duration::from_secs(60) {
-                return false; // No successful check in 60s (2x the interval)
+            if elapsed > Duration::from_secs(HEALTH_CHECK_STALE_THRESHOLD_SECS) {
+                return false; // No successful check in threshold time (2x the interval)
             }
         } else {
             // No successful check yet - give it some time to start
@@ -298,7 +304,7 @@ impl HealthChecker {
         health.last_check = Instant::now();
 
         // After 3 consecutive failures, mark as unhealthy
-        if health.consecutive_failures >= 3 {
+        if health.consecutive_failures >= CONSECUTIVE_FAILURES_THRESHOLD {
             if health.healthy {
                 // Log only on transition to unhealthy
                 tracing::warn!(
@@ -467,9 +473,10 @@ impl HealthChecker {
     /// Includes automatic restart logic with exponential backoff (max 5 attempts).
     /// If the task fails repeatedly, health monitoring stops and endpoints will not recover.
     /// Updates HealthMetrics to enable external monitoring of the background task health.
-    pub fn start_background_checks(self: Arc<Self>) {
-        const MAX_RESTART_ATTEMPTS: u32 = 5;
-
+    ///
+    /// Returns a JoinHandle that can be used to wait for or cancel the background task
+    /// during graceful shutdown.
+    pub fn start_background_checks(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut restart_count = 0;
 
@@ -482,7 +489,7 @@ impl HealthChecker {
                     );
 
                     loop {
-                        tokio::time::sleep(Duration::from_secs(30)).await;
+                        tokio::time::sleep(Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS)).await;
 
                         tracing::debug!("Running scheduled health checks");
                         checker.run_health_checks().await;
@@ -510,18 +517,18 @@ impl HealthChecker {
 
                 restart_count += 1;
 
-                if restart_count >= MAX_RESTART_ATTEMPTS {
+                if restart_count >= MAX_BACKGROUND_TASK_RESTARTS {
                     // Mark as permanently failed in metrics
                     self.metrics.mark_permanently_failed().await;
 
                     tracing::error!(
-                        max_attempts = MAX_RESTART_ATTEMPTS,
+                        max_attempts = MAX_BACKGROUND_TASK_RESTARTS,
                         "Background health check task failed {} times. \
                         Health monitoring has stopped permanently. Endpoints marked \
                         unhealthy will remain unhealthy until server restart. \
                         This indicates a critical bug in the health check logic. \
                         External monitoring can detect this via HealthMetrics.",
-                        MAX_RESTART_ATTEMPTS
+                        MAX_BACKGROUND_TASK_RESTARTS
                     );
                     break;
                 }
@@ -534,13 +541,13 @@ impl HealthChecker {
                 tracing::warn!(
                     restart_count = restart_count,
                     backoff_seconds = backoff_seconds,
-                    max_attempts = MAX_RESTART_ATTEMPTS,
+                    max_attempts = MAX_BACKGROUND_TASK_RESTARTS,
                     "Restarting background health check task after {}s backoff",
                     backoff_seconds
                 );
                 tokio::time::sleep(Duration::from_secs(backoff_seconds)).await;
             }
-        });
+        })
     }
 }
 
