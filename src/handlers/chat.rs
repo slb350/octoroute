@@ -270,12 +270,10 @@ pub async fn handler(
                             Endpoint will remain unhealthy despite working. This indicates a race \
                             condition or typo in endpoint naming. Failing request to expose bug."
                         );
-                        AppError::Internal(format!(
-                            "Health tracking failed for endpoint '{}': {}. \
-                            This is a critical bug - please report to developers.",
-                            endpoint.name(),
-                            e
-                        ))
+                        AppError::HealthCheckFailed {
+                            endpoint: endpoint.name().to_string(),
+                            reason: format!("mark_success failed: {}. This is a critical bug.", e),
+                        }
                     })?;
 
                 tracing::info!(
@@ -329,11 +327,10 @@ pub async fn handler(
                             and will continue receiving traffic despite failures. This indicates a race \
                             condition or typo in endpoint naming. Failing request to expose bug."
                         );
-                        AppError::Internal(format!(
-                            "Health tracking failed for endpoint '{}': {}. \
-                            This is a critical bug - please report to developers.",
-                            endpoint.name(), e
-                        ))
+                        AppError::HealthCheckFailed {
+                            endpoint: endpoint.name().to_string(),
+                            reason: format!("mark_failure failed: {}. This is a critical bug.", e),
+                        }
                     })?;
 
                 // Exclude this endpoint from subsequent retry attempts in THIS REQUEST ONLY.
@@ -387,11 +384,10 @@ async fn try_query_model(
                 error = %e,
                 "Failed to build AgentOptions from endpoint configuration"
             );
-            AppError::Internal(format!(
-                "Failed to configure model endpoint '{}': {}",
-                endpoint.name(),
-                e
-            ))
+            AppError::ModelQueryFailed {
+                endpoint: endpoint.base_url().to_string(),
+                reason: format!("Failed to configure AgentOptions: {}", e),
+            }
         })?;
 
     tracing::debug!(
@@ -419,7 +415,10 @@ async fn try_query_model(
                         error = %e,
                         "Failed to query model"
                     );
-                    AppError::Internal(format!("Failed to query model: {}", e))
+                    AppError::ModelQueryFailed {
+                        endpoint: endpoint.base_url().to_string(),
+                        reason: format!("{}", e),
+                    }
                 })?;
 
             // Collect response from stream
@@ -463,10 +462,11 @@ async fn try_query_model(
                             connection failure (if blocks = 0)",
                             block_count, response_text.len()
                         );
-                        return Err(AppError::Internal(format!(
-                            "Stream error from {}: {} (after {} blocks, {} chars received)",
-                            endpoint.base_url(), e, block_count, response_text.len()
-                        )));
+                        return Err(AppError::StreamInterrupted {
+                            endpoint: endpoint.base_url().to_string(),
+                            bytes_received: response_text.len(),
+                            blocks_received: block_count,
+                        });
                     }
                 }
             }
@@ -494,13 +494,10 @@ async fn try_query_model(
                 consider increasing timeout or check endpoint connectivity (attempt {}/{})",
                 endpoint.base_url(), attempt, max_retries
             );
-            return Err(AppError::Internal(format!(
-                "Request to {} timed out after {} seconds (attempt {}/{})",
-                endpoint.base_url(),
+            return Err(AppError::EndpointTimeout {
+                endpoint: endpoint.base_url().to_string(),
                 timeout_seconds,
-                attempt,
-                max_retries
-            )));
+            });
         }
     };
 

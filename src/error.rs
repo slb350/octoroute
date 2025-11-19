@@ -21,17 +21,42 @@ pub enum AppError {
     #[error("Routing failed: {0}")]
     RoutingFailed(String),
 
+    #[error(
+        "Stream interrupted from {endpoint} after receiving {bytes_received} bytes ({blocks_received} blocks)"
+    )]
+    StreamInterrupted {
+        endpoint: String,
+        bytes_received: usize,
+        blocks_received: usize,
+    },
+
+    #[error("Request to {endpoint} timed out after {timeout_seconds} seconds")]
+    EndpointTimeout {
+        endpoint: String,
+        timeout_seconds: u64,
+    },
+
+    #[error("Health check failed for {endpoint}: {reason}")]
+    HealthCheckFailed { endpoint: String, reason: String },
+
+    #[error("Failed to query model at {endpoint}: {reason}")]
+    ModelQueryFailed { endpoint: String, reason: String },
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            Self::Validation(msg) => (StatusCode::BAD_REQUEST, msg),
-            Self::Config(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-            Self::RoutingFailed(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-            Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        let (status, message) = match &self {
+            Self::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            Self::Config(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            Self::RoutingFailed(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            Self::StreamInterrupted { .. } => (StatusCode::BAD_GATEWAY, self.to_string()),
+            Self::EndpointTimeout { .. } => (StatusCode::GATEWAY_TIMEOUT, self.to_string()),
+            Self::HealthCheckFailed { .. } => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            Self::ModelQueryFailed { .. } => (StatusCode::BAD_GATEWAY, self.to_string()),
+            Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
 
         let body = Json(serde_json::json!({
