@@ -245,4 +245,52 @@ mod tests {
         let _rule = &router.rule_router;
         let _llm = &router.llm_router;
     }
+
+    #[tokio::test]
+    async fn test_hybrid_router_both_rule_and_llm_fail() {
+        let config = test_config();
+        let selector = Arc::new(ModelSelector::new(config.clone()));
+        let router =
+            HybridRouter::new(config, selector.clone()).expect("HybridRouter::new should succeed");
+
+        // 1. Create metadata that triggers LLM fallback (no rule match)
+        // CasualChat + High importance is explicitly ambiguous (see rule_based.rs line 42)
+        let meta = RouteMetadata {
+            token_estimate: 100,
+            importance: Importance::High,
+            task_type: TaskType::CasualChat,
+        };
+
+        // 2. Mark all balanced endpoints unhealthy (3 consecutive failures)
+        let health_checker = selector.health_checker();
+        for _ in 0..3 {
+            health_checker
+                .mark_failure("test-balanced")
+                .await
+                .expect("mark_failure should succeed");
+        }
+
+        // 3. Attempt routing - should fail because:
+        //    - Rule router returns None (ambiguous case)
+        //    - LLM router has no healthy balanced endpoints
+        let result = router.route("test prompt", &meta).await;
+
+        assert!(
+            result.is_err(),
+            "Should fail when both rule and LLM routing fail"
+        );
+
+        // 4. Verify error message is informative
+        let err = result.unwrap_err();
+        let err_msg = format!("{}", err);
+
+        // Error should indicate routing failure (not some other error type)
+        assert!(
+            err_msg.contains("routing")
+                || err_msg.contains("router")
+                || err_msg.contains("available"),
+            "Error should indicate routing failure, got: {}",
+            err_msg
+        );
+    }
 }
