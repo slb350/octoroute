@@ -34,6 +34,19 @@ impl HybridRouter {
 
     /// Route using hybrid strategy
     ///
+    /// # Routing Logic
+    /// 1. **Fast Path (Rule-Based)**: Tries rule-based routing first for deterministic,
+    ///    zero-latency decisions. Rules cover ~70-80% of common cases.
+    ///
+    /// 2. **Intelligent Fallback (LLM-Based)**: When rules return None (ambiguous cases),
+    ///    delegates to LLM router. The LLM uses semantic analysis to make an intelligent
+    ///    routing decision. This adds ~100-500ms latency but prevents poor routing.
+    ///
+    /// # Why This Order?
+    /// - Rule-based first: Zero-latency for obvious cases, saves LLM calls for ~70-80% of requests
+    /// - LLM fallback: Prevents defaulting to BALANCED for ambiguous cases (which could waste
+    ///   compute by routing complex analysis to medium model)
+    ///
     /// Returns a RoutingDecision containing the target model tier and
     /// the strategy that was used (Rule or Llm).
     pub async fn route(
