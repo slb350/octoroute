@@ -50,12 +50,12 @@ async fn mock_chat_handler(
 
     // Return mock response without calling real model
     // This tests validation, routing, selection, and response serialization
-    let response = ChatResponse {
-        content: "Mock response for testing".to_string(),
-        model_tier: decision.target().into(),
-        model_name: endpoint.name().to_string(),
-        routing_strategy: decision.strategy(),
-    };
+    let response = ChatResponse::new(
+        "Mock response for testing".to_string(),
+        &endpoint,
+        decision.target(),
+        decision.strategy(),
+    );
 
     Ok(Json(response))
 }
@@ -141,22 +141,23 @@ async fn test_chat_endpoint_with_valid_request() {
 
     // Verify response fields (mock handler returns mock data)
     assert_eq!(
-        chat_response.content, "Mock response for testing",
+        chat_response.content(),
+        "Mock response for testing",
         "content should be mock response"
     );
     use octoroute::handlers::chat::ModelTier;
     assert!(
         matches!(
-            chat_response.model_tier,
+            chat_response.model_tier(),
             ModelTier::Fast | ModelTier::Balanced | ModelTier::Deep
         ),
         "model_tier should be one of Fast/Balanced/Deep, got {:?}",
-        chat_response.model_tier
+        chat_response.model_tier()
     );
     assert!(
-        chat_response.model_name.starts_with("test-"),
+        chat_response.model_name().starts_with("test-"),
         "model_name should be test endpoint, got {}",
-        chat_response.model_name
+        chat_response.model_name()
     );
 }
 

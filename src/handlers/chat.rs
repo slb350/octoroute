@@ -113,16 +113,19 @@ impl From<crate::router::TargetModel> for ModelTier {
 }
 
 /// Chat response to client
+///
+/// Fields are private to enforce construction through the validated `new()` constructor.
+/// This ensures `model_name` always matches an actual endpoint from configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatResponse {
     /// Model's response content
-    pub content: String,
+    content: String,
     /// Which model tier was used
-    pub model_tier: ModelTier,
+    model_tier: ModelTier,
     /// Which specific endpoint was used
-    pub model_name: String,
+    model_name: String,
     /// Which routing strategy made the decision (Rule or Llm)
-    pub routing_strategy: RoutingStrategy,
+    routing_strategy: RoutingStrategy,
 }
 
 impl ChatResponse {
@@ -148,6 +151,26 @@ impl ChatResponse {
             model_name: endpoint.name().to_string(),
             routing_strategy,
         }
+    }
+
+    /// Get the response content
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    /// Get the model tier used
+    pub fn model_tier(&self) -> ModelTier {
+        self.model_tier
+    }
+
+    /// Get the model name (endpoint) used
+    pub fn model_name(&self) -> &str {
+        &self.model_name
+    }
+
+    /// Get the routing strategy used
+    pub fn routing_strategy(&self) -> RoutingStrategy {
+        self.routing_strategy
     }
 }
 
@@ -763,16 +786,90 @@ mod tests {
 
     #[test]
     fn test_chat_response_serializes() {
-        let resp = ChatResponse {
-            content: "4".to_string(),
-            model_tier: ModelTier::Fast,
-            model_name: "fast-1".to_string(),
-            routing_strategy: RoutingStrategy::Rule,
-        };
+        // Use constructor instead of struct literal (fields are now private)
+        let toml = r#"
+name = "fast-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+"#;
+        let endpoint: ModelEndpoint = toml::from_str(toml).expect("should parse endpoint");
+
+        let resp = ChatResponse::new(
+            "4".to_string(),
+            &endpoint,
+            TargetModel::Fast,
+            RoutingStrategy::Rule,
+        );
 
         let json = serde_json::to_string(&resp).expect("should serialize");
         assert!(json.contains("\"content\":\"4\""));
         assert!(json.contains("\"model_tier\":\"fast\""));
         assert!(json.contains("\"routing_strategy\":\"rule\""));
+    }
+
+    #[test]
+    fn test_chat_response_constructor_and_accessors() {
+        // Create a mock endpoint using TOML deserialization
+        let toml = r#"
+name = "test-model"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+"#;
+        let endpoint: ModelEndpoint = toml::from_str(toml).expect("should parse endpoint");
+
+        // Create ChatResponse using constructor
+        let response = ChatResponse::new(
+            "Test response".to_string(),
+            &endpoint,
+            TargetModel::Fast,
+            RoutingStrategy::Rule,
+        );
+
+        // Verify accessors work
+        assert_eq!(response.content(), "Test response");
+        assert_eq!(response.model_tier(), ModelTier::Fast);
+        assert_eq!(response.model_name(), "test-model");
+        assert_eq!(response.routing_strategy(), RoutingStrategy::Rule);
+    }
+
+    #[test]
+    fn test_chat_response_serde_with_constructor() {
+        // Create a mock endpoint
+        let toml = r#"
+name = "test-balanced"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+"#;
+        let endpoint: ModelEndpoint = toml::from_str(toml).expect("should parse endpoint");
+
+        let response = ChatResponse::new(
+            "Serialization test".to_string(),
+            &endpoint,
+            TargetModel::Balanced,
+            RoutingStrategy::Llm,
+        );
+
+        // Verify serialization works (will work even with private fields)
+        let json = serde_json::to_string(&response).expect("should serialize");
+        assert!(json.contains("Serialization test"));
+        assert!(json.contains("balanced"));
+        assert!(json.contains("test-balanced"));
+        assert!(json.contains("llm"));
+
+        // Verify deserialization works (serde works with private fields)
+        let deserialized: ChatResponse = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(deserialized.content(), "Serialization test");
+        assert_eq!(deserialized.model_tier(), ModelTier::Balanced);
+        assert_eq!(deserialized.model_name(), "test-balanced");
+        assert_eq!(deserialized.routing_strategy(), RoutingStrategy::Llm);
     }
 }
