@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 // Health check configuration constants
 const CONSECUTIVE_FAILURES_THRESHOLD: u32 = 3;
@@ -217,6 +217,8 @@ pub struct HealthChecker {
     health_status: Arc<RwLock<HashMap<String, EndpointHealth>>>,
     config: Arc<Config>,
     metrics: Arc<HealthMetrics>,
+    /// Background health checking task handle for graceful shutdown
+    background_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl HealthChecker {
@@ -257,6 +259,7 @@ impl HealthChecker {
             health_status: Arc::new(RwLock::new(health_status)),
             config,
             metrics: Arc::new(HealthMetrics::new()),
+            background_task: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -511,6 +514,8 @@ impl HealthChecker {
     /// Includes automatic restart logic with exponential backoff (max 5 attempts).
     /// Updates HealthMetrics to enable external monitoring of the background task health.
     ///
+    /// The background task handle is stored internally and can be cancelled via `shutdown()`.
+    ///
     /// # Panics
     ///
     /// Panics after 5 failed restart attempts, causing the server process to shut down.
@@ -520,11 +525,9 @@ impl HealthChecker {
     /// health checks. Operator intervention is required to investigate the root cause
     /// (typically TLS misconfiguration, resource exhaustion, or a critical bug in the
     /// health check logic).
-    ///
-    /// Returns a JoinHandle that can be used to wait for or cancel the background task
-    /// during graceful shutdown.
-    pub fn start_background_checks(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
+    pub fn start_background_checks(self: Arc<Self>) {
+        let background_task = Arc::clone(&self.background_task);
+        let handle = tokio::spawn(async move {
             let mut restart_count = 0;
 
             loop {
@@ -599,7 +602,41 @@ impl HealthChecker {
                 );
                 tokio::time::sleep(Duration::from_secs(backoff_seconds)).await;
             }
-        })
+        });
+
+        // Store the background task handle for graceful shutdown
+        tokio::spawn(async move {
+            *background_task.lock().await = Some(handle);
+        });
+    }
+
+    /// Shutdown the background health checking task
+    ///
+    /// Cancels the background health check task, allowing for graceful server shutdown.
+    /// This method should be called during server shutdown to prevent the background task
+    /// from preventing clean process termination.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use octoroute::config::Config;
+    /// # use octoroute::models::HealthChecker;
+    /// # async fn example() {
+    /// # let config = Arc::new(Config::from_file("config.toml").unwrap());
+    /// let health_checker = Arc::new(HealthChecker::new(config));
+    /// health_checker.clone().start_background_checks();
+    /// // ... server runs ...
+    /// health_checker.shutdown().await;
+    /// # }
+    /// ```
+    pub async fn shutdown(&self) {
+        let mut task = self.background_task.lock().await;
+        if let Some(handle) = task.take() {
+            tracing::info!("Cancelling background health check task for graceful shutdown");
+            handle.abort();
+            // Wait for the task to finish aborting
+            let _ = handle.await;
+        }
     }
 }
 

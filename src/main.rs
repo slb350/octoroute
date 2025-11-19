@@ -35,6 +35,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create application state
     let state = AppState::new(config.clone());
 
+    // Clone state for shutdown handler (state is moved to router)
+    let shutdown_state = state.clone();
+
     // Build router with state and middleware
     let app = Router::new()
         .route("/health", get(handlers::health::handler))
@@ -65,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start server with graceful shutdown
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown_state))
         .await?;
 
     tracing::info!("Server shutdown complete");
@@ -74,7 +77,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Wait for SIGTERM or SIGINT signal for graceful shutdown
-async fn shutdown_signal() {
+///
+/// Cancels background health checking task when shutdown signal is received.
+async fn shutdown_signal(state: AppState) {
     use tokio::signal;
 
     let ctrl_c = async {
@@ -102,4 +107,7 @@ async fn shutdown_signal() {
             tracing::info!("Received SIGTERM, starting graceful shutdown");
         },
     }
+
+    // Cancel background health checking task
+    state.selector().health_checker().shutdown().await;
 }
