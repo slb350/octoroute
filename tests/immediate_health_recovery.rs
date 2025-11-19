@@ -57,7 +57,7 @@ async fn test_mark_success_immediately_makes_endpoint_healthy() {
     // enabling rapid recovery without waiting for the 30-second background check
 
     let config = Arc::new(create_test_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
     let health_checker = state.selector().health_checker();
 
     // Mark endpoint as unhealthy (3 consecutive failures)
@@ -108,7 +108,7 @@ async fn test_partial_failures_reset_on_success() {
     // preventing failures from accumulating across long time periods
 
     let config = Arc::new(create_test_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
     let health_checker = state.selector().health_checker();
 
     // Mark 2 failures (not enough to become unhealthy)
@@ -143,7 +143,7 @@ async fn test_immediate_recovery_enables_low_latency_failover() {
     // With immediate recovery, endpoints become selectable immediately
 
     let config = Arc::new(create_test_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
     let health_checker = state.selector().health_checker();
 
     // Simulate a transient failure scenario:

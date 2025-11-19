@@ -97,7 +97,7 @@ async fn test_retry_logic_fails_all_endpoints_then_gives_up() {
     // 3. Returns an error after exhausting retries
 
     let config = Arc::new(create_multi_endpoint_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
 
     // Verify all fast endpoints start healthy
     let health_checker = state.selector().health_checker();
@@ -163,7 +163,7 @@ async fn test_tier_exhaustion_all_endpoints_unhealthy() {
     // (e.g., all fast-tier servers crashed, network partition, etc.)
 
     let config = Arc::new(create_multi_endpoint_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
     let health_checker = state.selector().health_checker();
 
     // Mark ALL fast endpoints as unhealthy by failing them 3 times each
@@ -231,7 +231,7 @@ async fn test_tier_partial_exhaustion_with_exclusion() {
     // Expected: Request should fail, but should attempt the healthy endpoint
 
     let config = Arc::new(create_multi_endpoint_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
     let health_checker = state.selector().health_checker();
 
     // Mark fast-1 and fast-2 as unhealthy (3 failures each)
@@ -297,7 +297,7 @@ async fn test_retry_exclusion_prevents_same_endpoint() {
     // within a single request, even if there are multiple endpoints available.
 
     let config = Arc::new(create_multi_endpoint_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
     let health_checker = state.selector().health_checker();
 
     // Make 3 sequential requests - each should fail and mark endpoints as unhealthy
@@ -343,7 +343,7 @@ async fn test_health_status_updated_on_retry_failures() {
     // This test verifies that health status is correctly updated when endpoints fail
 
     let config = Arc::new(create_multi_endpoint_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
     let health_checker = state.selector().health_checker();
 
     // Get initial health status

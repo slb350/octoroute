@@ -27,6 +27,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.server.port
     );
 
+    // Wrap config in Arc before creating application state
+    // This avoids unnecessary cloning - AppState accepts Arc<Config>
+    let config = std::sync::Arc::new(config);
+
     // Create application state
     let state = AppState::new(config.clone());
 

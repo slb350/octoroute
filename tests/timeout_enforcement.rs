@@ -58,7 +58,7 @@ async fn test_request_fails_within_timeout_period() {
     // Connection failures should happen quickly, not wait for full timeout.
 
     let config = Arc::new(create_short_timeout_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
 
     // Create a request
     let json = r#"{"message": "Test message", "importance": "low", "task_type": "casual_chat"}"#;
@@ -96,7 +96,7 @@ async fn test_timeout_includes_connection_time() {
     // not just the streaming phase
 
     let config = Arc::new(create_short_timeout_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
 
     // Use a blackhole IP that will cause connection timeout
     let json = r#"{"message": "Hi", "importance": "low", "task_type": "casual_chat"}"#;
@@ -126,7 +126,7 @@ async fn test_failures_dont_hang_indefinitely() {
     // forever. With timeout enforcement, failures should be returned promptly.
 
     let config = Arc::new(create_short_timeout_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
 
     let json = r#"{"message": "Long request", "importance": "low", "task_type": "casual_chat"}"#;
     let request: octoroute::handlers::chat::ChatRequest = serde_json::from_str(json).unwrap();

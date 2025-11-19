@@ -57,7 +57,7 @@ async fn test_background_health_checks_start_automatically() {
     // and that the health checker is accessible
 
     let config = Arc::new(create_test_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
 
     let health_checker = state.selector().health_checker();
 
@@ -85,7 +85,7 @@ async fn test_health_status_persists_across_checks() {
     // but we can test that manual health updates work correctly
 
     let config = Arc::new(create_test_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
     let health_checker = state.selector().health_checker();
 
     // Mark an endpoint as failed multiple times
@@ -127,7 +127,7 @@ async fn test_background_task_survives_creation() {
     // by checking that the AppState can be created and health checks work
 
     let config = Arc::new(create_test_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
 
     // Give background task time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -170,7 +170,7 @@ async fn test_background_task_resilience_to_rapid_state_changes() {
     // which is what we'd expect if the restart logic is working correctly.
 
     let config = Arc::new(create_test_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
     let health_checker = state.selector().health_checker();
 
     // Simulate rapid failure/success cycles on multiple endpoints concurrently
@@ -233,7 +233,7 @@ async fn test_health_checker_state_consistency_under_load() {
     // task is running while the application is also marking successes/failures
 
     let config = Arc::new(create_test_config());
-    let state = AppState::new((*config).clone());
+    let state = AppState::new(config.clone());
     let health_checker = state.selector().health_checker();
 
     // Spawn multiple readers and writers

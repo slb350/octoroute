@@ -19,6 +19,7 @@ use octoroute::{
         chat::{ChatRequest, ChatResponse},
     },
 };
+use std::sync::Arc;
 use tower::ServiceExt;
 
 /// Mock chat handler for testing that doesn't call real model endpoints
@@ -101,7 +102,7 @@ router_model = "balanced"
 
 /// Helper to create test app with mock handler
 fn create_test_app() -> Router {
-    let config = create_test_config();
+    let config = Arc::new(create_test_config());
     let state = AppState::new(config);
 
     Router::new()
@@ -235,7 +236,7 @@ async fn test_chat_endpoint_with_no_available_endpoints() {
     config.models.balanced.clear();
     config.models.deep.clear();
 
-    let state = AppState::new(config);
+    let state = AppState::new(Arc::new(config));
     let app = Router::new()
         .route("/chat", post(mock_chat_handler))
         .with_state(state);

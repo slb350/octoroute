@@ -22,13 +22,15 @@ pub struct AppState {
 
 impl AppState {
     /// Create a new AppState from configuration
-    pub fn new(config: Config) -> Self {
-        let config_arc = Arc::new(config);
-        let selector = Arc::new(ModelSelector::new(config_arc.clone()));
+    ///
+    /// Accepts `Arc<Config>` to avoid unnecessary cloning when the configuration
+    /// is already wrapped in an Arc.
+    pub fn new(config: Arc<Config>) -> Self {
+        let selector = Arc::new(ModelSelector::new(config.clone()));
         let router = Arc::new(RuleBasedRouter::new());
 
         Self {
-            config: config_arc,
+            config,
             selector,
             router,
         }
@@ -96,7 +98,7 @@ router_model = "balanced"
 
     #[tokio::test]
     async fn test_appstate_new_creates_state() {
-        let config = create_test_config();
+        let config = Arc::new(create_test_config());
         let state = AppState::new(config);
 
         // Verify we can create state and access components
@@ -111,7 +113,7 @@ router_model = "balanced"
 
     #[tokio::test]
     async fn test_appstate_is_clonable() {
-        let config = create_test_config();
+        let config = Arc::new(create_test_config());
         let state = AppState::new(config);
 
         // Clone should work (cheap Arc clone)
@@ -121,7 +123,7 @@ router_model = "balanced"
 
     #[tokio::test]
     async fn test_appstate_provides_access_to_components() {
-        let config = create_test_config();
+        let config = Arc::new(create_test_config());
         let state = AppState::new(config);
 
         // Should be able to access all components

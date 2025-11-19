@@ -16,6 +16,7 @@ use axum::{
 };
 use octoroute::config::Config;
 use octoroute::handlers::{AppState, chat};
+use std::sync::Arc;
 use tower::ServiceExt; // for `oneshot`
 
 /// Helper to create test config with endpoints
@@ -78,7 +79,7 @@ async fn test_stream_interruption_documentation() {
     // this test verifies the behavior through integration testing with unreachable endpoints.
     // When an endpoint is unreachable, the connection fails which simulates a stream error.
 
-    let config = create_test_config();
+    let config = Arc::new(create_test_config());
     let app_state = AppState::new(config);
     let app = Router::new()
         .route("/chat", post(chat::handler))
@@ -156,7 +157,7 @@ async fn test_partial_response_never_returned_to_user() {
     // String is dropped, freeing the memory. The user receives only an error response,
     // never the partial content.
 
-    let config = create_test_config();
+    let config = Arc::new(create_test_config());
     let app_state = AppState::new(config);
     let app = Router::new()
         .route("/chat", post(chat::handler))
@@ -206,7 +207,7 @@ async fn test_stream_error_triggers_retry_logic() {
     // When all endpoints fail, we should see evidence of multiple attempts
     // in the error message or logs.
 
-    let config = create_test_config();
+    let config = Arc::new(create_test_config());
     let app_state = AppState::new(config);
     let app = Router::new()
         .route("/chat", post(chat::handler))

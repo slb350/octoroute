@@ -12,6 +12,7 @@ use axum::{
 };
 use octoroute::config::Config;
 use octoroute::handlers::AppState;
+use std::sync::Arc;
 use tower::ServiceExt; // for `oneshot`
 
 fn create_test_config() -> Config {
@@ -50,7 +51,7 @@ router_model = "balanced"
 }
 
 fn create_test_app() -> Router {
-    let config = create_test_config();
+    let config = Arc::new(create_test_config());
     let state = AppState::new(config);
 
     Router::new()
