@@ -226,6 +226,19 @@ impl Config {
                     )));
                 }
 
+                // Validate base_url: must end with /v1
+                // This is required because health checks append "/models" to get "/v1/models"
+                // Without this validation, users might configure "http://host:port" which would
+                // result in health checks trying "/models" (404) instead of "/v1/models"
+                if !endpoint.base_url.ends_with("/v1") {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: Endpoint '{}' in tier '{}' has invalid base_url '{}'. \
+                        base_url must end with '/v1' (e.g., 'http://host:port/v1'). \
+                        This is required for health checks to work correctly.",
+                        endpoint.name, tier_name, endpoint.base_url
+                    )));
+                }
+
                 // Validate temperature: must be between 0.0 and 2.0 (standard LLM range)
                 if endpoint.temperature < 0.0
                     || endpoint.temperature > 2.0
@@ -625,6 +638,19 @@ metrics_port = 3000
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("base_url"));
         assert!(err_msg.contains("http"));
+    }
+
+    #[test]
+    fn test_config_validation_base_url_must_end_with_v1() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.models.fast[0].base_url = "http://localhost:1234".to_string(); // Invalid: missing /v1
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("base_url"));
+        assert!(err_msg.contains("/v1"));
+        assert!(err_msg.contains("health checks"));
     }
 
     // ✅ VULNERABILITY FIXED ✅
