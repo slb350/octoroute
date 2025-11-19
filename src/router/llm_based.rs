@@ -24,7 +24,7 @@
 
 use crate::error::{AppError, AppResult};
 use crate::models::endpoint_name::ExclusionSet;
-use crate::models::selector::ModelSelector;
+use crate::models::{BalancedSelector, ModelSelector};
 use crate::router::{RouteMetadata, TargetModel};
 use std::sync::Arc;
 
@@ -43,8 +43,14 @@ const MAX_ROUTER_RESPONSE: usize = 1024;
 ///
 /// Uses the balanced tier (30B) to analyze requests and choose optimal target.
 /// Provides intelligent fallback when rule-based routing is ambiguous.
+///
+/// # Type Safety
+///
+/// Uses `BalancedSelector` to enforce the architectural invariant that routing
+/// decisions ALWAYS use the Balanced tier. The type system makes it impossible
+/// to accidentally query Fast or Deep tiers for routing.
 pub struct LlmBasedRouter {
-    selector: Arc<ModelSelector>,
+    selector: BalancedSelector,
 }
 
 impl LlmBasedRouter {
@@ -52,19 +58,18 @@ impl LlmBasedRouter {
     ///
     /// Returns an error if no balanced tier endpoints are configured.
     /// The balanced tier is required because it's used to query the router LLM.
+    ///
+    /// # Type Safety
+    ///
+    /// The `BalancedSelector` validates balanced tier availability at construction,
+    /// and the type system prevents querying any other tier.
     pub fn new(selector: Arc<ModelSelector>) -> AppResult<Self> {
-        // Validate that balanced tier exists (required for router queries)
-        if selector.endpoint_count(TargetModel::Balanced) == 0 {
-            tracing::error!(
-                "LlmBasedRouter requires at least one balanced tier endpoint, \
-                but none are configured"
-            );
-            return Err(AppError::Config(
-                "LlmBasedRouter requires at least one balanced tier endpoint".to_string(),
-            ));
-        }
+        // BalancedSelector validates that balanced tier exists
+        let balanced_selector = BalancedSelector::new(selector)?;
 
-        Ok(Self { selector })
+        Ok(Self {
+            selector: balanced_selector,
+        })
     }
 
     /// Classify error as retryable (transient) or non-retryable (systemic)
@@ -132,14 +137,10 @@ impl LlmBasedRouter {
 
         for attempt in 1..=MAX_ROUTER_RETRIES {
             // Select endpoint from balanced tier (with health filtering + exclusions)
-            let endpoint = match self
-                .selector
-                .select(TargetModel::Balanced, &failed_endpoints)
-                .await
-            {
+            let endpoint = match self.selector.select_balanced(&failed_endpoints).await {
                 Some(ep) => ep.clone(),
                 None => {
-                    let total_configured = self.selector.endpoint_count(TargetModel::Balanced);
+                    let total_configured = self.selector.endpoint_count();
                     let excluded_count = failed_endpoints.len();
 
                     tracing::error!(

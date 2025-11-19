@@ -11,4 +11,4 @@ pub mod selector;
 pub use client::ModelClient;
 pub use endpoint_name::{EndpointName, ExclusionSet};
 pub use health::{EndpointHealth, HealthChecker, HealthError};
-pub use selector::ModelSelector;
+pub use selector::{BalancedSelector, ModelSelector};

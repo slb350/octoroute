@@ -8,6 +8,10 @@
 //! - tests_weighted: Weighted random distribution
 //! - tests_exclusion: Exclusion set handling for retry logic
 
+mod balanced;
+
+pub use balanced::BalancedSelector;
+
 use crate::config::{Config, ModelEndpoint};
 use crate::models::endpoint_name::{EndpointName, ExclusionSet};
 use crate::models::health::HealthChecker;
@@ -22,6 +26,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// - Filters out unhealthy endpoints
 /// - Selects from highest available priority tier
 /// - Uses weighted random selection within priority tier
+#[derive(Debug)]
 pub struct ModelSelector {
     config: Arc<Config>,
     health_checker: Arc<HealthChecker>,
