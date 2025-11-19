@@ -842,15 +842,6 @@ router_model = "balanced"
         // Record a successful check
         metrics.record_successful_check().await;
         assert!(metrics.is_background_task_healthy().await);
-
-        // Manually set the last check time to 61 seconds ago
-        // (We can't actually do this with the current API, so this test
-        // would require exposing a test-only method or waiting 61 seconds)
-        // For now, we'll document the behavior in a comment
-
-        // NOTE: If more than 60 seconds pass without a successful check,
-        // is_background_task_healthy() will return false. This is tested
-        // indirectly via integration tests that simulate task failures.
     }
 
     #[tokio::test]
