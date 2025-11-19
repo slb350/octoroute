@@ -278,6 +278,19 @@ impl Config {
             )));
         }
 
+        // Validate request timeout
+        if self.server.request_timeout_seconds == 0 {
+            return Err(crate::error::AppError::Config(
+                "Configuration error: request_timeout_seconds must be greater than 0".to_string(),
+            ));
+        }
+        if self.server.request_timeout_seconds > 300 {
+            return Err(crate::error::AppError::Config(format!(
+                "Configuration error: request_timeout_seconds cannot exceed 300 seconds (5 minutes), got {}",
+                self.server.request_timeout_seconds
+            )));
+        }
+
         Ok(())
     }
 }
@@ -625,4 +638,51 @@ metrics_port = 3000
     // and all validation is enforced at load time through Config::from_str() / Config::from_file().
     //
     // Post-construction mutation is now impossible, ensuring validated data stays valid.
+
+    #[test]
+    fn test_config_validation_zero_timeout_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.server.request_timeout_seconds = 0; // Invalid: zero timeout
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("request_timeout_seconds") && err_msg.contains("greater than 0"),
+            "Expected error about request_timeout_seconds > 0, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_config_validation_excessive_timeout_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.server.request_timeout_seconds = 301; // Invalid: exceeds 300 second limit
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("request_timeout_seconds") && err_msg.contains("300"),
+            "Expected error about request_timeout_seconds max 300, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_config_validation_valid_timeout_succeeds() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+
+        // Test lower bound (1 second)
+        config.server.request_timeout_seconds = 1;
+        assert!(config.validate().is_ok());
+
+        // Test upper bound (300 seconds)
+        config.server.request_timeout_seconds = 300;
+        assert!(config.validate().is_ok());
+
+        // Test typical value (30 seconds)
+        config.server.request_timeout_seconds = 30;
+        assert!(config.validate().is_ok());
+    }
 }
