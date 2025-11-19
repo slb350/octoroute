@@ -83,7 +83,10 @@ async fn test_stream_interruption_documentation() {
     let app_state = AppState::new(config);
     let app = Router::new()
         .route("/chat", post(chat::handler))
-        .with_state(app_state);
+        .with_state(app_state)
+        .layer(axum::middleware::from_fn(
+            octoroute::middleware::request_id_middleware,
+        ));
 
     // Create a request that will route to fast tier
     let request = Request::builder()
@@ -161,7 +164,10 @@ async fn test_partial_response_never_returned_to_user() {
     let app_state = AppState::new(config);
     let app = Router::new()
         .route("/chat", post(chat::handler))
-        .with_state(app_state);
+        .with_state(app_state)
+        .layer(axum::middleware::from_fn(
+            octoroute::middleware::request_id_middleware,
+        ));
 
     let request = Request::builder()
         .method("POST")
@@ -211,7 +217,10 @@ async fn test_stream_error_triggers_retry_logic() {
     let app_state = AppState::new(config);
     let app = Router::new()
         .route("/chat", post(chat::handler))
-        .with_state(app_state);
+        .with_state(app_state)
+        .layer(axum::middleware::from_fn(
+            octoroute::middleware::request_id_middleware,
+        ));
 
     let request = Request::builder()
         .method("POST")

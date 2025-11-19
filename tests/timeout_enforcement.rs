@@ -2,7 +2,7 @@
 //!
 //! Tests that request timeouts are properly enforced during streaming
 
-use octoroute::{config::Config, handlers::AppState};
+use octoroute::{config::Config, handlers::AppState, middleware::RequestId};
 use std::sync::Arc;
 
 /// Create test config with very short timeout
@@ -69,6 +69,7 @@ async fn test_request_fails_within_timeout_period() {
     // Make the request - should fail (no real endpoints)
     let result = octoroute::handlers::chat::handler(
         axum::extract::State(state.clone()),
+        axum::Extension(RequestId::new()),
         axum::Json(request),
     )
     .await;
@@ -104,8 +105,12 @@ async fn test_timeout_includes_connection_time() {
 
     let start = std::time::Instant::now();
 
-    let result =
-        octoroute::handlers::chat::handler(axum::extract::State(state), axum::Json(request)).await;
+    let result = octoroute::handlers::chat::handler(
+        axum::extract::State(state),
+        axum::Extension(RequestId::new()),
+        axum::Json(request),
+    )
+    .await;
 
     let elapsed = start.elapsed();
 
@@ -133,8 +138,12 @@ async fn test_failures_dont_hang_indefinitely() {
 
     let start = std::time::Instant::now();
 
-    let result =
-        octoroute::handlers::chat::handler(axum::extract::State(state), axum::Json(request)).await;
+    let result = octoroute::handlers::chat::handler(
+        axum::extract::State(state),
+        axum::Extension(RequestId::new()),
+        axum::Json(request),
+    )
+    .await;
 
     let elapsed = start.elapsed();
 

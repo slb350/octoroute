@@ -24,7 +24,7 @@
 //! rather than mid-stream failures. A full test would require a mock server that can
 //! send partial responses then disconnect, which is not currently in test infrastructure.
 
-use octoroute::{config::Config, handlers::AppState};
+use octoroute::{config::Config, handlers::AppState, middleware::RequestId};
 use std::sync::Arc;
 
 /// Create test config with multiple endpoints per tier
@@ -112,6 +112,7 @@ async fn test_retry_logic_fails_all_endpoints_then_gives_up() {
     // Make the request - should fail after trying all endpoints
     let result = octoroute::handlers::chat::handler(
         axum::extract::State(state.clone()),
+        axum::Extension(RequestId::new()),
         axum::Json(request),
     )
     .await;
@@ -200,6 +201,7 @@ async fn test_tier_exhaustion_all_endpoints_unhealthy() {
     // Make the request - should fail with clear error
     let result = octoroute::handlers::chat::handler(
         axum::extract::State(state.clone()),
+        axum::Extension(RequestId::new()),
         axum::Json(request),
     )
     .await;
@@ -266,6 +268,7 @@ async fn test_tier_partial_exhaustion_with_exclusion() {
 
     let result = octoroute::handlers::chat::handler(
         axum::extract::State(state.clone()),
+        axum::Extension(RequestId::new()),
         axum::Json(request),
     )
     .await;
@@ -310,6 +313,7 @@ async fn test_retry_exclusion_prevents_same_endpoint() {
 
         let result = octoroute::handlers::chat::handler(
             axum::extract::State(state.clone()),
+            axum::Extension(RequestId::new()),
             axum::Json(request),
         )
         .await;
@@ -365,6 +369,7 @@ async fn test_health_status_updated_on_retry_failures() {
 
     let _ = octoroute::handlers::chat::handler(
         axum::extract::State(state.clone()),
+        axum::Extension(RequestId::new()),
         axum::Json(request),
     )
     .await;

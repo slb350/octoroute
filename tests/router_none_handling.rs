@@ -51,12 +51,16 @@ router_model = "balanced"
 }
 
 fn create_test_app() -> Router {
+    use axum::middleware;
+    use octoroute::middleware::request_id_middleware;
+
     let config = Arc::new(create_test_config());
     let state = AppState::new(config);
 
     Router::new()
         .route("/chat", post(octoroute::handlers::chat::handler))
         .with_state(state)
+        .layer(middleware::from_fn(request_id_middleware))
 }
 
 #[tokio::test]

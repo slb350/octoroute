@@ -5,9 +5,10 @@
 use crate::config::ModelEndpoint;
 use crate::error::{AppError, AppResult};
 use crate::handlers::AppState;
+use crate::middleware::RequestId;
 use crate::models::{EndpointName, ExclusionSet};
 use crate::router::{Importance, RouteMetadata, TargetModel, TaskType};
-use axum::{Json, extract::State, response::IntoResponse};
+use axum::{Extension, Json, extract::State, response::IntoResponse};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::time::Duration;
 
@@ -144,9 +145,11 @@ impl ChatResponse {
 /// POST /chat handler
 pub async fn handler(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     Json(request): Json<ChatRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     tracing::debug!(
+        request_id = %request_id,
         message_length = request.message().len(),
         importance = ?request.importance(),
         task_type = ?request.task_type(),
@@ -162,6 +165,7 @@ pub async fn handler(
     // If no routing rule matches, return an error to expose configuration issues
     let target = state.router().route(&metadata).ok_or_else(|| {
         tracing::error!(
+            request_id = %request_id,
             task_type = ?metadata.task_type,
             importance = ?metadata.importance,
             token_estimate = metadata.token_estimate,
@@ -174,6 +178,7 @@ pub async fn handler(
     })?;
 
     tracing::info!(
+        request_id = %request_id,
         target_tier = ?target,
         token_estimate = metadata.token_estimate,
         "Routing decision made"
@@ -230,6 +235,7 @@ pub async fn handler(
                 let excluded_count = failed_endpoints.len();
 
                 tracing::error!(
+                    request_id = %request_id,
                     tier = ?target,
                     attempt = attempt,
                     max_retries = MAX_RETRIES,
@@ -250,6 +256,7 @@ pub async fn handler(
         };
 
         tracing::debug!(
+            request_id = %request_id,
             endpoint_name = %endpoint.name(),
             endpoint_url = %endpoint.base_url(),
             attempt = attempt,
@@ -262,6 +269,7 @@ pub async fn handler(
             &endpoint,
             &request,
             state.config().server.request_timeout_seconds,
+            request_id,
             attempt,
             MAX_RETRIES,
         )
@@ -284,6 +292,7 @@ pub async fn handler(
                         match e {
                             HealthError::UnknownEndpoint(ref name) => {
                                 tracing::error!(
+                                    request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     unknown_name = %name,
                                     selected_tier = ?target,
@@ -296,6 +305,7 @@ pub async fn handler(
                             }
                             HealthError::HttpClientCreationFailed(ref msg) => {
                                 tracing::error!(
+                                    request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     error = %msg,
                                     selected_tier = ?target,
@@ -314,6 +324,7 @@ pub async fn handler(
                     })?;
 
                 tracing::info!(
+                    request_id = %request_id,
                     endpoint_name = %endpoint.name(),
                     response_length = response_text.len(),
                     model_tier = ?target,
@@ -330,6 +341,7 @@ pub async fn handler(
                 // 1. Request-scoped exclusion (immediate, this request only)
                 // 2. Global health tracking (after 3 consecutive failures across all requests)
                 tracing::warn!(
+                    request_id = %request_id,
                     endpoint_name = %endpoint.name(),
                     attempt = attempt,
                     max_retries = MAX_RETRIES,
@@ -355,6 +367,7 @@ pub async fn handler(
                         match e {
                             HealthError::UnknownEndpoint(ref name) => {
                                 tracing::error!(
+                                    request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     unknown_name = %name,
                                     selected_tier = ?target,
@@ -368,6 +381,7 @@ pub async fn handler(
                             }
                             HealthError::HttpClientCreationFailed(ref msg) => {
                                 tracing::error!(
+                                    request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     error = %msg,
                                     selected_tier = ?target,
@@ -399,6 +413,7 @@ pub async fn handler(
 
     // All retries exhausted
     tracing::error!(
+        request_id = %request_id,
         tier = ?target,
         max_retries = MAX_RETRIES,
         "All retry attempts exhausted"
@@ -417,6 +432,7 @@ async fn try_query_model(
     endpoint: &ModelEndpoint,
     request: &ChatRequest,
     timeout_seconds: u64,
+    request_id: RequestId,
     attempt: usize,
     max_retries: usize,
 ) -> AppResult<String> {
@@ -429,6 +445,7 @@ async fn try_query_model(
         .build()
         .map_err(|e| {
             tracing::error!(
+                request_id = %request_id,
                 endpoint_name = %endpoint.name(),
                 endpoint_url = %endpoint.base_url(),
                 max_tokens = endpoint.max_tokens(),
@@ -443,6 +460,7 @@ async fn try_query_model(
         })?;
 
     tracing::debug!(
+        request_id = %request_id,
         endpoint_name = %endpoint.name(),
         message_length = request.message().len(),
         timeout_seconds = timeout_seconds,
@@ -463,6 +481,7 @@ async fn try_query_model(
                 .await
                 .map_err(|e| {
                     tracing::error!(
+                        request_id = %request_id,
                         endpoint_name = %endpoint.name(),
                         error = %e,
                         "Failed to query model"
@@ -487,6 +506,7 @@ async fn try_query_model(
                             }
                             other_block => {
                                 tracing::warn!(
+                                    request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     block_type = ?other_block,
                                     block_number = block_count,
@@ -503,6 +523,7 @@ async fn try_query_model(
                         // This ensures users never receive incomplete/corrupted responses.
                         // See tests/retry_logic.rs for detailed documentation.
                         tracing::error!(
+                            request_id = %request_id,
                             endpoint_name = %endpoint.name(),
                             endpoint_url = %endpoint.base_url(),
                             error = %e,
@@ -534,6 +555,7 @@ async fn try_query_model(
         Ok(Err(e)) => return Err(e),
         Err(_elapsed) => {
             tracing::error!(
+                request_id = %request_id,
                 endpoint_name = %endpoint.name(),
                 endpoint_url = %endpoint.base_url(),
                 timeout_seconds = timeout_seconds,

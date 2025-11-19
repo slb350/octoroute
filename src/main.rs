@@ -3,12 +3,13 @@
 //! Starts an Axum web server that routes LLM requests to optimal model endpoints.
 
 use axum::{
-    Router,
+    Router, middleware,
     routing::{get, post},
 };
 use octoroute::{
     config::Config,
     handlers::{self, AppState},
+    middleware::request_id_middleware,
     telemetry,
 };
 use std::net::SocketAddr;
@@ -34,12 +35,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create application state
     let state = AppState::new(config.clone());
 
-    // Build router with state
+    // Build router with state and middleware
     let app = Router::new()
         .route("/health", get(handlers::health::handler))
         .route("/chat", post(handlers::chat::handler))
         .route("/models", get(handlers::models::handler))
-        .with_state(state);
+        .with_state(state)
+        .layer(middleware::from_fn(request_id_middleware));
 
     // Create socket address
     let ip_addr = config
