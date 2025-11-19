@@ -32,11 +32,8 @@ async fn mock_chat_handler(
     // Convert to metadata for routing (test routing logic)
     let metadata = request.to_metadata();
 
-    // Use real router to test routing decisions
-    let target = state.router().route(&metadata).unwrap_or_else(|| {
-        use octoroute::router::TargetModel;
-        TargetModel::Balanced
-    });
+    // Use real hybrid router to test routing decisions
+    let (target, routing_strategy) = state.router().route(request.message(), &metadata).await?;
 
     // Use real selector to test endpoint selection (with health filtering)
     let no_exclude = octoroute::models::ExclusionSet::new();
@@ -54,6 +51,7 @@ async fn mock_chat_handler(
         content: "Mock response for testing".to_string(),
         model_tier: target.into(),
         model_name: endpoint.name().to_string(),
+        routing_strategy: routing_strategy.to_string(),
     };
 
     Ok(Json(response))
@@ -114,11 +112,15 @@ fn create_test_app() -> Router {
 async fn test_chat_endpoint_with_valid_request() {
     let app = create_test_app();
 
+    // Use a request that matches rule-based routing (casual chat with low importance)
+    // to avoid LLM fallback which would try to connect to non-existent test endpoints
     let request = Request::builder()
         .method("POST")
         .uri("/chat")
         .header("content-type", "application/json")
-        .body(Body::from(r#"{"message": "Hello, world!"}"#))
+        .body(Body::from(
+            r#"{"message": "Hello!", "task_type": "casual_chat", "importance": "low"}"#,
+        ))
         .unwrap();
 
     let response = app.oneshot(request).await.unwrap();
@@ -259,7 +261,9 @@ async fn test_chat_endpoint_with_no_available_endpoints() {
     let body_str = String::from_utf8_lossy(&body);
 
     assert!(
-        body_str.contains("No available endpoints") || body_str.contains("RoutingFailed"),
+        body_str.contains("No available endpoints")
+            || body_str.contains("RoutingFailed")
+            || body_str.contains("No healthy endpoints"),
         "error message should mention no available endpoints, got: {}",
         body_str
     );

@@ -2,8 +2,12 @@
 //!
 //! Provides different routing strategies to select the optimal model for a request.
 
+pub mod hybrid;
+pub mod llm_based;
 pub mod rule_based;
 
+pub use hybrid::HybridRouter;
+pub use llm_based::LlmBasedRouter;
 pub use rule_based::RuleBasedRouter;
 
 use serde::{Deserialize, Serialize};

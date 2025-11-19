@@ -121,6 +121,8 @@ pub struct ChatResponse {
     pub model_tier: ModelTier,
     /// Which specific endpoint was used
     pub model_name: String,
+    /// Which routing strategy made the decision ("rule", "llm", or "fallback")
+    pub routing_strategy: String,
 }
 
 impl ChatResponse {
@@ -133,11 +135,18 @@ impl ChatResponse {
     /// * `content` - The model's response text
     /// * `endpoint` - The endpoint that generated the response (guarantees valid model_name)
     /// * `tier` - The tier used for routing (fast, balanced, deep)
-    pub fn new(content: String, endpoint: &ModelEndpoint, tier: TargetModel) -> Self {
+    /// * `routing_strategy` - Which routing strategy was used ("rule", "llm", "fallback")
+    pub fn new(
+        content: String,
+        endpoint: &ModelEndpoint,
+        tier: TargetModel,
+        routing_strategy: impl Into<String>,
+    ) -> Self {
         Self {
             content,
             model_tier: tier.into(),
             model_name: endpoint.name().to_string(),
+            routing_strategy: routing_strategy.into(),
         }
     }
 }
@@ -161,25 +170,14 @@ pub async fn handler(
     // Convert to metadata for routing
     let metadata = request.to_metadata();
 
-    // Use rule-based router to determine target tier
-    // If no routing rule matches, return an error to expose configuration issues
-    let target = state.router().route(&metadata).ok_or_else(|| {
-        tracing::error!(
-            request_id = %request_id,
-            task_type = ?metadata.task_type,
-            importance = ?metadata.importance,
-            token_estimate = metadata.token_estimate,
-            "ROUTING FAILED: No routing rule matched request. Check routing configuration."
-        );
-        AppError::RoutingFailed(format!(
-            "No routing rule for task_type={:?}, importance={:?}. Configuration error.",
-            metadata.task_type, metadata.importance
-        ))
-    })?;
+    // Use hybrid router to determine target tier
+    // Tries rule-based first, falls back to LLM router if needed
+    let (target, routing_strategy) = state.router().route(request.message(), &metadata).await?;
 
     tracing::info!(
         request_id = %request_id,
         target_tier = ?target,
+        routing_strategy = routing_strategy,
         token_estimate = metadata.token_estimate,
         "Routing decision made"
     );
@@ -332,7 +330,8 @@ pub async fn handler(
                     "Request completed successfully"
                 );
 
-                let response = ChatResponse::new(response_text, &endpoint, target);
+                let response =
+                    ChatResponse::new(response_text, &endpoint, target, routing_strategy);
 
                 return Ok(Json(response));
             }
@@ -746,10 +745,12 @@ mod tests {
             content: "4".to_string(),
             model_tier: ModelTier::Fast,
             model_name: "fast-1".to_string(),
+            routing_strategy: "rule".to_string(),
         };
 
         let json = serde_json::to_string(&resp).expect("should serialize");
         assert!(json.contains("\"content\":\"4\""));
         assert!(json.contains("\"model_tier\":\"fast\""));
+        assert!(json.contains("\"routing_strategy\":\"rule\""));
     }
 }

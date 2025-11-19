@@ -2,7 +2,7 @@
 
 use crate::config::Config;
 use crate::models::ModelSelector;
-use crate::router::RuleBasedRouter;
+use crate::router::HybridRouter;
 use std::sync::Arc;
 
 pub mod chat;
@@ -17,7 +17,7 @@ pub mod models;
 pub struct AppState {
     config: Arc<Config>,
     selector: Arc<ModelSelector>,
-    router: Arc<RuleBasedRouter>,
+    router: Arc<HybridRouter>,
 }
 
 impl AppState {
@@ -27,7 +27,7 @@ impl AppState {
     /// is already wrapped in an Arc.
     pub fn new(config: Arc<Config>) -> Self {
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router = Arc::new(RuleBasedRouter::new());
+        let router = Arc::new(HybridRouter::new(config.clone(), selector.clone()));
 
         Self {
             config,
@@ -46,8 +46,8 @@ impl AppState {
         &self.selector
     }
 
-    /// Get reference to the rule-based router
-    pub fn router(&self) -> &RuleBasedRouter {
+    /// Get reference to the hybrid router
+    pub fn router(&self) -> &HybridRouter {
         &self.router
     }
 }
