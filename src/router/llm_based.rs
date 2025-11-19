@@ -459,7 +459,11 @@ impl LlmBasedRouter {
                     );
                     return Err(AppError::ModelQueryFailed {
                         endpoint: endpoint.base_url().to_string(),
-                        reason: format!("Stream error: {}", e),
+                        reason: format!(
+                            "Stream error after {} bytes received: {}",
+                            response_text.len(),
+                            e
+                        ),
                     });
                 }
             }
