@@ -33,25 +33,28 @@ async fn mock_chat_handler(
     let metadata = request.to_metadata();
 
     // Use real hybrid router to test routing decisions
-    let (target, routing_strategy) = state.router().route(request.message(), &metadata).await?;
+    let decision = state.router().route(request.message(), &metadata).await?;
 
     // Use real selector to test endpoint selection (with health filtering)
     let no_exclude = octoroute::models::ExclusionSet::new();
     let endpoint = state
         .selector()
-        .select(target, &no_exclude)
+        .select(decision.target, &no_exclude)
         .await
         .ok_or_else(|| {
-            AppError::RoutingFailed(format!("No available endpoints for tier {:?}", target))
+            AppError::RoutingFailed(format!(
+                "No available endpoints for tier {:?}",
+                decision.target
+            ))
         })?;
 
     // Return mock response without calling real model
     // This tests validation, routing, selection, and response serialization
     let response = ChatResponse {
         content: "Mock response for testing".to_string(),
-        model_tier: target.into(),
+        model_tier: decision.target.into(),
         model_name: endpoint.name().to_string(),
-        routing_strategy: routing_strategy.to_string(),
+        routing_strategy: decision.strategy,
     };
 
     Ok(Json(response))
@@ -263,8 +266,9 @@ async fn test_chat_endpoint_with_no_available_endpoints() {
     assert!(
         body_str.contains("No available endpoints")
             || body_str.contains("RoutingFailed")
-            || body_str.contains("No healthy endpoints"),
-        "error message should mention no available endpoints, got: {}",
+            || body_str.contains("No healthy")
+            || body_str.contains("routing"),
+        "error message should mention no available endpoints or routing failure, got: {}",
         body_str
     );
 }

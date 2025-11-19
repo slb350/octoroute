@@ -24,6 +24,49 @@ pub enum TargetModel {
     Deep,
 }
 
+/// Routing strategy used to make a routing decision
+///
+/// Provides compile-time type safety for routing strategy tracking
+/// instead of using raw strings which are error-prone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RoutingStrategy {
+    /// Rule-based routing (fast path, deterministic)
+    Rule,
+    /// LLM-based routing (intelligent fallback for ambiguous cases)
+    Llm,
+}
+
+impl RoutingStrategy {
+    /// Convert to string representation for logging and serialization
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Rule => "rule",
+            Self::Llm => "llm",
+        }
+    }
+}
+
+/// Result of a routing decision
+///
+/// Combines the target model tier with the strategy that was used
+/// to make the decision. Provides better type safety and clarity
+/// than returning a tuple.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoutingDecision {
+    /// Which model tier to use
+    pub target: TargetModel,
+    /// Which routing strategy made the decision
+    pub strategy: RoutingStrategy,
+}
+
+impl RoutingDecision {
+    /// Create a new routing decision
+    pub fn new(target: TargetModel, strategy: RoutingStrategy) -> Self {
+        Self { target, strategy }
+    }
+}
+
 /// Request importance level
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -172,5 +215,51 @@ mod tests {
             serde_json::from_str::<TaskType>(r#""creative_writing""#).unwrap(),
             TaskType::CreativeWriting
         );
+    }
+
+    #[test]
+    fn test_routing_strategy_as_str() {
+        assert_eq!(RoutingStrategy::Rule.as_str(), "rule");
+        assert_eq!(RoutingStrategy::Llm.as_str(), "llm");
+    }
+
+    #[test]
+    fn test_routing_strategy_serde() {
+        // Test deserialization
+        assert_eq!(
+            serde_json::from_str::<RoutingStrategy>(r#""rule""#).unwrap(),
+            RoutingStrategy::Rule
+        );
+        assert_eq!(
+            serde_json::from_str::<RoutingStrategy>(r#""llm""#).unwrap(),
+            RoutingStrategy::Llm
+        );
+
+        // Test serialization
+        assert_eq!(
+            serde_json::to_string(&RoutingStrategy::Rule).unwrap(),
+            r#""rule""#
+        );
+        assert_eq!(
+            serde_json::to_string(&RoutingStrategy::Llm).unwrap(),
+            r#""llm""#
+        );
+    }
+
+    #[test]
+    fn test_routing_decision_new() {
+        let decision = RoutingDecision::new(TargetModel::Fast, RoutingStrategy::Rule);
+        assert_eq!(decision.target, TargetModel::Fast);
+        assert_eq!(decision.strategy, RoutingStrategy::Rule);
+    }
+
+    #[test]
+    fn test_routing_decision_equality() {
+        let decision1 = RoutingDecision::new(TargetModel::Balanced, RoutingStrategy::Llm);
+        let decision2 = RoutingDecision::new(TargetModel::Balanced, RoutingStrategy::Llm);
+        let decision3 = RoutingDecision::new(TargetModel::Fast, RoutingStrategy::Rule);
+
+        assert_eq!(decision1, decision2);
+        assert_ne!(decision1, decision3);
     }
 }

@@ -7,7 +7,7 @@ use crate::error::{AppError, AppResult};
 use crate::handlers::AppState;
 use crate::middleware::RequestId;
 use crate::models::{EndpointName, ExclusionSet};
-use crate::router::{Importance, RouteMetadata, TargetModel, TaskType};
+use crate::router::{Importance, RouteMetadata, RoutingStrategy, TargetModel, TaskType};
 use axum::{Extension, Json, extract::State, response::IntoResponse};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::time::Duration;
@@ -121,8 +121,8 @@ pub struct ChatResponse {
     pub model_tier: ModelTier,
     /// Which specific endpoint was used
     pub model_name: String,
-    /// Which routing strategy made the decision ("rule", "llm", or "fallback")
-    pub routing_strategy: String,
+    /// Which routing strategy made the decision (Rule or Llm)
+    pub routing_strategy: RoutingStrategy,
 }
 
 impl ChatResponse {
@@ -135,18 +135,18 @@ impl ChatResponse {
     /// * `content` - The model's response text
     /// * `endpoint` - The endpoint that generated the response (guarantees valid model_name)
     /// * `tier` - The tier used for routing (fast, balanced, deep)
-    /// * `routing_strategy` - Which routing strategy was used ("rule", "llm", "fallback")
+    /// * `routing_strategy` - Which routing strategy was used (Rule or Llm)
     pub fn new(
         content: String,
         endpoint: &ModelEndpoint,
         tier: TargetModel,
-        routing_strategy: impl Into<String>,
+        routing_strategy: RoutingStrategy,
     ) -> Self {
         Self {
             content,
             model_tier: tier.into(),
             model_name: endpoint.name().to_string(),
-            routing_strategy: routing_strategy.into(),
+            routing_strategy,
         }
     }
 }
@@ -172,12 +172,12 @@ pub async fn handler(
 
     // Use hybrid router to determine target tier
     // Tries rule-based first, falls back to LLM router if needed
-    let (target, routing_strategy) = state.router().route(request.message(), &metadata).await?;
+    let decision = state.router().route(request.message(), &metadata).await?;
 
     tracing::info!(
         request_id = %request_id,
-        target_tier = ?target,
-        routing_strategy = routing_strategy,
+        target_tier = ?decision.target,
+        routing_strategy = ?decision.strategy,
         token_estimate = metadata.token_estimate,
         "Routing decision made"
     );
@@ -226,15 +226,19 @@ pub async fn handler(
 
     for attempt in 1..=MAX_RETRIES {
         // Select endpoint from target tier (with health filtering + priority + exclusion)
-        let endpoint = match state.selector().select(target, &failed_endpoints).await {
+        let endpoint = match state
+            .selector()
+            .select(decision.target, &failed_endpoints)
+            .await
+        {
             Some(ep) => ep.clone(),
             None => {
-                let total_configured = state.selector().endpoint_count(target);
+                let total_configured = state.selector().endpoint_count(decision.target);
                 let excluded_count = failed_endpoints.len();
 
                 tracing::error!(
                     request_id = %request_id,
-                    tier = ?target,
+                    tier = ?decision.target,
                     attempt = attempt,
                     max_retries = MAX_RETRIES,
                     total_configured_endpoints = total_configured,
@@ -247,7 +251,7 @@ pub async fn handler(
                 last_error = Some(AppError::RoutingFailed(format!(
                     "No available healthy endpoints for tier {:?} \
                     (configured: {}, excluded: {}, attempt {}/{})",
-                    target, total_configured, excluded_count, attempt, MAX_RETRIES
+                    decision.target, total_configured, excluded_count, attempt, MAX_RETRIES
                 )));
                 continue; // Try again (may have different healthy endpoints)
             }
@@ -293,7 +297,7 @@ pub async fn handler(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     unknown_name = %name,
-                                    selected_tier = ?target,
+                                    selected_tier = ?decision.target,
                                     attempt = attempt,
                                     "INVARIANT VIOLATION: mark_success called with unknown endpoint name. \
                                     Endpoint names come from ModelSelector which only returns valid endpoints. \
@@ -306,7 +310,7 @@ pub async fn handler(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     error = %msg,
-                                    selected_tier = ?target,
+                                    selected_tier = ?decision.target,
                                     attempt = attempt,
                                     "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
                                     This indicates a systemic issue (TLS configuration, resource exhaustion) \
@@ -325,13 +329,13 @@ pub async fn handler(
                     request_id = %request_id,
                     endpoint_name = %endpoint.name(),
                     response_length = response_text.len(),
-                    model_tier = ?target,
+                    model_tier = ?decision.target,
                     attempt = attempt,
                     "Request completed successfully"
                 );
 
                 let response =
-                    ChatResponse::new(response_text, &endpoint, target, routing_strategy);
+                    ChatResponse::new(response_text, &endpoint, decision.target, decision.strategy);
 
                 return Ok(Json(response));
             }
@@ -369,7 +373,7 @@ pub async fn handler(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     unknown_name = %name,
-                                    selected_tier = ?target,
+                                    selected_tier = ?decision.target,
                                     attempt = attempt,
                                     "INVARIANT VIOLATION: mark_failure called with unknown endpoint name. \
                                     Endpoint won't be marked unhealthy and will continue receiving traffic. \
@@ -383,7 +387,7 @@ pub async fn handler(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     error = %msg,
-                                    selected_tier = ?target,
+                                    selected_tier = ?decision.target,
                                     attempt = attempt,
                                     "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
                                     This indicates a systemic issue (TLS configuration, resource exhaustion) \
@@ -413,7 +417,7 @@ pub async fn handler(
     // All retries exhausted
     tracing::error!(
         request_id = %request_id,
-        tier = ?target,
+        tier = ?decision.target,
         max_retries = MAX_RETRIES,
         "All retry attempts exhausted"
     );
@@ -745,7 +749,7 @@ mod tests {
             content: "4".to_string(),
             model_tier: ModelTier::Fast,
             model_name: "fast-1".to_string(),
-            routing_strategy: "rule".to_string(),
+            routing_strategy: RoutingStrategy::Rule,
         };
 
         let json = serde_json::to_string(&resp).expect("should serialize");

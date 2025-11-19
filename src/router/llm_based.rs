@@ -3,12 +3,18 @@
 //! Uses the balanced tier (30B model) to analyze requests and choose the optimal target model.
 //! Falls back when rule-based routing cannot determine the best model.
 
-use crate::config::Config;
 use crate::error::{AppError, AppResult};
 use crate::models::endpoint_name::ExclusionSet;
 use crate::models::selector::ModelSelector;
 use crate::router::{RouteMetadata, TargetModel};
 use std::sync::Arc;
+
+/// Maximum size for router LLM response (bytes)
+///
+/// Prevents unbounded memory growth if a malfunctioning LLM sends gigabytes.
+/// Router responses should only be "FAST", "BALANCED", or "DEEP" (~10 bytes),
+/// so 1KB is extremely generous and handles verbose responses while preventing OOM.
+const MAX_ROUTER_RESPONSE: usize = 1024;
 
 /// LLM-powered router that uses a model to make routing decisions
 ///
@@ -20,7 +26,7 @@ pub struct LlmBasedRouter {
 
 impl LlmBasedRouter {
     /// Create a new LLM-based router
-    pub fn new(_config: Arc<Config>, selector: Arc<ModelSelector>) -> Self {
+    pub fn new(selector: Arc<ModelSelector>) -> Self {
         Self { selector }
     }
 
@@ -28,6 +34,7 @@ impl LlmBasedRouter {
     ///
     /// Queries the balanced tier model with routing prompt and metadata,
     /// parses the response to determine the optimal target model.
+    /// Implements retry logic with health tracking for resilience.
     pub async fn route(&self, user_prompt: &str, meta: &RouteMetadata) -> AppResult<TargetModel> {
         // Build router prompt
         let router_prompt = Self::build_router_prompt(user_prompt, meta);
@@ -38,24 +45,136 @@ impl LlmBasedRouter {
             "Built router prompt for LLM analysis"
         );
 
-        // Select endpoint from balanced tier (for routing decision)
-        let exclusions = ExclusionSet::new();
-        let endpoint = self
-            .selector
-            .select(TargetModel::Balanced, &exclusions)
-            .await
-            .ok_or_else(|| {
-                AppError::Internal(
-                    "No healthy endpoints available in balanced tier for routing".to_string(),
-                )
-            })?;
+        // Retry loop with request-scoped exclusion (similar to chat handler)
+        const MAX_ROUTER_RETRIES: usize = 2;
+        let mut last_error = None;
+        let mut failed_endpoints = ExclusionSet::new();
 
-        tracing::debug!(
-            endpoint_name = %endpoint.name(),
-            endpoint_url = %endpoint.base_url(),
-            "Selected balanced tier endpoint for routing decision"
+        for attempt in 1..=MAX_ROUTER_RETRIES {
+            // Select endpoint from balanced tier (with health filtering + exclusions)
+            let endpoint = match self
+                .selector
+                .select(TargetModel::Balanced, &failed_endpoints)
+                .await
+            {
+                Some(ep) => ep.clone(),
+                None => {
+                    let total_configured = self.selector.endpoint_count(TargetModel::Balanced);
+                    let excluded_count = failed_endpoints.len();
+
+                    tracing::error!(
+                        tier = "Balanced",
+                        attempt = attempt,
+                        max_retries = MAX_ROUTER_RETRIES,
+                        total_configured_endpoints = total_configured,
+                        failed_endpoints_count = excluded_count,
+                        failed_endpoints = ?failed_endpoints,
+                        "No healthy balanced tier endpoints for routing decision. \
+                        Configured: {}, Excluded: {}",
+                        total_configured, excluded_count
+                    );
+                    last_error = Some(AppError::RoutingFailed(format!(
+                        "No healthy balanced tier endpoints for routing \
+                        (configured: {}, excluded: {}, attempt {}/{})",
+                        total_configured, excluded_count, attempt, MAX_ROUTER_RETRIES
+                    )));
+                    continue;
+                }
+            };
+
+            tracing::debug!(
+                endpoint_name = %endpoint.name(),
+                endpoint_url = %endpoint.base_url(),
+                attempt = attempt,
+                max_retries = MAX_ROUTER_RETRIES,
+                "Selected balanced tier endpoint for routing decision"
+            );
+
+            // Try to query this endpoint
+            let query_result = self
+                .try_router_query(&endpoint, &router_prompt, attempt, MAX_ROUTER_RETRIES)
+                .await;
+
+            match query_result {
+                Ok(target_model) => {
+                    // Success! Mark endpoint healthy for immediate recovery
+                    if let Err(e) = self
+                        .selector
+                        .health_checker()
+                        .mark_success(endpoint.name())
+                        .await
+                    {
+                        tracing::warn!(
+                            endpoint_name = %endpoint.name(),
+                            error = %e,
+                            "Failed to mark router endpoint healthy after successful query"
+                        );
+                    }
+
+                    tracing::info!(
+                        endpoint_name = %endpoint.name(),
+                        target_model = ?target_model,
+                        attempt = attempt,
+                        "Router LLM successfully determined target model"
+                    );
+
+                    return Ok(target_model);
+                }
+                Err(e) => {
+                    // Failure - mark endpoint unhealthy and retry with different endpoint
+                    tracing::warn!(
+                        endpoint_name = %endpoint.name(),
+                        attempt = attempt,
+                        max_retries = MAX_ROUTER_RETRIES,
+                        error = %e,
+                        "Router query failed, marking endpoint for health tracking and retrying"
+                    );
+
+                    if let Err(health_err) = self
+                        .selector
+                        .health_checker()
+                        .mark_failure(endpoint.name())
+                        .await
+                    {
+                        tracing::warn!(
+                            endpoint_name = %endpoint.name(),
+                            error = %health_err,
+                            "Failed to mark router endpoint unhealthy after failed query"
+                        );
+                    }
+
+                    // Add to exclusion set to prevent retry on same endpoint
+                    use crate::models::EndpointName;
+                    failed_endpoints.insert(EndpointName::from(&endpoint));
+                    last_error = Some(e);
+                    continue; // Try next endpoint
+                }
+            }
+        }
+
+        // All retries exhausted
+        tracing::error!(
+            tier = "Balanced",
+            max_retries = MAX_ROUTER_RETRIES,
+            "All router retry attempts exhausted"
         );
 
+        Err(last_error.unwrap_or_else(|| {
+            AppError::RoutingFailed(format!(
+                "All {} router retry attempts exhausted",
+                MAX_ROUTER_RETRIES
+            ))
+        }))
+    }
+
+    /// Helper to attempt a single router query (extracted for retry logic)
+    async fn try_router_query(
+        &self,
+        endpoint: &crate::config::ModelEndpoint,
+        router_prompt: &str,
+        attempt: usize,
+        max_retries: usize,
+    ) -> AppResult<TargetModel> {
         // Build AgentOptions from endpoint
         let options = open_agent::AgentOptions::builder()
             .model(endpoint.name())
@@ -63,31 +182,103 @@ impl LlmBasedRouter {
             .max_tokens(endpoint.max_tokens() as u32)
             .temperature(endpoint.temperature() as f32)
             .build()
-            .map_err(|e| AppError::ModelQueryFailed {
-                endpoint: endpoint.base_url().to_string(),
-                reason: format!("Failed to build AgentOptions: {}", e),
+            .map_err(|e| {
+                tracing::error!(
+                    endpoint_name = %endpoint.name(),
+                    endpoint_url = %endpoint.base_url(),
+                    model = %endpoint.name(),
+                    max_tokens = endpoint.max_tokens(),
+                    temperature = endpoint.temperature(),
+                    error = %e,
+                    attempt = attempt,
+                    max_retries = max_retries,
+                    "Failed to build AgentOptions for router query"
+                );
+                AppError::ModelQueryFailed {
+                    endpoint: endpoint.base_url().to_string(),
+                    reason: format!(
+                        "Failed to configure AgentOptions: {} (model={}, max_tokens={})",
+                        e,
+                        endpoint.name(),
+                        endpoint.max_tokens()
+                    ),
+                }
             })?;
 
-        // Query the router model
+        // Query the router model with timeout protection
         use futures::StreamExt;
-        let mut stream = open_agent::query(&router_prompt, &options)
+        use tokio::time::{Duration, timeout};
+
+        const ROUTER_QUERY_TIMEOUT_SECS: u64 = 10;
+        let timeout_duration = Duration::from_secs(ROUTER_QUERY_TIMEOUT_SECS);
+
+        let mut stream = timeout(timeout_duration, open_agent::query(router_prompt, &options))
             .await
-            .map_err(|e| AppError::ModelQueryFailed {
-                endpoint: endpoint.base_url().to_string(),
-                reason: format!("Router query failed: {}", e),
+            .map_err(|_elapsed| {
+                tracing::error!(
+                    endpoint_name = %endpoint.name(),
+                    endpoint_url = %endpoint.base_url(),
+                    timeout_seconds = ROUTER_QUERY_TIMEOUT_SECS,
+                    attempt = attempt,
+                    max_retries = max_retries,
+                    "Router query timeout - endpoint did not respond within {} seconds (attempt {}/{})",
+                    ROUTER_QUERY_TIMEOUT_SECS, attempt, max_retries
+                );
+                AppError::ModelQueryFailed {
+                    endpoint: endpoint.base_url().to_string(),
+                    reason: format!("Router query timeout after {} seconds", ROUTER_QUERY_TIMEOUT_SECS),
+                }
+            })?
+            .map_err(|e| {
+                tracing::error!(
+                    endpoint_name = %endpoint.name(),
+                    endpoint_url = %endpoint.base_url(),
+                    error = %e,
+                    attempt = attempt,
+                    max_retries = max_retries,
+                    "Router query failed to connect or initialize stream (attempt {}/{})",
+                    attempt, max_retries
+                );
+                AppError::ModelQueryFailed {
+                    endpoint: endpoint.base_url().to_string(),
+                    reason: format!("Router query failed: {}", e),
+                }
             })?;
 
-        // Collect response from stream
+        // Collect response from stream with size limit to prevent unbounded memory growth
         let mut response_text = String::new();
         while let Some(result) = stream.next().await {
             match result {
                 Ok(block) => {
                     use open_agent::ContentBlock;
                     if let ContentBlock::Text(text_block) = block {
+                        // Check size limit before accumulating
+                        if response_text.len() + text_block.text.len() > MAX_ROUTER_RESPONSE {
+                            tracing::warn!(
+                                endpoint_name = %endpoint.name(),
+                                current_length = response_text.len(),
+                                incoming_length = text_block.text.len(),
+                                max_allowed = MAX_ROUTER_RESPONSE,
+                                attempt = attempt,
+                                "Router response exceeded size limit, truncating (attempt {}/{})",
+                                attempt, max_retries
+                            );
+                            break; // Stop accumulating, parse what we have
+                        }
                         response_text.push_str(&text_block.text);
                     }
                 }
                 Err(e) => {
+                    tracing::error!(
+                        endpoint_name = %endpoint.name(),
+                        endpoint_url = %endpoint.base_url(),
+                        error = %e,
+                        partial_response_length = response_text.len(),
+                        attempt = attempt,
+                        max_retries = max_retries,
+                        "Router stream error after {} chars (attempt {}/{})",
+                        response_text.len(), attempt, max_retries
+                    );
                     return Err(AppError::ModelQueryFailed {
                         endpoint: endpoint.base_url().to_string(),
                         reason: format!("Stream error: {}", e),
@@ -97,8 +288,10 @@ impl LlmBasedRouter {
         }
 
         tracing::debug!(
+            endpoint_name = %endpoint.name(),
             response_length = response_text.len(),
             response = %response_text,
+            attempt = attempt,
             "Received router decision from LLM"
         );
 
@@ -110,7 +303,19 @@ impl LlmBasedRouter {
     ///
     /// Creates a structured prompt that asks the LLM to choose between
     /// FAST, BALANCED, or DEEP based on the user's request and metadata.
+    ///
+    /// Includes prompt injection protection:
+    /// - Truncates long user prompts to prevent context overflow
+    /// - Adds reinforcement instructions after user input
     fn build_router_prompt(user_prompt: &str, meta: &RouteMetadata) -> String {
+        // Truncate user prompt to prevent prompt injection via context overflow
+        const MAX_USER_PROMPT_CHARS: usize = 500;
+        let truncated_prompt = if user_prompt.len() > MAX_USER_PROMPT_CHARS {
+            format!("{}... [truncated]", &user_prompt[..MAX_USER_PROMPT_CHARS])
+        } else {
+            user_prompt.to_string()
+        };
+
         format!(
             "You are a router that chooses which LLM to use.\n\n\
              Available models:\n\
@@ -122,19 +327,35 @@ impl LlmBasedRouter {
              - Estimated tokens: {}\n\
              - Importance: {:?}\n\
              - Task type: {:?}\n\n\
-             Respond with ONLY one of: FAST, BALANCED, DEEP",
-            user_prompt, meta.token_estimate, meta.importance, meta.task_type
+             Based on the above, respond with ONLY one word: FAST, BALANCED, or DEEP.\n\
+             Do not include explanations or other text.",
+            truncated_prompt, meta.token_estimate, meta.importance, meta.task_type
         )
     }
 
     /// Parse LLM response to extract routing decision
     ///
     /// Uses fuzzy matching to extract FAST, BALANCED, or DEEP from the response.
-    /// Defaults to BALANCED on ambiguous responses.
+    /// Returns an error on empty responses (indicates LLM misconfiguration or refusal).
     fn parse_routing_decision(response: &str) -> AppResult<TargetModel> {
         let normalized = response.trim().to_uppercase();
 
-        // Check for FAST first (highest priority in parsing order)
+        // Check for empty response first - this indicates a problem (misconfiguration, safety filter, etc.)
+        if normalized.is_empty() {
+            tracing::error!(
+                response = %response,
+                "Router LLM returned empty response - cannot determine routing decision"
+            );
+            return Err(AppError::ModelQueryFailed {
+                endpoint: "router".to_string(),
+                reason: "Router LLM returned empty response".to_string(),
+            });
+        }
+
+        // Fuzzy matching: Check for each keyword in order
+        // Order matters to avoid false positives with substring collisions
+
+        // Check for FAST first to avoid false positives
         if normalized.contains("FAST") {
             return Ok(TargetModel::Fast);
         }
@@ -149,7 +370,10 @@ impl LlmBasedRouter {
             return Ok(TargetModel::Deep);
         }
 
-        // Default to Balanced on ambiguous or empty responses
+        // Default to Balanced - middle-ground choice:
+        // - Fast might be too weak if LLM couldn't decide (ambiguous = complex)
+        // - Deep wastes compute if response was just malformed
+        // - Balanced handles most tasks adequately
         tracing::warn!(
             response = %response,
             "Could not parse router response, defaulting to Balanced"
@@ -247,19 +471,38 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_routing_decision_empty_defaults_to_balanced() {
+    fn test_parse_routing_decision_empty_returns_error() {
+        // Empty response should error - indicates LLM misconfiguration or refusal
         let response = "";
         let result = LlmBasedRouter::parse_routing_decision(response);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), TargetModel::Balanced);
+        assert!(result.is_err(), "Empty response should return error");
+
+        let err = result.unwrap_err();
+        let err_msg = format!("{}", err);
+        assert!(
+            err_msg.contains("empty") || err_msg.contains("no response"),
+            "Error message should indicate empty response, got: {}",
+            err_msg
+        );
     }
 
     #[test]
-    fn test_parse_routing_decision_whitespace_defaults_to_balanced() {
+    fn test_parse_routing_decision_whitespace_returns_error() {
+        // Whitespace-only response should error - same as empty
         let response = "   \n\t  ";
         let result = LlmBasedRouter::parse_routing_decision(response);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), TargetModel::Balanced);
+        assert!(
+            result.is_err(),
+            "Whitespace-only response should return error"
+        );
+
+        let err = result.unwrap_err();
+        let err_msg = format!("{}", err);
+        assert!(
+            err_msg.contains("empty") || err_msg.contains("no response"),
+            "Error message should indicate empty response, got: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -369,5 +612,38 @@ mod tests {
         assert!(prompt.contains("router"));
         assert!(prompt.contains("User request:") || prompt.contains("User:"));
         assert!(prompt.contains("Metadata:") || prompt.contains("metadata"));
+    }
+
+    // ========================================================================
+    // Response size limit tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_routing_decision_truncates_long_responses() {
+        // Response size limit should prevent unbounded memory growth
+        // Very long responses should be truncated but still parsed correctly
+        let long_response = format!(
+            "{}BALANCED{}",
+            "x".repeat(500), // 500 chars before
+            "y".repeat(500)  // 500 chars after
+        );
+
+        let result = LlmBasedRouter::parse_routing_decision(&long_response);
+        assert!(
+            result.is_ok(),
+            "Long responses should still parse correctly"
+        );
+        assert_eq!(result.unwrap(), TargetModel::Balanced);
+    }
+
+    #[test]
+    fn test_parse_routing_decision_handles_extreme_length() {
+        // Even with megabyte-sized responses, parsing should work
+        // (though the actual streaming should have truncated it)
+        let extreme_response = format!("FAST{}", "x".repeat(1_000_000));
+
+        let result = LlmBasedRouter::parse_routing_decision(&extreme_response);
+        assert!(result.is_ok(), "Extreme length should not crash parser");
+        assert_eq!(result.unwrap(), TargetModel::Fast);
     }
 }

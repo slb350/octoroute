@@ -13,6 +13,12 @@ pub mod models;
 ///
 /// Contains configuration, model selector, and router instances.
 /// All fields are Arc'd for cheap cloning across Axum handlers.
+///
+/// # Changes (Phase 3, PR #2)
+///
+/// - `router` field changed from `RuleBasedRouter` to `HybridRouter`
+///   - Rationale: Hybrid router provides intelligent LLM fallback for ambiguous cases
+///   - Impact: All routing now uses hybrid strategy (rule-based first, LLM fallback)
 #[derive(Clone)]
 pub struct AppState {
     config: Arc<Config>,

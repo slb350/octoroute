@@ -6,7 +6,9 @@
 use crate::config::Config;
 use crate::error::AppResult;
 use crate::models::selector::ModelSelector;
-use crate::router::{LlmBasedRouter, RouteMetadata, RuleBasedRouter, TargetModel};
+use crate::router::{
+    LlmBasedRouter, RouteMetadata, RoutingDecision, RoutingStrategy, RuleBasedRouter,
+};
 use std::sync::Arc;
 
 /// Hybrid router combining rule-based and LLM-based strategies
@@ -20,22 +22,22 @@ pub struct HybridRouter {
 
 impl HybridRouter {
     /// Create a new hybrid router
-    pub fn new(config: Arc<Config>, selector: Arc<ModelSelector>) -> Self {
+    pub fn new(_config: Arc<Config>, selector: Arc<ModelSelector>) -> Self {
         Self {
             rule_router: RuleBasedRouter::new(),
-            llm_router: LlmBasedRouter::new(config, selector),
+            llm_router: LlmBasedRouter::new(selector),
         }
     }
 
     /// Route using hybrid strategy
     ///
-    /// Returns a tuple of (TargetModel, strategy_used) where strategy_used
-    /// is either "rule" or "llm".
+    /// Returns a RoutingDecision containing the target model tier and
+    /// the strategy that was used (Rule or Llm).
     pub async fn route(
         &self,
         user_prompt: &str,
         meta: &RouteMetadata,
-    ) -> AppResult<(TargetModel, &'static str)> {
+    ) -> AppResult<RoutingDecision> {
         // Try rule-based first (fast path)
         if let Some(target) = self.rule_router.route(meta) {
             tracing::info!(
@@ -46,7 +48,7 @@ impl HybridRouter {
                 task_type = ?meta.task_type,
                 "Route decision made via rule-based routing"
             );
-            return Ok((target, "rule"));
+            return Ok(RoutingDecision::new(target, RoutingStrategy::Rule));
         }
 
         // Fall back to LLM router for ambiguous cases
@@ -68,7 +70,7 @@ impl HybridRouter {
             "Route decision made via LLM-based routing"
         );
 
-        Ok((target, "llm"))
+        Ok(RoutingDecision::new(target, RoutingStrategy::Llm))
     }
 }
 
@@ -77,7 +79,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::models::selector::ModelSelector;
-    use crate::router::{Importance, TaskType};
+    use crate::router::{Importance, RoutingStrategy, TargetModel, TaskType};
 
     /// Helper to create test config
     fn test_config() -> Arc<Config> {
@@ -150,9 +152,9 @@ mod tests {
         let result = router.route("Hello!", &meta).await;
         assert!(result.is_ok());
 
-        let (target, strategy) = result.unwrap();
-        assert_eq!(target, TargetModel::Fast);
-        assert_eq!(strategy, "rule");
+        let decision = result.unwrap();
+        assert_eq!(decision.target, TargetModel::Fast);
+        assert_eq!(decision.strategy, RoutingStrategy::Rule);
     }
 
     #[tokio::test]
@@ -171,9 +173,9 @@ mod tests {
         let result = router.route("Write a hello world function", &meta).await;
         assert!(result.is_ok());
 
-        let (target, strategy) = result.unwrap();
-        assert_eq!(target, TargetModel::Balanced);
-        assert_eq!(strategy, "rule");
+        let decision = result.unwrap();
+        assert_eq!(decision.target, TargetModel::Balanced);
+        assert_eq!(decision.strategy, RoutingStrategy::Rule);
     }
 
     #[tokio::test]
@@ -192,9 +194,9 @@ mod tests {
         let result = router.route("Important question", &meta).await;
         assert!(result.is_ok());
 
-        let (target, strategy) = result.unwrap();
-        assert_eq!(target, TargetModel::Deep);
-        assert_eq!(strategy, "rule");
+        let decision = result.unwrap();
+        assert_eq!(decision.target, TargetModel::Deep);
+        assert_eq!(decision.strategy, RoutingStrategy::Rule);
     }
 
     // Note: We cannot easily test the LLM fallback path without mocking
