@@ -20,7 +20,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 ///
 /// # Validation
 /// String conversions (`From<&str>`, `From<String>`) don't validate that the endpoint exists
-/// in the configuration. Invalid names will be silently ignored during health checks and selection.
+/// in the configuration. Invalid names will cause runtime errors (`HealthError::UnknownEndpoint`)
+/// when used with health checking methods (`mark_success`, `mark_failure`), which will propagate
+/// to request handlers and fail requests with detailed logging.
 /// For validated construction, prefer creating from `&ModelEndpoint` references.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct EndpointName(String);
