@@ -261,16 +261,33 @@ pub async fn handler(
                     .mark_success(endpoint.name())
                     .await
                     .map_err(|e| {
-                        tracing::error!(
-                            endpoint_name = %endpoint.name(),
-                            error = %e,
-                            selected_tier = ?target,
-                            attempt = attempt,
-                            "INVARIANT CHECK: mark_success should never fail (endpoint names come from \
-                            ModelSelector which only returns valid endpoints). If this error occurs, it \
-                            indicates a serious bug (race condition, naming mismatch, or memory corruption). \
-                            Failing request to expose issue."
-                        );
+                        use crate::models::health::HealthError;
+                        match e {
+                            HealthError::UnknownEndpoint(ref name) => {
+                                tracing::error!(
+                                    endpoint_name = %endpoint.name(),
+                                    unknown_name = %name,
+                                    selected_tier = ?target,
+                                    attempt = attempt,
+                                    "INVARIANT VIOLATION: mark_success called with unknown endpoint name. \
+                                    Endpoint names come from ModelSelector which only returns valid endpoints. \
+                                    This indicates a serious bug (race condition, naming mismatch, or config \
+                                    reload during request). Failing request to expose issue."
+                                );
+                            }
+                            HealthError::HttpClientCreationFailed(ref msg) => {
+                                tracing::error!(
+                                    endpoint_name = %endpoint.name(),
+                                    error = %msg,
+                                    selected_tier = ?target,
+                                    attempt = attempt,
+                                    "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
+                                    This indicates a systemic issue (TLS configuration, resource exhaustion) \
+                                    affecting ALL endpoints, not an individual endpoint problem. \
+                                    Failing request to expose issue."
+                                );
+                            }
+                        }
                         AppError::HealthCheckFailed {
                             endpoint: endpoint.name().to_string(),
                             reason: format!("mark_success failed: {}. This should not happen.", e),
@@ -319,15 +336,34 @@ pub async fn handler(
                     .mark_failure(endpoint.name())
                     .await
                     .map_err(|e| {
-                        tracing::error!(
-                            endpoint_name = %endpoint.name(),
-                            error = %e,
-                            selected_tier = ?target,
-                            attempt = attempt,
-                            "INVARIANT VIOLATION: mark_failure failed. Endpoint won't be marked unhealthy \
-                            and will continue receiving traffic despite failures. This indicates a bug \
-                            (race condition or naming mismatch). Failing request to expose issue."
-                        );
+                        use crate::models::health::HealthError;
+                        match e {
+                            HealthError::UnknownEndpoint(ref name) => {
+                                tracing::error!(
+                                    endpoint_name = %endpoint.name(),
+                                    unknown_name = %name,
+                                    selected_tier = ?target,
+                                    attempt = attempt,
+                                    "INVARIANT VIOLATION: mark_failure called with unknown endpoint name. \
+                                    Endpoint won't be marked unhealthy and will continue receiving traffic. \
+                                    Endpoint names come from ModelSelector which only returns valid endpoints. \
+                                    This indicates a serious bug (race condition or naming mismatch). \
+                                    Failing request to expose issue."
+                                );
+                            }
+                            HealthError::HttpClientCreationFailed(ref msg) => {
+                                tracing::error!(
+                                    endpoint_name = %endpoint.name(),
+                                    error = %msg,
+                                    selected_tier = ?target,
+                                    attempt = attempt,
+                                    "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
+                                    This indicates a systemic issue (TLS configuration, resource exhaustion) \
+                                    affecting ALL endpoints, not an individual endpoint problem. \
+                                    Failing request to expose issue."
+                                );
+                            }
+                        }
                         AppError::HealthCheckFailed {
                             endpoint: endpoint.name().to_string(),
                             reason: format!("mark_failure failed: {}. This should not happen.", e),
