@@ -196,7 +196,9 @@ impl ModelSelector {
             .iter()
             .map(|e| e.priority())
             .max()
-            .expect("BUG: available_endpoints should not be empty (checked at line 174)");
+            .expect(
+                "Defensive check: available_endpoints cannot be empty due to early return above",
+            );
 
         let highest_priority_endpoints: Vec<&ModelEndpoint> = available_endpoints
             .iter()
