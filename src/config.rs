@@ -653,18 +653,6 @@ metrics_port = 3000
         assert!(err_msg.contains("health checks"));
     }
 
-    // ✅ VULNERABILITY FIXED ✅
-    //
-    // This test previously demonstrated that public fields could be mutated after validation,
-    // bypassing all safety checks. With private fields and getter-only access, this is no
-    // longer possible.
-    //
-    // The vulnerability test has been removed because it can no longer compile - which proves
-    // the fix is effective. ModelEndpoint instances can only be created via deserialization,
-    // and all validation is enforced at load time through Config::from_str() / Config::from_file().
-    //
-    // Post-construction mutation is now impossible, ensuring validated data stays valid.
-
     #[test]
     fn test_config_validation_zero_timeout_fails() {
         let mut config = Config::from_str(TEST_CONFIG).unwrap();
