@@ -121,9 +121,23 @@ impl LlmBasedRouter {
 
     /// Route request using LLM analysis
     ///
-    /// Queries the balanced tier model with routing prompt and metadata,
-    /// parses the response to determine the optimal target model.
-    /// Implements retry logic with health tracking for resilience.
+    /// # Async Behavior
+    /// This method is async because it:
+    /// - Awaits endpoint selection from ModelSelector (lock acquisition)
+    /// - Makes HTTP requests to LLM endpoints (network I/O)
+    /// - Performs health tracking mark_success/mark_failure (async lock)
+    ///
+    /// # Retry Logic & Failure Tracking (Dual-Level)
+    /// Implements sophisticated retry with TWO failure tracking mechanisms:
+    /// 1. **Request-Scoped Exclusion** (`failed_endpoints`): Prevents retrying
+    ///    the same endpoint within THIS request. Clears when function returns.
+    /// 2. **Global Health Tracking**: Marks endpoints unhealthy after 3 consecutive
+    ///    failures across ALL requests. Persists via ModelSelector's health_checker.
+    ///
+    /// # Cancellation Safety
+    /// If the returned Future is dropped (cancelled), in-flight LLM queries will be
+    /// aborted but endpoint health state remains consistent (mark_success/mark_failure
+    /// only called after query completes).
     pub async fn route(&self, user_prompt: &str, meta: &RouteMetadata) -> AppResult<TargetModel> {
         // Build router prompt
         let router_prompt = Self::build_router_prompt(user_prompt, meta);
