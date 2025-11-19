@@ -125,4 +125,47 @@ mod tests {
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
+
+    #[test]
+    fn test_stream_interrupted_error_returns_502_bad_gateway() {
+        let err = AppError::StreamInterrupted {
+            endpoint: "http://localhost:1234/v1".to_string(),
+            bytes_received: 1024,
+            blocks_received: 5,
+        };
+        let response = err.into_response();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_GATEWAY,
+            "StreamInterrupted must return 502 BAD_GATEWAY to indicate upstream server failure"
+        );
+    }
+
+    #[test]
+    fn test_endpoint_timeout_error_returns_504_gateway_timeout() {
+        let err = AppError::EndpointTimeout {
+            endpoint: "http://localhost:1234/v1".to_string(),
+            timeout_seconds: 30,
+        };
+        let response = err.into_response();
+        assert_eq!(
+            response.status(),
+            StatusCode::GATEWAY_TIMEOUT,
+            "EndpointTimeout must return 504 GATEWAY_TIMEOUT to distinguish from stream failures"
+        );
+    }
+
+    #[test]
+    fn test_model_query_failed_error_returns_502_bad_gateway() {
+        let err = AppError::ModelQueryFailed {
+            endpoint: "http://localhost:1234/v1".to_string(),
+            reason: "connection refused".to_string(),
+        };
+        let response = err.into_response();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_GATEWAY,
+            "ModelQueryFailed must return 502 BAD_GATEWAY to indicate upstream server failure"
+        );
+    }
 }
