@@ -560,14 +560,21 @@ impl HealthChecker {
 
                     tracing::error!(
                         max_attempts = MAX_BACKGROUND_TASK_RESTARTS,
-                        "Background health check task failed {} times. \
-                        Health monitoring has stopped permanently. Endpoints marked \
-                        unhealthy will remain unhealthy until server restart. \
-                        This indicates a critical bug in the health check logic. \
-                        External monitoring can detect this via HealthMetrics.",
+                        "FATAL: Background health check task failed {} times. \
+                        Health monitoring cannot continue. Shutting down server to prevent \
+                        serving requests in degraded state. Operator intervention required. \
+                        This indicates a critical bug in the health check logic.",
                         MAX_BACKGROUND_TASK_RESTARTS
                     );
-                    break;
+
+                    // Panic to trigger process restart (if using process supervisor like systemd)
+                    // This prevents the server from continuing to run without health monitoring,
+                    // which would lead to endpoints never recovering from failures.
+                    panic!(
+                        "Background health check permanently failed after {} attempts. \
+                        Server cannot operate without health monitoring. Shutting down.",
+                        MAX_BACKGROUND_TASK_RESTARTS
+                    );
                 }
 
                 // Record restart attempt in metrics
