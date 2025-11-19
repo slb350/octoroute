@@ -413,7 +413,7 @@ impl HealthChecker {
                 HealthError::HttpClientCreationFailed(e.to_string())
             })?;
 
-        // IMPORTANT: Health check URL construction (fixed bug - see commit history)
+        // IMPORTANT: Health check URL construction (fixed bug in commit 64c913d)
         // base_url already includes /v1 (e.g., "http://host:port/v1")
         // We append "/models" to get "http://host:port/v1/models"
         // DO NOT append "/v1/models" - that would create "http://host:port/v1/v1/models" (404!)
@@ -509,8 +509,17 @@ impl HealthChecker {
     ///
     /// Spawns a tokio task that runs health checks every 30 seconds.
     /// Includes automatic restart logic with exponential backoff (max 5 attempts).
-    /// If the task fails repeatedly, health monitoring stops and endpoints will not recover.
     /// Updates HealthMetrics to enable external monitoring of the background task health.
+    ///
+    /// # Panics
+    ///
+    /// Panics after 5 failed restart attempts, causing the server process to shut down.
+    /// This is intentional fail-fast behavior to prevent the server from continuing
+    /// to run without health monitoring, which would lead to endpoints never recovering
+    /// from failures. The server cannot operate safely in a degraded state without
+    /// health checks. Operator intervention is required to investigate the root cause
+    /// (typically TLS misconfiguration, resource exhaustion, or a critical bug in the
+    /// health check logic).
     ///
     /// Returns a JoinHandle that can be used to wait for or cancel the background task
     /// during graceful shutdown.

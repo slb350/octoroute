@@ -251,7 +251,7 @@ pub async fn handler(
             Ok(response_text) => {
                 // Success! Mark endpoint as healthy to enable immediate recovery
                 //
-                // DEFENSIVE: mark_success should never fail in normal operation (endpoint names come
+                // INVARIANT CHECK: mark_success should never fail in normal operation (endpoint names come
                 // from ModelSelector which only returns valid endpoints). If it fails, this indicates
                 // a serious bug (race condition, typo, or config reload during request). Propagate the
                 // error to expose the bug immediately rather than silently continuing.
@@ -266,7 +266,7 @@ pub async fn handler(
                             error = %e,
                             selected_tier = ?target,
                             attempt = attempt,
-                            "DEFENSIVE CHECK: mark_success should never fail (endpoint names come from \
+                            "INVARIANT CHECK: mark_success should never fail (endpoint names come from \
                             ModelSelector which only returns valid endpoints). If this error occurs, it \
                             indicates a serious bug (race condition, naming mismatch, or memory corruption). \
                             Failing request to expose issue."
@@ -309,7 +309,7 @@ pub async fn handler(
                 // After 3 consecutive failures (across all requests), endpoint becomes unhealthy
                 // and won't be selected by ANY request until it recovers.
                 //
-                // DEFENSIVE: mark_failure should never fail in normal operation (endpoint names come
+                // INVARIANT CHECK: mark_failure should never fail in normal operation (endpoint names come
                 // from ModelSelector which only returns valid endpoints). If it fails, this indicates
                 // a serious bug (race condition, typo, or config reload during request). Propagate the
                 // error to expose the bug immediately rather than silently continuing.
@@ -324,7 +324,7 @@ pub async fn handler(
                             error = %e,
                             selected_tier = ?target,
                             attempt = attempt,
-                            "DEFENSIVE ERROR: mark_failure failed. Endpoint won't be marked unhealthy \
+                            "INVARIANT VIOLATION: mark_failure failed. Endpoint won't be marked unhealthy \
                             and will continue receiving traffic despite failures. This indicates a bug \
                             (race condition or naming mismatch). Failing request to expose issue."
                         );

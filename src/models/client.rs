@@ -14,13 +14,14 @@ use tokio::sync::Mutex;
 /// **NOTE**: Unused through Phase 2c. The `/chat` handler uses the standalone
 /// `open_agent::query()` function to avoid `!Sync` issues with the stateful Client.
 ///
-/// Retained for Phase 3 LLM-based routing which may require stateful conversation
-/// history. Will be removed if Phase 3 doesn't need it.
+/// **Retention Rationale**: Required for Phase 3 tool-based routing (see CLAUDE.md § 2.2.3).
+/// The tool-based router architecture requires stateful Client instances for each target
+/// model endpoint. Tools like `call_fast_8b`, `call_balanced_30b`, and `call_deep_120b`
+/// each execute a separate Client to enable multi-turn conversations and streaming context
+/// management within tool invocations.
 ///
-/// This wrapper may be used for:
-/// - Conversation history management
-/// - Stateful multi-turn conversations
-/// - Per-client session management
+/// If Phase 3 adopts a different architecture that doesn't require stateful clients,
+/// this type should be removed in favor of the standalone `open_agent::query()` pattern.
 ///
 /// Client is wrapped in Arc<Mutex<>> to make it Send + Sync for use in async handlers.
 #[allow(dead_code)]
