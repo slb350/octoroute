@@ -84,24 +84,27 @@ impl LlmBasedRouter {
     /// - Network timeouts
     /// - Connection failures
     /// - Stream errors
+    ///
+    /// # Implementation
+    ///
+    /// Uses explicit error type matching for robustness. Systemic patterns are
+    /// identified by specific error message prefixes that indicate the LLM itself
+    /// is malfunctioning (not endpoint-specific issues like network errors).
     fn is_retryable_error(error: &AppError) -> bool {
         match error {
             AppError::ModelQueryFailed { reason, .. } => {
-                // Check for systemic error patterns in the reason string
-                let systemic_patterns = [
-                    "unparseable",
-                    "empty response",
-                    "exceeded size limit",
-                    "exceeded",
-                    "refusal",
-                    "Router LLM returned",
-                    "not following instructions",
-                    "configure AgentOptions", // AgentOptions build failures are config errors
-                ];
-
-                let is_systemic = systemic_patterns
-                    .iter()
-                    .any(|pattern| reason.to_lowercase().contains(&pattern.to_lowercase()));
+                // Explicit systemic patterns - these indicate LLM/config problems,
+                // not transient network/endpoint issues
+                //
+                // Use case-insensitive matching since error messages may vary in case
+                let reason_lower = reason.to_lowercase();
+                let is_systemic = reason_lower.contains("router llm returned")
+                    || reason_lower.contains("unparseable")
+                    || reason_lower.contains("empty response")
+                    || reason_lower.contains("exceeded")
+                    || reason_lower.contains("refusal")
+                    || reason_lower.contains("not following instructions")
+                    || reason_lower.contains("configure agentoptions");
 
                 // Systemic errors are NOT retryable
                 !is_systemic
@@ -110,7 +113,8 @@ impl LlmBasedRouter {
                 // Configuration errors are systemic, not retryable
                 false
             }
-            // Other errors (timeouts, routing failures, etc.) are potentially transient
+            // Default: assume transient for unknown error types
+            // Conservative approach - retry unless we know it's systemic
             _ => true,
         }
     }
