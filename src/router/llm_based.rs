@@ -30,11 +30,15 @@ use std::sync::Arc;
 
 /// Maximum size for router LLM response (bytes)
 ///
-/// Router responses should only be "FAST", "BALANCED", or "DEEP" (~10 bytes).
-/// 1KB limit is extremely generous - exceeding it indicates serious LLM malfunction:
-/// - LLM ignoring system prompt
-/// - Model hallucinating or compromised
-/// - Configuration pointing to wrong model type
+/// 1KB limit prevents unbounded memory growth from runaway LLM output.
+///
+/// Router responses should be "FAST", "BALANCED", or "DEEP" (~10 bytes).
+/// The parser extracts the leftmost keyword even from verbose responses
+/// (e.g., "I recommend BALANCED because..."), so this limit is 100x larger
+/// than typical responses. Exceeding 1KB indicates:
+/// - LLM ignoring instructions (generating essays instead of classifications)
+/// - Infinite generation loops
+/// - Prompt injection attacks
 ///
 /// Responses exceeding this limit return an error (not truncated and parsed).
 const MAX_ROUTER_RESPONSE: usize = 1024;
@@ -123,8 +127,9 @@ impl LlmBasedRouter {
     ///
     /// # Async Behavior
     /// This method is async because it:
-    /// - Awaits endpoint selection from ModelSelector (lock acquisition)
-    /// - Makes HTTP requests to LLM endpoints (network I/O)
+    /// - Waits for LLM inference to complete (~100-500ms for 30B model routing decision)
+    /// - Makes HTTP requests to LLM endpoints (network I/O, ~10-100ms connection overhead)
+    /// - Awaits endpoint selection from ModelSelector (async lock acquisition)
     /// - Performs health tracking mark_success/mark_failure (async lock)
     ///
     /// # Retry Logic & Failure Tracking (Dual-Level)
@@ -556,7 +561,8 @@ impl LlmBasedRouter {
             let before_is_boundary = if pos == 0 {
                 true
             } else {
-                // Check if previous character is non-alphanumeric (word boundary)
+                // Check if previous character is non-alphanumeric (whitespace or punctuation).
+                // Punctuation counts as word boundary: "FAST-TRACK" WILL match "FAST"
                 text_bytes[pos - 1].is_ascii_whitespace()
                     || !text_bytes[pos - 1].is_ascii_alphanumeric()
             };
@@ -566,7 +572,8 @@ impl LlmBasedRouter {
             let after_is_boundary = if after_pos >= text.len() {
                 true
             } else {
-                // Check if next character is non-alphanumeric (word boundary)
+                // Check if next character is non-alphanumeric (whitespace or punctuation).
+                // Punctuation counts as word boundary: "FAST-TRACK" WILL match "FAST"
                 text_bytes[after_pos].is_ascii_whitespace()
                     || !text_bytes[after_pos].is_ascii_alphanumeric()
             };

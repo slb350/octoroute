@@ -116,7 +116,7 @@ impl From<crate::router::TargetModel> for ModelTier {
 ///
 /// Fields are private to enforce construction through the validated `new()` constructor.
 /// This ensures `model_name` always matches an actual endpoint from configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ChatResponse {
     /// Model's response content
     content: String,
@@ -174,6 +174,44 @@ impl ChatResponse {
     }
 }
 
+/// Custom Deserialize implementation for ChatResponse that validates fields
+///
+/// Defense-in-depth: Prevents creation of invalid ChatResponse instances via deserialization,
+/// even though ChatResponse is never deserialized from user input in current code.
+impl<'de> Deserialize<'de> for ChatResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawChatResponse {
+            content: String,
+            model_tier: ModelTier,
+            model_name: String,
+            routing_strategy: RoutingStrategy,
+        }
+
+        let raw = RawChatResponse::deserialize(deserializer)?;
+
+        // Validate content is not empty
+        if raw.content.trim().is_empty() {
+            return Err(serde::de::Error::custom("content cannot be empty"));
+        }
+
+        // Validate model_name is not empty
+        if raw.model_name.trim().is_empty() {
+            return Err(serde::de::Error::custom("model_name cannot be empty"));
+        }
+
+        Ok(ChatResponse {
+            content: raw.content,
+            model_tier: raw.model_tier,
+            model_name: raw.model_name,
+            routing_strategy: raw.routing_strategy,
+        })
+    }
+}
+
 /// POST /chat handler
 pub async fn handler(
     State(state): State<AppState>,
@@ -227,9 +265,10 @@ pub async fn handler(
     // - Request-scoped exclusion ensures no wasted retries on known-bad endpoints in THIS request
     // - Global health tracking prevents all requests from hitting persistently failing endpoints
     // - Without request-scoped: Could retry the same failed endpoint on attempts 1, 2, 3
-    //   (Example: With 2 endpoints where 1 is down, 50% chance per attempt. Probability of
-    //   hitting the down endpoint on all 3 attempts: 0.5³ = 12.5%. Request-scoped exclusion
-    //   eliminates this by forcing different endpoints on each attempt.)
+    //   (Example with equal-weight endpoints: With 2 endpoints where 1 is down, there's a
+    //   50% chance per attempt of selecting the broken one. Probability of hitting it on
+    //   all 3 attempts: 0.5³ = 12.5%. With weighted selection, this probability varies.
+    //   Request-scoped exclusion eliminates this waste by forcing different endpoints.)
     // - Without global health: Every request would independently discover failing endpoints
     //
     // RETRY FLOW:
@@ -504,16 +543,21 @@ async fn try_query_model(
         "Starting model query"
     );
 
-    // Enforce request timeout - wraps the ENTIRE operation: connection establishment,
+    // Enforce PER-ATTEMPT timeout - each retry gets a fresh timeout budget.
+    // With MAX_RETRIES=3, total worst-case latency = 3 * timeout_seconds.
+    //
+    // Example with 30s timeout:
+    // - Attempt 1 times out at 30s → retry
+    // - Attempt 2 times out at 60s total (30s + 30s) → retry
+    // - Attempt 3 times out at 90s total → final failure
+    //
+    // The timeout wraps the ENTIRE operation: connection establishment,
     // query initiation, and streaming all response chunks.
     //
     // IMPORTANT: When timeout triggers, Tokio cancels the Future, which drops the HTTP
     // stream and closes the connection to the endpoint. The endpoint may continue processing
     // the request (we don't send HTTP cancellation), so timeouts are billed as full requests
     // by most LLM APIs. This is why timeout is per-request configurable.
-    //
-    // If any part exceeds the timeout, the request fails and is eligible for retry with
-    // a different endpoint.
     let timeout_duration = Duration::from_secs(timeout_seconds);
 
     use futures::StreamExt;
