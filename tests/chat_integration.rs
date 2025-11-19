@@ -12,16 +12,12 @@ use axum::{
     routing::post,
 };
 use octoroute::{
-    config::{
-        Config, ModelEndpoint, ModelsConfig, ObservabilityConfig, RoutingConfig, RoutingStrategy,
-        ServerConfig,
-    },
+    config::Config,
     error::AppError,
     handlers::{
         AppState,
         chat::{ChatRequest, ChatResponse},
     },
-    router::Importance,
 };
 use tower::ServiceExt;
 
@@ -56,7 +52,7 @@ async fn mock_chat_handler(
     let response = ChatResponse {
         content: "Mock response for testing".to_string(),
         model_tier: target.into(),
-        model_name: endpoint.name.clone(),
+        model_name: endpoint.name().to_string(),
     };
 
     Ok(Json(response))
@@ -64,45 +60,43 @@ async fn mock_chat_handler(
 
 /// Create test-specific config that doesn't require external services
 fn create_test_config() -> Config {
-    Config {
-        server: ServerConfig {
-            host: "127.0.0.1".to_string(),
-            port: 8080,
-            request_timeout_seconds: 30,
-        },
-        models: ModelsConfig {
-            fast: vec![ModelEndpoint {
-                name: "test-fast-1".to_string(),
-                base_url: "http://localhost:9999/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 1,
-            }],
-            balanced: vec![ModelEndpoint {
-                name: "test-balanced-1".to_string(),
-                base_url: "http://localhost:9998/v1".to_string(),
-                max_tokens: 4096,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 1,
-            }],
-            deep: vec![ModelEndpoint {
-                name: "test-deep-1".to_string(),
-                base_url: "http://localhost:9997/v1".to_string(),
-                max_tokens: 8192,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 1,
-            }],
-        },
-        routing: RoutingConfig {
-            strategy: RoutingStrategy::Rule,
-            default_importance: Importance::Normal,
-            router_model: "balanced".to_string(),
-        },
-        observability: ObservabilityConfig::default(),
-    }
+    // ModelEndpoint fields are private - use TOML deserialization
+    let toml = r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "test-fast-1"
+base_url = "http://localhost:9999/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "test-balanced-1"
+base_url = "http://localhost:9998/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "test-deep-1"
+base_url = "http://localhost:9997/v1"
+max_tokens = 8192
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+default_importance = "normal"
+router_model = "balanced"
+"#;
+    toml::from_str(toml).expect("should parse TOML config")
 }
 
 /// Helper to create test app with mock handler

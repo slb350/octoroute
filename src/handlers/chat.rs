@@ -231,8 +231,8 @@ pub async fn handler(
         };
 
         tracing::debug!(
-            endpoint_name = %endpoint.name,
-            endpoint_url = %endpoint.base_url,
+            endpoint_name = %endpoint.name(),
+            endpoint_url = %endpoint.base_url(),
             attempt = attempt,
             max_retries = MAX_RETRIES,
             "Attempting model query"
@@ -253,11 +253,11 @@ pub async fn handler(
                 if let Err(e) = state
                     .selector()
                     .health_checker()
-                    .mark_success(&endpoint.name)
+                    .mark_success(endpoint.name())
                     .await
                 {
                     tracing::error!(
-                        endpoint_name = %endpoint.name,
+                        endpoint_name = %endpoint.name(),
                         error = %e,
                         selected_tier = ?target,
                         attempt = attempt,
@@ -268,7 +268,7 @@ pub async fn handler(
                 }
 
                 tracing::info!(
-                    endpoint_name = %endpoint.name,
+                    endpoint_name = %endpoint.name(),
                     response_length = response_text.len(),
                     model_tier = ?target,
                     attempt = attempt,
@@ -278,7 +278,7 @@ pub async fn handler(
                 let response = ChatResponse {
                     content: response_text,
                     model_tier: target.into(),
-                    model_name: endpoint.name.clone(),
+                    model_name: endpoint.name().to_string(),
                 };
 
                 return Ok(Json(response));
@@ -288,7 +288,7 @@ pub async fn handler(
                 // 1. Request-scoped exclusion (immediate, this request only)
                 // 2. Global health tracking (after 3 consecutive failures across all requests)
                 tracing::warn!(
-                    endpoint_name = %endpoint.name,
+                    endpoint_name = %endpoint.name(),
                     attempt = attempt,
                     max_retries = MAX_RETRIES,
                     error = %e,
@@ -301,11 +301,11 @@ pub async fn handler(
                 if let Err(e) = state
                     .selector()
                     .health_checker()
-                    .mark_failure(&endpoint.name)
+                    .mark_failure(endpoint.name())
                     .await
                 {
                     tracing::error!(
-                        endpoint_name = %endpoint.name,
+                        endpoint_name = %endpoint.name(),
                         error = %e,
                         selected_tier = ?target,
                         attempt = attempt,
@@ -352,28 +352,29 @@ async fn try_query_model(
 ) -> AppResult<String> {
     // Build AgentOptions from selected endpoint
     let options = open_agent::AgentOptions::builder()
-        .model(&endpoint.name)
-        .base_url(&endpoint.base_url)
-        .max_tokens(endpoint.max_tokens as u32)
-        .temperature(endpoint.temperature as f32)
+        .model(endpoint.name())
+        .base_url(endpoint.base_url())
+        .max_tokens(endpoint.max_tokens() as u32)
+        .temperature(endpoint.temperature() as f32)
         .build()
         .map_err(|e| {
             tracing::error!(
-                endpoint_name = %endpoint.name,
-                endpoint_url = %endpoint.base_url,
-                max_tokens = endpoint.max_tokens,
-                temperature = endpoint.temperature,
+                endpoint_name = %endpoint.name(),
+                endpoint_url = %endpoint.base_url(),
+                max_tokens = endpoint.max_tokens(),
+                temperature = endpoint.temperature(),
                 error = %e,
                 "Failed to build AgentOptions from endpoint configuration"
             );
             AppError::Internal(format!(
                 "Failed to configure model endpoint '{}': {}",
-                endpoint.name, e
+                endpoint.name(),
+                e
             ))
         })?;
 
     tracing::debug!(
-        endpoint_name = %endpoint.name,
+        endpoint_name = %endpoint.name(),
         message_length = request.message().len(),
         timeout_seconds = timeout_seconds,
         "Starting model query"
@@ -393,7 +394,7 @@ async fn try_query_model(
                 .await
                 .map_err(|e| {
                     tracing::error!(
-                        endpoint_name = %endpoint.name,
+                        endpoint_name = %endpoint.name(),
                         error = %e,
                         "Failed to query model"
                     );
@@ -414,7 +415,7 @@ async fn try_query_model(
                             }
                             other_block => {
                                 tracing::warn!(
-                                    endpoint_name = %endpoint.name,
+                                    endpoint_name = %endpoint.name(),
                                     block_type = ?other_block,
                                     block_number = block_count,
                                     "Received non-text content block, skipping (not yet supported in Phase 2a)"
@@ -430,8 +431,8 @@ async fn try_query_model(
                         // This ensures users never receive incomplete/corrupted responses.
                         // See tests/retry_logic.rs for detailed documentation.
                         tracing::error!(
-                            endpoint_name = %endpoint.name,
-                            endpoint_url = %endpoint.base_url,
+                            endpoint_name = %endpoint.name(),
+                            endpoint_url = %endpoint.base_url(),
                             error = %e,
                             block_count = block_count,
                             partial_response_length = response_text.len(),
@@ -443,7 +444,7 @@ async fn try_query_model(
                         );
                         return Err(AppError::Internal(format!(
                             "Stream error from {}: {} (after {} blocks, {} chars received)",
-                            endpoint.base_url, e, block_count, response_text.len()
+                            endpoint.base_url(), e, block_count, response_text.len()
                         )));
                     }
                 }
@@ -460,8 +461,8 @@ async fn try_query_model(
         Ok(Err(e)) => return Err(e),
         Err(_elapsed) => {
             tracing::error!(
-                endpoint_name = %endpoint.name,
-                endpoint_url = %endpoint.base_url,
+                endpoint_name = %endpoint.name(),
+                endpoint_url = %endpoint.base_url(),
                 timeout_seconds = timeout_seconds,
                 message_length = request.message().len(),
                 task_type = ?request.task_type(),
@@ -470,17 +471,20 @@ async fn try_query_model(
                 max_retries = max_retries,
                 "Request timed out (including streaming). Endpoint: {} - \
                 consider increasing timeout or check endpoint connectivity (attempt {}/{})",
-                endpoint.base_url, attempt, max_retries
+                endpoint.base_url(), attempt, max_retries
             );
             return Err(AppError::Internal(format!(
                 "Request to {} timed out after {} seconds (attempt {}/{})",
-                endpoint.base_url, timeout_seconds, attempt, max_retries
+                endpoint.base_url(),
+                timeout_seconds,
+                attempt,
+                max_retries
             )));
         }
     };
 
     tracing::info!(
-        endpoint_name = %endpoint.name,
+        endpoint_name = %endpoint.name(),
         response_length = response_text.len(),
         "Model query completed successfully"
     );

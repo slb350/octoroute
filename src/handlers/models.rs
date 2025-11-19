@@ -36,11 +36,11 @@ pub async fn handler(State(state): State<AppState>) -> Json<ModelsResponse> {
         .into_iter()
         .map(|h| {
             // Determine tier by checking config
-            let tier = if config.models.fast.iter().any(|e| e.name == h.name()) {
+            let tier = if config.models.fast.iter().any(|e| e.name() == h.name()) {
                 ModelTier::Fast
-            } else if config.models.balanced.iter().any(|e| e.name == h.name()) {
+            } else if config.models.balanced.iter().any(|e| e.name() == h.name()) {
                 ModelTier::Balanced
-            } else if config.models.deep.iter().any(|e| e.name == h.name()) {
+            } else if config.models.deep.iter().any(|e| e.name() == h.name()) {
                 ModelTier::Deep
             } else {
                 // Default to Balanced if not found (shouldn't happen in practice)

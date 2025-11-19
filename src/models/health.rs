@@ -86,24 +86,24 @@ impl HealthChecker {
         // Initialize all fast endpoints
         for endpoint in &config.models.fast {
             health_status.insert(
-                endpoint.name.clone(),
-                EndpointHealth::new(endpoint.name.clone(), endpoint.base_url.clone()),
+                endpoint.name().to_string(),
+                EndpointHealth::new(endpoint.name().to_string(), endpoint.base_url().to_string()),
             );
         }
 
         // Initialize all balanced endpoints
         for endpoint in &config.models.balanced {
             health_status.insert(
-                endpoint.name.clone(),
-                EndpointHealth::new(endpoint.name.clone(), endpoint.base_url.clone()),
+                endpoint.name().to_string(),
+                EndpointHealth::new(endpoint.name().to_string(), endpoint.base_url().to_string()),
             );
         }
 
         // Initialize all deep endpoints
         for endpoint in &config.models.deep {
             health_status.insert(
-                endpoint.name.clone(),
-                EndpointHealth::new(endpoint.name.clone(), endpoint.base_url.clone()),
+                endpoint.name().to_string(),
+                EndpointHealth::new(endpoint.name().to_string(), endpoint.base_url().to_string()),
             );
         }
 
@@ -254,8 +254,8 @@ impl HealthChecker {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(
-                    endpoint_name = %endpoint.name,
-                    endpoint_url = %endpoint.base_url,
+                    endpoint_name = %endpoint.name(),
+                    endpoint_url = %endpoint.base_url(),
                     error = %e,
                     error_debug = ?e,
                     "CRITICAL: Failed to create HTTP client for health check. \
@@ -271,13 +271,13 @@ impl HealthChecker {
         // We append "/models" to get "http://host:port/v1/models"
         // DO NOT append "/v1/models" - that would create "http://host:port/v1/v1/models" (404!)
         // This bug caused all endpoints to fail health checks after 90 seconds.
-        let url = format!("{}/models", endpoint.base_url);
+        let url = format!("{}/models", endpoint.base_url());
 
         match client.head(&url).send().await {
             Ok(response) => {
                 let is_success = response.status().is_success();
                 tracing::debug!(
-                    endpoint_name = %endpoint.name,
+                    endpoint_name = %endpoint.name(),
                     url = %url,
                     status = %response.status(),
                     healthy = is_success,
@@ -287,7 +287,7 @@ impl HealthChecker {
             }
             Err(e) => {
                 tracing::debug!(
-                    endpoint_name = %endpoint.name,
+                    endpoint_name = %endpoint.name(),
                     url = %url,
                     error = %e,
                     "Health check failed"
@@ -312,14 +312,14 @@ impl HealthChecker {
             let is_healthy = self.check_endpoint(&endpoint).await;
 
             let result = if is_healthy {
-                self.mark_success(&endpoint.name).await
+                self.mark_success(endpoint.name()).await
             } else {
-                self.mark_failure(&endpoint.name).await
+                self.mark_failure(endpoint.name()).await
             };
 
             if let Err(e) = result {
                 tracing::error!(
-                    endpoint_name = %endpoint.name,
+                    endpoint_name = %endpoint.name(),
                     error = %e,
                     "Failed to update health status - this should never happen"
                 );
@@ -405,61 +405,53 @@ impl HealthChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        ModelsConfig, ObservabilityConfig, RoutingConfig, RoutingStrategy, ServerConfig,
-    };
-    use crate::router::Importance;
 
     fn create_test_config() -> Config {
-        Config {
-            server: ServerConfig {
-                host: "127.0.0.1".to_string(),
-                port: 3000,
-                request_timeout_seconds: 30,
-            },
-            models: ModelsConfig {
-                fast: vec![
-                    ModelEndpoint {
-                        name: "fast-1".to_string(),
-                        base_url: "http://localhost:1234/v1".to_string(),
-                        max_tokens: 2048,
-                        temperature: 0.7,
-                        weight: 1.0,
-                        priority: 1,
-                    },
-                    ModelEndpoint {
-                        name: "fast-2".to_string(),
-                        base_url: "http://localhost:1235/v1".to_string(),
-                        max_tokens: 2048,
-                        temperature: 0.7,
-                        weight: 1.0,
-                        priority: 1,
-                    },
-                ],
-                balanced: vec![ModelEndpoint {
-                    name: "balanced-1".to_string(),
-                    base_url: "http://localhost:1236/v1".to_string(),
-                    max_tokens: 4096,
-                    temperature: 0.7,
-                    weight: 1.0,
-                    priority: 1,
-                }],
-                deep: vec![ModelEndpoint {
-                    name: "deep-1".to_string(),
-                    base_url: "http://localhost:1237/v1".to_string(),
-                    max_tokens: 8192,
-                    temperature: 0.7,
-                    weight: 1.0,
-                    priority: 1,
-                }],
-            },
-            routing: RoutingConfig {
-                strategy: RoutingStrategy::Rule,
-                default_importance: Importance::Normal,
-                router_model: "balanced".to_string(),
-            },
-            observability: ObservabilityConfig::default(),
-        }
+        // ModelEndpoint fields are private - use TOML deserialization
+        let toml = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.fast]]
+name = "fast-2"
+base_url = "http://localhost:1235/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1237/v1"
+max_tokens = 8192
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+default_importance = "normal"
+router_model = "balanced"
+"#;
+        toml::from_str(toml).expect("should parse TOML config")
     }
 
     #[tokio::test]

@@ -53,52 +53,45 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        ModelEndpoint, ModelsConfig, ObservabilityConfig, RoutingConfig, RoutingStrategy,
-        ServerConfig,
-    };
-    use crate::router::Importance;
 
     fn create_test_config() -> Config {
-        Config {
-            server: ServerConfig {
-                host: "127.0.0.1".to_string(),
-                port: 3000,
-                request_timeout_seconds: 30,
-            },
-            models: ModelsConfig {
-                fast: vec![ModelEndpoint {
-                    name: "fast-1".to_string(),
-                    base_url: "http://localhost:1234/v1".to_string(),
-                    max_tokens: 2048,
-                    temperature: 0.7,
-                    weight: 1.0,
-                    priority: 1,
-                }],
-                balanced: vec![ModelEndpoint {
-                    name: "balanced-1".to_string(),
-                    base_url: "http://localhost:1235/v1".to_string(),
-                    max_tokens: 4096,
-                    temperature: 0.7,
-                    weight: 1.0,
-                    priority: 1,
-                }],
-                deep: vec![ModelEndpoint {
-                    name: "deep-1".to_string(),
-                    base_url: "http://localhost:1236/v1".to_string(),
-                    max_tokens: 8192,
-                    temperature: 0.7,
-                    weight: 1.0,
-                    priority: 1,
-                }],
-            },
-            routing: RoutingConfig {
-                strategy: RoutingStrategy::Rule,
-                default_importance: Importance::Normal,
-                router_model: "balanced".to_string(),
-            },
-            observability: ObservabilityConfig::default(),
-        }
+        // ModelEndpoint fields are private - use TOML deserialization
+        let toml = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1235/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 8192
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+default_importance = "normal"
+router_model = "balanced"
+"#;
+        toml::from_str(toml).expect("should parse TOML config")
     }
 
     #[tokio::test]

@@ -24,79 +24,69 @@
 //! rather than mid-stream failures. A full test would require a mock server that can
 //! send partial responses then disconnect, which is not currently in test infrastructure.
 
-use octoroute::{
-    config::{
-        Config, ModelEndpoint, ModelsConfig, ObservabilityConfig, RoutingConfig, RoutingStrategy,
-        ServerConfig,
-    },
-    handlers::AppState,
-};
+use octoroute::{config::Config, handlers::AppState};
 use std::sync::Arc;
 
 /// Create test config with multiple endpoints per tier
 fn create_multi_endpoint_config() -> Config {
-    Config {
-        server: ServerConfig {
-            host: "127.0.0.1".to_string(),
-            port: 8080,
-            request_timeout_seconds: 1, // Short timeout for faster test failure
-        },
-        models: ModelsConfig {
-            // Fast tier: 3 endpoints for comprehensive retry testing
-            fast: vec![
-                ModelEndpoint {
-                    name: "fast-1".to_string(),
-                    base_url: "http://127.0.0.1:19991/v1".to_string(), // Non-existent, will fail
-                    max_tokens: 2048,
-                    temperature: 0.7,
-                    weight: 1.0,
-                    priority: 1,
-                },
-                ModelEndpoint {
-                    name: "fast-2".to_string(),
-                    base_url: "http://127.0.0.1:19992/v1".to_string(), // Non-existent, will fail
-                    max_tokens: 2048,
-                    temperature: 0.7,
-                    weight: 1.0,
-                    priority: 1,
-                },
-                ModelEndpoint {
-                    name: "fast-3".to_string(),
-                    base_url: "http://127.0.0.1:19993/v1".to_string(), // Non-existent, will fail
-                    max_tokens: 2048,
-                    temperature: 0.7,
-                    weight: 1.0,
-                    priority: 1,
-                },
-            ],
-            balanced: vec![ModelEndpoint {
-                name: "balanced-1".to_string(),
-                base_url: "http://127.0.0.1:19994/v1".to_string(),
-                max_tokens: 4096,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 1,
-            }],
-            deep: vec![ModelEndpoint {
-                name: "deep-1".to_string(),
-                base_url: "http://127.0.0.1:19995/v1".to_string(),
-                max_tokens: 8192,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 1,
-            }],
-        },
-        routing: RoutingConfig {
-            strategy: RoutingStrategy::Rule,
-            default_importance: octoroute::router::Importance::Normal,
-            router_model: "balanced".to_string(),
-        },
-        observability: ObservabilityConfig {
-            log_level: "debug".to_string(),
-            metrics_enabled: false,
-            metrics_port: 9090,
-        },
-    }
+    // ModelEndpoint fields are private - use TOML deserialization
+    let toml = r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+request_timeout_seconds = 1
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://127.0.0.1:19991/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.fast]]
+name = "fast-2"
+base_url = "http://127.0.0.1:19992/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.fast]]
+name = "fast-3"
+base_url = "http://127.0.0.1:19993/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://127.0.0.1:19994/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://127.0.0.1:19995/v1"
+max_tokens = 8192
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+default_importance = "normal"
+router_model = "balanced"
+
+[observability]
+log_level = "debug"
+metrics_enabled = false
+metrics_port = 9090
+"#;
+    toml::from_str(toml).expect("should parse TOML config")
 }
 
 #[tokio::test]

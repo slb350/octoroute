@@ -36,16 +36,16 @@ impl EndpointName {
     /// Returns true if this endpoint name matches any configured endpoint
     /// across all tiers (fast, balanced, deep).
     pub fn is_valid(&self, config: &Config) -> bool {
-        config.models.fast.iter().any(|e| e.name == self.0)
-            || config.models.balanced.iter().any(|e| e.name == self.0)
-            || config.models.deep.iter().any(|e| e.name == self.0)
+        config.models.fast.iter().any(|e| e.name() == self.0)
+            || config.models.balanced.iter().any(|e| e.name() == self.0)
+            || config.models.deep.iter().any(|e| e.name() == self.0)
     }
 }
 
 impl From<&ModelEndpoint> for EndpointName {
     /// Create an EndpointName from a ModelEndpoint reference (always valid)
     fn from(endpoint: &ModelEndpoint) -> Self {
-        Self(endpoint.name.clone())
+        Self(endpoint.name().to_string())
     }
 }
 
@@ -154,7 +154,7 @@ impl ModelSelector {
         let mut available_endpoints = Vec::new();
         for endpoint in endpoints.iter() {
             // Skip unhealthy endpoints
-            if !self.health_checker.is_healthy(&endpoint.name).await {
+            if !self.health_checker.is_healthy(endpoint.name()).await {
                 continue;
             }
 
@@ -162,7 +162,7 @@ impl ModelSelector {
             if exclude.contains(&EndpointName::from(endpoint)) {
                 tracing::debug!(
                     tier = ?target,
-                    endpoint_name = %endpoint.name,
+                    endpoint_name = %endpoint.name(),
                     "Skipping excluded endpoint"
                 );
                 continue;
@@ -192,13 +192,13 @@ impl ModelSelector {
         // Phase 2c: Find highest priority among available endpoints and filter to only that tier
         let max_priority = available_endpoints
             .iter()
-            .map(|e| e.priority)
+            .map(|e| e.priority())
             .max()
             .unwrap();
 
         let highest_priority_endpoints: Vec<&ModelEndpoint> = available_endpoints
             .iter()
-            .filter(|e| e.priority == max_priority)
+            .filter(|e| e.priority() == max_priority)
             .copied()
             .collect();
 
@@ -214,7 +214,7 @@ impl ModelSelector {
         counter.fetch_add(1, Ordering::Relaxed);
 
         // Calculate total weight of endpoints in highest priority tier
-        let total_weight: f64 = highest_priority_endpoints.iter().map(|e| e.weight).sum();
+        let total_weight: f64 = highest_priority_endpoints.iter().map(|e| e.weight()).sum();
 
         // Handle zero or negative total weight (all endpoints disabled/misconfigured)
         if total_weight <= 0.0 {
@@ -234,7 +234,7 @@ impl ModelSelector {
             tracing::info!(
                 tier = ?target,
                 priority = max_priority,
-                endpoint_name = %endpoint.name,
+                endpoint_name = %endpoint.name(),
                 endpoint_index = index,
                 "Selected endpoint via uniform fallback (zero total weight)"
             );
@@ -249,15 +249,15 @@ impl ModelSelector {
         // Select endpoint using cumulative weight distribution within priority tier
         let mut cumulative_weight = 0.0;
         for (index, endpoint) in highest_priority_endpoints.iter().enumerate() {
-            cumulative_weight += endpoint.weight;
+            cumulative_weight += endpoint.weight();
             if random_weight < cumulative_weight {
                 tracing::debug!(
                     tier = ?target,
                     priority = max_priority,
-                    endpoint_name = %endpoint.name,
+                    endpoint_name = %endpoint.name(),
                     endpoint_index = index,
-                    endpoint_priority = endpoint.priority,
-                    endpoint_weight = endpoint.weight,
+                    endpoint_priority = endpoint.priority(),
+                    endpoint_weight = endpoint.weight(),
                     priority_tier_endpoints = highest_priority_endpoints.len(),
                     total_weight = total_weight,
                     "Selected endpoint via priority + weighted selection"
@@ -271,7 +271,7 @@ impl ModelSelector {
         tracing::debug!(
             tier = ?target,
             priority = max_priority,
-            endpoint_name = %last_endpoint.name,
+            endpoint_name = %last_endpoint.name(),
             "Selected last endpoint in priority tier as fallback (floating point edge case)"
         );
         Some(last_endpoint)
@@ -290,61 +290,53 @@ impl ModelSelector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        ModelsConfig, ObservabilityConfig, RoutingConfig, RoutingStrategy, ServerConfig,
-    };
-    use crate::router::Importance;
 
     fn create_test_config() -> Config {
-        Config {
-            server: ServerConfig {
-                host: "127.0.0.1".to_string(),
-                port: 3000,
-                request_timeout_seconds: 30,
-            },
-            models: ModelsConfig {
-                fast: vec![
-                    ModelEndpoint {
-                        name: "fast-1".to_string(),
-                        base_url: "http://localhost:1234/v1".to_string(),
-                        max_tokens: 2048,
-                        temperature: 0.7,
-                        weight: 1.0,
-                        priority: 1,
-                    },
-                    ModelEndpoint {
-                        name: "fast-2".to_string(),
-                        base_url: "http://localhost:1235/v1".to_string(),
-                        max_tokens: 2048,
-                        temperature: 0.7,
-                        weight: 1.0,
-                        priority: 1,
-                    },
-                ],
-                balanced: vec![ModelEndpoint {
-                    name: "balanced-1".to_string(),
-                    base_url: "http://localhost:1236/v1".to_string(),
-                    max_tokens: 4096,
-                    temperature: 0.7,
-                    weight: 1.0,
-                    priority: 1,
-                }],
-                deep: vec![ModelEndpoint {
-                    name: "deep-1".to_string(),
-                    base_url: "http://localhost:1237/v1".to_string(),
-                    max_tokens: 8192,
-                    temperature: 0.7,
-                    weight: 1.0,
-                    priority: 1,
-                }],
-            },
-            routing: RoutingConfig {
-                strategy: RoutingStrategy::Rule,
-                default_importance: Importance::Normal,
-                router_model: "balanced".to_string(),
-            },
-            observability: ObservabilityConfig::default(),
-        }
+        // ModelEndpoint fields are private - use TOML deserialization
+        let toml = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.fast]]
+name = "fast-2"
+base_url = "http://localhost:1235/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1237/v1"
+max_tokens = 8192
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+default_importance = "normal"
+router_model = "balanced"
+"#;
+        toml::from_str(toml).expect("should parse TOML config")
     }
 
     #[tokio::test]
@@ -401,10 +393,10 @@ mod tests {
                 .select(TargetModel::Fast, &no_exclude)
                 .await
                 .unwrap();
-            if selected.name == "fast-1" {
+            if selected.name() == "fast-1" {
                 fast1_seen = true;
             }
-            if selected.name == "fast-2" {
+            if selected.name() == "fast-2" {
                 fast2_seen = true;
             }
 
@@ -439,8 +431,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(first.name, "balanced-1");
-        assert_eq!(second.name, "balanced-1");
+        assert_eq!(first.name(), "balanced-1");
+        assert_eq!(second.name(), "balanced-1");
     }
 
     #[tokio::test]
@@ -455,8 +447,31 @@ mod tests {
 
     #[tokio::test]
     async fn test_selector_returns_none_for_empty_tier() {
-        let mut config = create_test_config();
-        config.models.fast = vec![]; // Empty tier
+        // Config with empty fast tier
+        let toml_config = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[models]
+fast = []
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1237/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+"#;
+        let config: Config = toml::from_str(toml_config).expect("should parse TOML");
         let selector = ModelSelector::new(Arc::new(config));
 
         let no_exclude = ExclusionSet::new();
@@ -477,7 +492,7 @@ mod tests {
                 let no_exclude = ExclusionSet::new();
                 sel.select(TargetModel::Fast, &no_exclude)
                     .await
-                    .map(|e| e.name.clone())
+                    .map(|e| e.name().to_string())
             }));
         }
 
@@ -516,11 +531,41 @@ mod tests {
 
     #[tokio::test]
     async fn test_selector_zero_weight_fallback() {
-        // Create config where all endpoints have zero weight
-        let mut config = create_test_config();
-        config.models.fast[0].weight = 0.0;
-        config.models.fast[1].weight = 0.0;
+        // Create config via TOML with zero weights (config validation will reject this at load time,
+        // but this test verifies the selector's fallback behavior if it somehow gets zero weights)
+        let toml_config = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
 
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+weight = 0.0
+
+[[models.fast]]
+name = "fast-2"
+base_url = "http://localhost:1235/v1"
+max_tokens = 2048
+weight = 0.0
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1237/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+"#;
+        let config: Config = toml::from_str(toml_config).expect("should parse TOML");
         let selector = ModelSelector::new(Arc::new(config));
 
         // Should fall back to uniform random selection, not panic
@@ -534,7 +579,7 @@ mod tests {
 
             let endpoint = result.unwrap();
             assert!(
-                endpoint.name == "fast-1" || endpoint.name == "fast-2",
+                endpoint.name() == "fast-1" || endpoint.name() == "fast-2",
                 "should select valid endpoint"
             );
         }
@@ -542,11 +587,41 @@ mod tests {
 
     #[tokio::test]
     async fn test_selector_negative_weight_fallback() {
-        // Create config with negative weights (misconfiguration)
-        let mut config = create_test_config();
-        config.models.fast[0].weight = -1.0;
-        config.models.fast[1].weight = -2.0;
+        // Create config with negative weights via TOML (config validation will reject this,
+        // but this test verifies fallback behavior)
+        let toml_config = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
 
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+weight = -1.0
+
+[[models.fast]]
+name = "fast-2"
+base_url = "http://localhost:1235/v1"
+max_tokens = 2048
+weight = -2.0
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1237/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+"#;
+        let config: Config = toml::from_str(toml_config).expect("should parse TOML");
         let selector = ModelSelector::new(Arc::new(config));
 
         // Should fall back to uniform random selection, not panic
@@ -561,10 +636,39 @@ mod tests {
     #[tokio::test]
     async fn test_weighted_selection_distribution() {
         // Create config with different weights: 2.0 vs 1.0 (2:1 ratio)
-        let mut config = create_test_config();
-        config.models.fast[0].weight = 2.0;
-        config.models.fast[1].weight = 1.0;
+        let toml_config = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
 
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+weight = 2.0
+
+[[models.fast]]
+name = "fast-2"
+base_url = "http://localhost:1235/v1"
+max_tokens = 2048
+weight = 1.0
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1237/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+"#;
+        let config: Config = toml::from_str(toml_config).expect("should parse TOML");
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 3000 times to get statistically significant distribution
@@ -575,7 +679,7 @@ mod tests {
                 .select(TargetModel::Fast, &no_exclude)
                 .await
                 .unwrap();
-            *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
+            *counts.entry(endpoint.name()).or_insert(0) += 1;
         }
 
         let fast1_count = counts.get("fast-1").unwrap_or(&0);
@@ -598,10 +702,39 @@ mod tests {
     #[tokio::test]
     async fn test_weighted_selection_heavily_skewed() {
         // Create config with heavily skewed weights: 9.0 vs 1.0 (9:1 ratio)
-        let mut config = create_test_config();
-        config.models.fast[0].weight = 9.0;
-        config.models.fast[1].weight = 1.0;
+        let toml_config = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
 
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+weight = 9.0
+
+[[models.fast]]
+name = "fast-2"
+base_url = "http://localhost:1235/v1"
+max_tokens = 2048
+weight = 1.0
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1237/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+"#;
+        let config: Config = toml::from_str(toml_config).expect("should parse TOML");
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 1000 times
@@ -612,7 +745,7 @@ mod tests {
                 .select(TargetModel::Fast, &no_exclude)
                 .await
                 .unwrap();
-            *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
+            *counts.entry(endpoint.name()).or_insert(0) += 1;
         }
 
         let fast1_count = counts.get("fast-1").unwrap_or(&0);
@@ -647,7 +780,7 @@ mod tests {
                 .select(TargetModel::Fast, &no_exclude)
                 .await
                 .unwrap();
-            *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
+            *counts.entry(endpoint.name()).or_insert(0) += 1;
         }
 
         let fast1_count = counts.get("fast-1").unwrap_or(&0);
@@ -670,34 +803,45 @@ mod tests {
     #[tokio::test]
     async fn test_weighted_selection_three_endpoints() {
         // Test with three endpoints with weights 3.0, 2.0, 1.0 (3:2:1 ratio)
-        let mut config = create_test_config();
-        config.models.fast = vec![
-            ModelEndpoint {
-                name: "fast-1".to_string(),
-                base_url: "http://localhost:1234/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 3.0,
-                priority: 1,
-            },
-            ModelEndpoint {
-                name: "fast-2".to_string(),
-                base_url: "http://localhost:1235/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 2.0,
-                priority: 1,
-            },
-            ModelEndpoint {
-                name: "fast-3".to_string(),
-                base_url: "http://localhost:1236/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 1,
-            },
-        ];
+        let toml_config = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
 
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+weight = 3.0
+
+[[models.fast]]
+name = "fast-2"
+base_url = "http://localhost:1235/v1"
+max_tokens = 2048
+weight = 2.0
+
+[[models.fast]]
+name = "fast-3"
+base_url = "http://localhost:1236/v1"
+max_tokens = 2048
+weight = 1.0
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1237/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+"#;
+        let config: Config = toml::from_str(toml_config).expect("should parse TOML");
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 6000 times (divisible by 6 for clean expected values)
@@ -708,7 +852,7 @@ mod tests {
                 .select(TargetModel::Fast, &no_exclude)
                 .await
                 .unwrap();
-            *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
+            *counts.entry(endpoint.name()).or_insert(0) += 1;
         }
 
         let fast1_count = counts.get("fast-1").unwrap_or(&0);
@@ -740,34 +884,45 @@ mod tests {
     async fn test_priority_selection_highest_chosen() {
         // Config with three priority levels: 10, 5, 1
         // All endpoints healthy, should always select priority 10
-        let mut config = create_test_config();
-        config.models.fast = vec![
-            ModelEndpoint {
-                name: "fast-priority-10".to_string(),
-                base_url: "http://localhost:1234/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 10,
-            },
-            ModelEndpoint {
-                name: "fast-priority-5".to_string(),
-                base_url: "http://localhost:1235/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 5,
-            },
-            ModelEndpoint {
-                name: "fast-priority-1".to_string(),
-                base_url: "http://localhost:1236/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 1,
-            },
-        ];
+        let toml_config = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
 
+[[models.fast]]
+name = "fast-priority-10"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+priority = 10
+
+[[models.fast]]
+name = "fast-priority-5"
+base_url = "http://localhost:1235/v1"
+max_tokens = 2048
+priority = 5
+
+[[models.fast]]
+name = "fast-priority-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 2048
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1237/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+"#;
+        let config: Config = toml::from_str(toml_config).expect("should parse TOML");
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 100 times - should ALWAYS select priority 10 endpoint
@@ -778,7 +933,8 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(
-                endpoint.name, "fast-priority-10",
+                endpoint.name(),
+                "fast-priority-10",
                 "Should always select highest priority (10) endpoint"
             );
         }
@@ -788,34 +944,51 @@ mod tests {
     async fn test_priority_with_weighted_distribution() {
         // Config: Two priority 5 endpoints with 2:1 weight ratio, one priority 1
         // Should only select from priority 5 tier with weighted distribution
-        let mut config = create_test_config();
-        config.models.fast = vec![
-            ModelEndpoint {
-                name: "fast-priority-5-heavy".to_string(),
-                base_url: "http://localhost:1234/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 2.0,
-                priority: 5,
-            },
-            ModelEndpoint {
-                name: "fast-priority-5-light".to_string(),
-                base_url: "http://localhost:1235/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 5,
-            },
-            ModelEndpoint {
-                name: "fast-priority-1".to_string(),
-                base_url: "http://localhost:1236/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 10.0, // High weight but lower priority - should never be selected
-                priority: 1,
-            },
-        ];
+        let toml_config = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
 
+[[models.fast]]
+name = "fast-priority-5-heavy"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 2.0
+priority = 5
+
+[[models.fast]]
+name = "fast-priority-5-light"
+base_url = "http://localhost:1235/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 5
+
+[[models.fast]]
+name = "fast-priority-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 10.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1237/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+"#;
+        let config: Config = toml::from_str(toml_config).expect("should parse TOML");
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 3000 times
@@ -826,7 +999,7 @@ mod tests {
                 .select(TargetModel::Fast, &no_exclude)
                 .await
                 .unwrap();
-            *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
+            *counts.entry(endpoint.name()).or_insert(0) += 1;
         }
 
         let heavy_count = counts.get("fast-priority-5-heavy").unwrap_or(&0);
@@ -856,26 +1029,43 @@ mod tests {
     #[tokio::test]
     async fn test_priority_all_same_uses_weighted() {
         // When all endpoints have same priority, should use weighted selection
-        let mut config = create_test_config();
-        config.models.fast = vec![
-            ModelEndpoint {
-                name: "fast-heavy".to_string(),
-                base_url: "http://localhost:1234/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 3.0,
-                priority: 1,
-            },
-            ModelEndpoint {
-                name: "fast-light".to_string(),
-                base_url: "http://localhost:1235/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 1,
-            },
-        ];
+        let toml_config = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
 
+[[models.fast]]
+name = "fast-heavy"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 3.0
+priority = 1
+
+[[models.fast]]
+name = "fast-light"
+base_url = "http://localhost:1235/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1237/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+"#;
+        let config: Config = toml::from_str(toml_config).expect("should parse TOML");
         let selector = ModelSelector::new(Arc::new(config));
 
         // Sample 4000 times
@@ -886,7 +1076,7 @@ mod tests {
                 .select(TargetModel::Fast, &no_exclude)
                 .await
                 .unwrap();
-            *counts.entry(endpoint.name.clone()).or_insert(0) += 1;
+            *counts.entry(endpoint.name()).or_insert(0) += 1;
         }
 
         let heavy_count = counts.get("fast-heavy").unwrap_or(&0);
@@ -922,7 +1112,8 @@ mod tests {
         for _ in 0..100 {
             let endpoint = selector.select(TargetModel::Fast, &exclude).await.unwrap();
             assert_eq!(
-                endpoint.name, "fast-2",
+                endpoint.name(),
+                "fast-2",
                 "Should only select fast-2 when fast-1 is excluded"
             );
         }
@@ -950,34 +1141,51 @@ mod tests {
     async fn test_exclusion_all_tiers_returns_none() {
         // Test that excluding all endpoints across multiple priority tiers returns None
         // This ensures the selection algorithm doesn't infinite loop when all tiers are excluded
-        let mut config = create_test_config();
-        config.models.fast = vec![
-            ModelEndpoint {
-                name: "fast-priority-10".to_string(),
-                base_url: "http://localhost:1234/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 10,
-            },
-            ModelEndpoint {
-                name: "fast-priority-5".to_string(),
-                base_url: "http://localhost:1235/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 5,
-            },
-            ModelEndpoint {
-                name: "fast-priority-1".to_string(),
-                base_url: "http://localhost:1236/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 1,
-            },
-        ];
+        let toml_config = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
 
+[[models.fast]]
+name = "fast-priority-10"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 10
+
+[[models.fast]]
+name = "fast-priority-5"
+base_url = "http://localhost:1235/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 5
+
+[[models.fast]]
+name = "fast-priority-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1237/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+"#;
+        let config: Config = toml::from_str(toml_config).expect("should parse TOML");
         let selector = ModelSelector::new(Arc::new(config));
 
         // Exclude ALL endpoints from ALL priority tiers
@@ -996,34 +1204,51 @@ mod tests {
     #[tokio::test]
     async fn test_exclusion_preserves_priority_and_weight() {
         // Test that exclusion works with priority and weighted selection
-        let mut config = create_test_config();
-        config.models.fast = vec![
-            ModelEndpoint {
-                name: "fast-priority-10-heavy".to_string(),
-                base_url: "http://localhost:1234/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 3.0,
-                priority: 10,
-            },
-            ModelEndpoint {
-                name: "fast-priority-10-light".to_string(),
-                base_url: "http://localhost:1235/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 1.0,
-                priority: 10,
-            },
-            ModelEndpoint {
-                name: "fast-priority-5".to_string(),
-                base_url: "http://localhost:1236/v1".to_string(),
-                max_tokens: 2048,
-                temperature: 0.7,
-                weight: 10.0, // High weight but lower priority
-                priority: 5,
-            },
-        ];
+        let toml_config = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
 
+[[models.fast]]
+name = "fast-priority-10-heavy"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 3.0
+priority = 10
+
+[[models.fast]]
+name = "fast-priority-10-light"
+base_url = "http://localhost:1235/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 10
+
+[[models.fast]]
+name = "fast-priority-5"
+base_url = "http://localhost:1236/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 10.0
+priority = 5
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1237/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+"#;
+        let config: Config = toml::from_str(toml_config).expect("should parse TOML");
         let selector = ModelSelector::new(Arc::new(config));
 
         // Exclude the heavy priority-10 endpoint
@@ -1035,7 +1260,8 @@ mod tests {
         for _ in 0..100 {
             let endpoint = selector.select(TargetModel::Fast, &exclude).await.unwrap();
             assert_eq!(
-                endpoint.name, "fast-priority-10-light",
+                endpoint.name(),
+                "fast-priority-10-light",
                 "Should select remaining priority-10 endpoint, not lower priority"
             );
         }
@@ -1047,7 +1273,8 @@ mod tests {
         for _ in 0..100 {
             let endpoint = selector.select(TargetModel::Fast, &exclude).await.unwrap();
             assert_eq!(
-                endpoint.name, "fast-priority-5",
+                endpoint.name(),
+                "fast-priority-5",
                 "Should fall back to lower priority when higher priority excluded"
             );
         }
@@ -1097,7 +1324,7 @@ mod tests {
             assert!(
                 name.is_valid(&config),
                 "{} created from ModelEndpoint should be valid",
-                endpoint.name
+                endpoint.name()
             );
         }
 
@@ -1106,7 +1333,7 @@ mod tests {
             assert!(
                 name.is_valid(&config),
                 "{} created from ModelEndpoint should be valid",
-                endpoint.name
+                endpoint.name()
             );
         }
 
@@ -1115,7 +1342,7 @@ mod tests {
             assert!(
                 name.is_valid(&config),
                 "{} created from ModelEndpoint should be valid",
-                endpoint.name
+                endpoint.name()
             );
         }
     }

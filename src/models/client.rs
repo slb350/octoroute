@@ -31,10 +31,10 @@ impl ModelClient {
     pub fn new(endpoint: ModelEndpoint) -> AppResult<Self> {
         // Build AgentOptions from ModelEndpoint
         let options = AgentOptions::builder()
-            .model(&endpoint.name)
-            .base_url(&endpoint.base_url)
-            .max_tokens(endpoint.max_tokens as u32)
-            .temperature(endpoint.temperature as f32)
+            .model(endpoint.name())
+            .base_url(endpoint.base_url())
+            .max_tokens(endpoint.max_tokens() as u32)
+            .temperature(endpoint.temperature() as f32)
             .build()
             .map_err(|e| AppError::Internal(format!("Failed to build AgentOptions: {}", e)))?;
 
@@ -42,7 +42,8 @@ impl ModelClient {
         let client = Client::new(options).map_err(|e| {
             AppError::Internal(format!(
                 "Failed to create client for {}: {}",
-                endpoint.name, e
+                endpoint.name(),
+                e
             ))
         })?;
 
@@ -77,22 +78,27 @@ mod tests {
     // Integration with actual models is tested via the /chat endpoint integration tests.
 
     #[test]
-    fn test_model_endpoint_structure() {
-        // Verify ModelEndpoint can be constructed with expected fields
-        let endpoint = ModelEndpoint {
-            name: "test-model".to_string(),
-            base_url: "http://localhost:1234/v1".to_string(),
-            max_tokens: 2048,
-            temperature: 0.7,
-            weight: 1.0,
-            priority: 1,
-        };
+    fn test_model_endpoint_deserialization() {
+        // ModelEndpoint fields are private and can only be created via deserialization.
+        // This test verifies that deserialized instances have proper getter access.
+        let json = r#"{
+            "name": "test-model",
+            "base_url": "http://localhost:1234/v1",
+            "max_tokens": 2048,
+            "temperature": 0.7,
+            "weight": 1.0,
+            "priority": 1
+        }"#;
 
-        assert_eq!(endpoint.name, "test-model");
-        assert_eq!(endpoint.base_url, "http://localhost:1234/v1");
-        assert_eq!(endpoint.max_tokens, 2048);
-        assert_eq!(endpoint.temperature, 0.7);
-        assert_eq!(endpoint.weight, 1.0);
-        assert_eq!(endpoint.priority, 1);
+        let endpoint: ModelEndpoint =
+            serde_json::from_str(json).expect("should deserialize ModelEndpoint");
+
+        // Verify getters work
+        assert_eq!(endpoint.name(), "test-model");
+        assert_eq!(endpoint.base_url(), "http://localhost:1234/v1");
+        assert_eq!(endpoint.max_tokens(), 2048);
+        assert_eq!(endpoint.temperature(), 0.7);
+        assert_eq!(endpoint.weight(), 1.0);
+        assert_eq!(endpoint.priority(), 1);
     }
 }

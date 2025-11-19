@@ -15,17 +15,21 @@ fn test_health_check_url_construction_does_not_double_v1() {
     // The fix: health check URL = base_url + "/models"
     //          result = "http://host:port/v1/models" (correct!)
 
-    let endpoint = ModelEndpoint {
-        name: "test-endpoint".to_string(),
-        base_url: "http://localhost:11434/v1".to_string(),
-        max_tokens: 4096,
-        temperature: 0.7,
-        weight: 1.0,
-        priority: 1,
-    };
+    // ModelEndpoint fields are private - create via deserialization
+    let endpoint: ModelEndpoint = serde_json::from_str(
+        r#"{
+        "name": "test-endpoint",
+        "base_url": "http://localhost:11434/v1",
+        "max_tokens": 4096,
+        "temperature": 0.7,
+        "weight": 1.0,
+        "priority": 1
+    }"#,
+    )
+    .expect("should deserialize");
 
     // The correct health check URL should be base_url + "/models"
-    let health_check_url = format!("{}/models", endpoint.base_url);
+    let health_check_url = format!("{}/models", endpoint.base_url());
 
     assert_eq!(
         health_check_url, "http://localhost:11434/v1/models",

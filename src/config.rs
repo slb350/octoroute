@@ -41,19 +41,55 @@ pub struct ModelsConfig {
 }
 
 /// Individual model endpoint configuration
+///
+/// All fields are private to enforce invariants. Configuration is loaded via
+/// deserialization and validated via Config::validate(). After construction,
+/// fields cannot be mutated, ensuring validated data remains valid.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ModelEndpoint {
-    pub name: String,
-    pub base_url: String,
-    pub max_tokens: usize,
+    name: String,
+    base_url: String,
+    max_tokens: usize,
     #[serde(default = "default_temperature")]
-    pub temperature: f64,
+    temperature: f64,
     /// Load balancing weight (Phase 2b/2c feature)
     #[serde(default = "default_weight")]
-    pub weight: f64,
+    weight: f64,
     /// Priority level (higher = tried first, Phase 2b/2c feature)
     #[serde(default = "default_priority")]
-    pub priority: u8,
+    priority: u8,
+}
+
+impl ModelEndpoint {
+    /// Get the endpoint name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the endpoint base URL
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Get the maximum number of tokens for this endpoint
+    pub fn max_tokens(&self) -> usize {
+        self.max_tokens
+    }
+
+    /// Get the temperature parameter for this endpoint
+    pub fn temperature(&self) -> f64 {
+        self.temperature
+    }
+
+    /// Get the load balancing weight for this endpoint
+    pub fn weight(&self) -> f64 {
+        self.weight
+    }
+
+    /// Get the priority level for this endpoint (higher = tried first)
+    pub fn priority(&self) -> u8 {
+        self.priority
+    }
 }
 
 fn default_temperature() -> f64 {
@@ -577,4 +613,16 @@ metrics_port = 3000
         assert!(err_msg.contains("base_url"));
         assert!(err_msg.contains("http"));
     }
+
+    // ✅ VULNERABILITY FIXED ✅
+    //
+    // This test previously demonstrated that public fields could be mutated after validation,
+    // bypassing all safety checks. With private fields and getter-only access, this is no
+    // longer possible.
+    //
+    // The vulnerability test has been removed because it can no longer compile - which proves
+    // the fix is effective. ModelEndpoint instances can only be created via deserialization,
+    // and all validation is enforced at load time through Config::from_str() / Config::from_file().
+    //
+    // Post-construction mutation is now impossible, ensuring validated data stays valid.
 }
