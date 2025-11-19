@@ -220,15 +220,16 @@ impl ModelSelector {
         // Calculate total weight of endpoints in highest priority tier
         let total_weight: f64 = highest_priority_endpoints.iter().map(|e| e.weight()).sum();
 
-        // Handle zero or negative total weight (configuration error or memory corruption)
+        // Defensive check: Config validation guarantees all weights are positive.
+        // This can only occur due to memory corruption.
         if total_weight <= 0.0 {
             tracing::error!(
                 tier = ?target,
                 priority = max_priority,
                 total_weight = total_weight,
                 endpoints_count = highest_priority_endpoints.len(),
-                "CONFIGURATION ERROR: All endpoints in priority tier {} have total weight {}. \
-                This indicates corrupted in-memory state (config validation should prevent this at startup). \
+                "MEMORY CORRUPTION DETECTED: All endpoints in priority tier {} have total weight {}. \
+                Config validation prevents this at startup, so this indicates memory corruption. \
                 Refusing to select endpoint - failing request to expose issue.",
                 max_priority, total_weight
             );
