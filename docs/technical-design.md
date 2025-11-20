@@ -776,11 +776,10 @@ pub async fn chat_handler(
 Using direct Prometheus integration for simple, homelab-friendly observability:
 
 **Why Direct Prometheus?**
-- Simple and stable - no deprecated dependencies
-- Homelab-friendly - works with existing Prometheus/Grafana stacks
-- Zero overhead - no intermediate abstraction layers
-- Reliable - `prometheus` crate is mature and well-maintained
-- **Architecture Decision**: Originally planned OpenTelemetry, but `opentelemetry-prometheus` was deprecated in v0.29 with security vulnerabilities. Switched to direct `prometheus` crate for stability.
+- **Simplicity**: No intermediate abstraction layers - direct Prometheus integration
+- **Homelab-friendly**: Works with existing Prometheus/Grafana stacks out of the box
+- **Stability**: Mature, actively maintained `prometheus` crate
+- **Zero overhead**: No OTEL collector or additional infrastructure required
 
 **Dependencies (behind `metrics` feature flag):**
 

@@ -187,11 +187,11 @@ scrape_configs:
     scrape_interval: 15s
 ```
 
-**Why Direct Prometheus?** We use the `prometheus` crate directly for simplicity and stability:
-- Works with existing Prometheus/Grafana homelab setups
-- No deprecated dependencies (switched from `opentelemetry-prometheus` which was discontinued)
-- Simple and reliable - zero overhead
-- Future-proof: OpenTelemetry traces can be added separately if needed
+**Why Direct Prometheus?** We use the `prometheus` crate directly for simplicity and homelab-friendliness:
+- Works with existing Prometheus/Grafana setups out of the box
+- No intermediate abstraction layers - just Prometheus
+- Mature, stable crate with broad ecosystem support
+- Future-proof: OpenTelemetry traces can be added separately if needed for distributed tracing
 
 ### Level 3: Distributed Traces (Future)
 
@@ -323,7 +323,7 @@ cargo build
 # Release build (optimized)
 cargo build --release
 
-# Build with metrics support (OpenTelemetry + Prometheus export)
+# Build with metrics support (Prometheus)
 cargo build --release --features metrics
 ```
 
@@ -509,13 +509,13 @@ For homelab deployments, we recommend Prometheus + Grafana for metrics visualiza
 
 ### Q: Why direct Prometheus instead of OpenTelemetry?
 
-**A**: We originally planned OpenTelemetry, but `opentelemetry-prometheus` was deprecated in v0.29 with security vulnerabilities. We switched to the direct `prometheus` crate (v0.14) for:
-- **Stability**: Mature, actively maintained library with no deprecated dependencies
+**A**: We chose the direct `prometheus` crate (v0.14) for simplicity and homelab-friendliness:
 - **Simplicity**: No intermediate abstraction layers - just Prometheus
-- **Homelab-friendly**: Works with existing Prometheus/Grafana setups, no OTEL collector required
+- **Homelab-friendly**: Works with existing Prometheus/Grafana setups out of the box, no OTEL collector required
+- **Stability**: Mature, actively maintained library
 - **Future-proof**: OpenTelemetry traces can be added separately if needed for distributed tracing
 
-The `/metrics` endpoint works with your existing Prometheus scraper out of the box.
+The `/metrics` endpoint works with your existing Prometheus scraper without any additional infrastructure.
 
 ---
 

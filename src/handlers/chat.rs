@@ -283,26 +283,35 @@ pub async fn handler(
         };
         let strategy_str = decision.strategy().as_str();
 
-        // DEFENSIVE: Handle metrics recording errors gracefully (non-fatal)
-        // Metrics recording should never crash request handling
-        if let Err(e) = metrics.record_request(tier_str, strategy_str) {
-            tracing::warn!(
-                request_id = %request_id,
-                error = %e,
-                tier = tier_str,
-                strategy = strategy_str,
-                "Failed to record request metric (non-fatal, metrics may be incomplete)"
-            );
-        }
-        if let Err(e) = metrics.record_routing_duration(strategy_str, routing_duration_ms) {
-            tracing::warn!(
-                request_id = %request_id,
-                error = %e,
-                strategy = strategy_str,
-                duration_ms = routing_duration_ms,
-                "Failed to record routing duration metric (non-fatal, metrics may be incomplete)"
-            );
-        }
+        // Fail-fast on metrics recording errors - these indicate programming bugs
+        // (invalid labels, cardinality mismatches) that should be caught in development
+        metrics
+            .record_request(tier_str, strategy_str)
+            .map_err(|e| {
+                tracing::error!(
+                    request_id = %request_id,
+                    error = %e,
+                    tier = tier_str,
+                    strategy = strategy_str,
+                    "CRITICAL: Metrics recording failed. This indicates a programming bug \
+                    (invalid labels, cardinality mismatch). Failing request to expose issue."
+                );
+                AppError::Internal(format!("Metrics recording failed: {}", e))
+            })?;
+
+        metrics
+            .record_routing_duration(strategy_str, routing_duration_ms)
+            .map_err(|e| {
+                tracing::error!(
+                    request_id = %request_id,
+                    error = %e,
+                    strategy = strategy_str,
+                    duration_ms = routing_duration_ms,
+                    "CRITICAL: Metrics recording failed. This indicates a programming bug \
+                    (invalid labels, cardinality mismatch). Failing request to expose issue."
+                );
+                AppError::Internal(format!("Metrics recording failed: {}", e))
+            })?;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -491,15 +500,17 @@ pub async fn handler(
                         TargetModel::Deep => "deep",
                     };
 
-                    // DEFENSIVE: Handle metrics recording errors gracefully (non-fatal)
-                    if let Err(e) = metrics.record_model_invocation(tier_str) {
-                        tracing::warn!(
+                    // Fail-fast on metrics recording errors - these indicate programming bugs
+                    metrics.record_model_invocation(tier_str).map_err(|e| {
+                        tracing::error!(
                             request_id = %request_id,
                             error = %e,
                             tier = tier_str,
-                            "Failed to record model invocation metric (non-fatal, metrics may be incomplete)"
+                            "CRITICAL: Metrics recording failed. This indicates a programming bug \
+                            (invalid labels, cardinality mismatch). Failing request to expose issue."
                         );
-                    }
+                        AppError::Internal(format!("Metrics recording failed: {}", e))
+                    })?;
                 }
 
                 return Ok(Json(response));

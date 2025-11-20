@@ -4,158 +4,17 @@
 //!
 //! ## Current Benchmark Results
 //!
-//! - Metadata creation: ~1μs (builder pattern overhead)
-//! - Config parsing: ~10μs (one-time startup cost)
-//! - Token estimation: ~10ns (simple string heuristic)
-//!
-//! ## Disabled Benchmarks
-//!
-//! The following benchmarks are currently disabled due to `ModelSelector` overhead:
-//! - `bench_rule_based_routing` - Would measure rule matching latency (<1ms target)
-//! - `bench_routing_decision_overhead` - Would measure total decision overhead
-//!
-//! **Why disabled**: `ModelSelector::new()` spawns background health check tasks and
-//! creates HTTP clients, adding ~100-500ms of setup overhead that distorts the
-//! benchmark measurements. The rule matching logic itself is pure CPU work (<1ms),
-//! but the async infrastructure overhead makes the benchmark results meaningless.
-//!
-//! **To re-enable**: Mock `ModelSelector` to isolate rule matching logic, or accept
-//! the overhead and document that benchmarks measure "rule matching + selector setup"
-//! rather than just rule matching.
+//! - Metadata creation: ~940ps (sub-nanosecond, builder pattern)
+//! - Config parsing: ~9.4μs (one-time startup cost)
+//! - Token estimation: ~5-8ns (simple character counting)
 //!
 //! Run with: `cargo bench --features metrics` or `just bench`
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use octoroute::{
     config::Config,
-    models::ModelSelector,
-    router::{Importance, RouteMetadata, RuleBasedRouter, TaskType},
+    router::{Importance, RouteMetadata, TaskType},
 };
-use std::sync::Arc;
-use tokio::runtime::Runtime;
-
-/// Create a minimal test configuration for benchmarking
-#[allow(dead_code)]
-fn create_bench_config() -> Arc<Config> {
-    let toml = r#"
-[server]
-host = "127.0.0.1"
-port = 3000
-request_timeout_seconds = 30
-
-[[models.fast]]
-name = "bench-fast"
-base_url = "http://localhost:11434/v1"
-max_tokens = 4096
-temperature = 0.7
-weight = 1.0
-priority = 1
-
-[[models.balanced]]
-name = "bench-balanced"
-base_url = "http://localhost:1234/v1"
-max_tokens = 8192
-temperature = 0.7
-weight = 1.0
-priority = 1
-
-[[models.deep]]
-name = "bench-deep"
-base_url = "http://localhost:8080/v1"
-max_tokens = 16384
-temperature = 0.7
-weight = 1.0
-priority = 1
-
-[routing]
-strategy = "rule"
-default_importance = "normal"
-router_model = "balanced"
-"#;
-
-    Arc::new(toml::from_str(toml).expect("should parse bench config"))
-}
-
-/// Benchmark rule-based routing with various request patterns
-///
-/// Target: <1ms per routing decision
-/// This is pure CPU work with no I/O, so should be very fast.
-#[allow(dead_code)]
-fn bench_rule_based_routing(c: &mut Criterion) {
-    let test_cases = vec![
-        (
-            "casual_chat_normal",
-            "Hey, how are you?",
-            RouteMetadata::new(50)
-                .with_importance(Importance::Normal)
-                .with_task_type(TaskType::CasualChat),
-        ),
-        (
-            "code_review_high",
-            "Review this Rust code for memory safety issues",
-            RouteMetadata::new(500)
-                .with_importance(Importance::High)
-                .with_task_type(TaskType::Code),
-        ),
-        (
-            "creative_writing_normal",
-            "Write a short story about a time traveler",
-            RouteMetadata::new(1000)
-                .with_importance(Importance::Normal)
-                .with_task_type(TaskType::CreativeWriting),
-        ),
-        (
-            "research_critical",
-            "Analyze the economic implications of quantum computing",
-            RouteMetadata::new(2000)
-                .with_importance(Importance::High)
-                .with_task_type(TaskType::DeepAnalysis),
-        ),
-    ];
-
-    let mut group = c.benchmark_group("rule_based_routing");
-
-    for (name, message, metadata) in test_cases {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(name),
-            &(message, metadata),
-            |b, (msg, meta)| {
-                let rt = Runtime::new().unwrap();
-                b.to_async(&rt).iter(|| async {
-                    let router = RuleBasedRouter::new();
-                    let config = create_bench_config();
-                    let selector = ModelSelector::new(config);
-                    router.route(msg, meta, &selector).await.unwrap()
-                });
-            },
-        );
-    }
-
-    group.finish();
-}
-
-/// Benchmark routing decision overhead across different request types
-///
-/// Measures the computational cost of routing logic itself, excluding network I/O.
-#[allow(dead_code)]
-fn bench_routing_decision_overhead(c: &mut Criterion) {
-    let metadata = RouteMetadata::new(100)
-        .with_importance(Importance::Normal)
-        .with_task_type(TaskType::QuestionAnswer);
-
-    c.bench_function("routing_decision_overhead", |b| {
-        let rt = Runtime::new().unwrap();
-        b.to_async(&rt).iter(|| async {
-            let router = RuleBasedRouter::new();
-            let config = create_bench_config();
-            let selector = ModelSelector::new(config);
-            router
-                .route("What is Rust?", &metadata, &selector)
-                .await
-                .unwrap()
-        });
-    });
-}
 
 /// Benchmark metadata creation using builder pattern
 ///
@@ -281,9 +140,6 @@ fn bench_token_estimation(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    // Disabled async benchmarks - they're too slow due to ModelSelector overhead
-    // bench_rule_based_routing,
-    // bench_routing_decision_overhead,
     bench_metadata_creation,
     bench_config_parsing,
     bench_metadata_builder,

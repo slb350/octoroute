@@ -16,7 +16,13 @@ pub mod metrics;
 /// Application state shared across all handlers
 ///
 /// Contains configuration, model selector, and router instances.
-/// All fields are Arc'd for cheap cloning across Axum handlers.
+///
+/// All fields are wrapped in `Arc` for two reasons:
+/// 1. **Thread safety**: Axum handlers run concurrently on separate threads and require
+///    `Send + Sync` bounds. Arc provides atomic reference counting for safe sharing across threads.
+/// 2. **Cheap cloning**: Axum clones state per request. Arc makes this O(1) instead of deep copying.
+///
+/// Do NOT replace Arc with Rc - it's not Send+Sync and will fail to compile with Axum.
 ///
 /// The router type is determined by `config.routing.strategy`:
 /// - `Rule`: Only rule-based routing (no balanced tier required)
