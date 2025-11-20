@@ -664,13 +664,6 @@ impl LlmBasedRouter {
     /// by word boundaries (whitespace, punctuation, or start/end of string).
     ///
     /// Prevents false positives like matching "FAST" in "BREAKFAST" or "STEADFAST".
-    ///
-    /// # Examples
-    /// ```ignore
-    /// assert_eq!(find_word_boundary("FAST", "FAST"), Some(0));
-    /// assert_eq!(find_word_boundary("BREAKFAST", "FAST"), None);
-    /// assert_eq!(find_word_boundary("  FAST  ", "FAST"), Some(2));
-    /// ```
     fn find_word_boundary(text: &str, word: &str) -> Option<usize> {
         let word_len = word.len();
         let text_bytes = text.as_bytes();
