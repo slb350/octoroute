@@ -396,7 +396,7 @@ RUST_LOG=debug cargo run
 - ✅ CI/CD pipeline (GitHub Actions)
 - ✅ Comprehensive config validation
 - ✅ Development tooling (justfile with 20+ recipes)
-- ✅ **270 tests passing** (203 lib + 67 integration)
+- ✅ **Comprehensive test coverage** (run `cargo test --all --features metrics` to verify current count)
 - ✅ **Zero clippy warnings**
 - ✅ **Zero tech debt**
 
@@ -506,6 +506,29 @@ Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guideli
 3. **Traces** (future): Distributed tracing showing full request flow (coming soon)
 
 For homelab deployments, we recommend Prometheus + Grafana for metrics visualization.
+
+### Q: Is the `/metrics` endpoint secure?
+
+**A**: The `/metrics` endpoint (when `metrics` feature is enabled) is **unauthenticated** by design for simplicity in homelab deployments. It exposes operational metrics like request counts and routing latency.
+
+**Security recommendations**:
+- **Homelab**: Ensure Octoroute is only accessible on trusted networks (not exposed to the internet)
+- **Production**: Use a reverse proxy (nginx, Caddy) to add authentication:
+  ```nginx
+  location /metrics {
+      auth_basic "Metrics";
+      auth_basic_user_file /etc/nginx/.htpasswd;
+      proxy_pass http://octoroute:3000/metrics;
+  }
+  ```
+- **Alternative**: Use firewall rules to restrict `/metrics` to Prometheus server IP only
+
+**The metrics endpoint does NOT expose**:
+- User messages or content
+- API keys or credentials
+- Individual request details (only aggregates)
+
+For internet-exposed deployments, always use authentication or IP restrictions.
 
 ### Q: Why direct Prometheus instead of OpenTelemetry?
 

@@ -103,7 +103,9 @@ mod tests {
 
         // Record some metrics if available
         if let Some(metrics) = state.metrics() {
-            metrics.record_request("fast", "rule").unwrap();
+            metrics
+                .record_request(crate::metrics::Tier::Fast, crate::metrics::Strategy::Rule)
+                .unwrap();
         }
 
         let (status, body) = handler(State(state)).await;

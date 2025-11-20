@@ -158,16 +158,23 @@ fn default_metrics_port() -> u16 {
 ///
 /// Allows configuring different timeouts for each model tier.
 /// If a tier timeout is None, the global `server.request_timeout_seconds` is used.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+///
+/// # Custom Deserialization
+///
+/// This type implements custom `Deserialize` to enforce validation at parse time.
+/// All timeout values must be in range (0, 300] seconds. Invalid values are rejected
+/// immediately during TOML parsing, not later during `Config::validate()`.
+///
+/// This prevents the temporal gap where invalid `TimeoutsConfig` instances could exist
+/// between deserialization and validation, upholding the principle: "make invalid states
+/// unrepresentable."
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct TimeoutsConfig {
     /// Timeout for fast tier (8B models) in seconds
-    #[serde(default)]
     fast: Option<u64>,
     /// Timeout for balanced tier (30B models) in seconds
-    #[serde(default)]
     balanced: Option<u64>,
     /// Timeout for deep tier (120B models) in seconds
-    #[serde(default)]
     deep: Option<u64>,
 }
 
@@ -183,12 +190,19 @@ impl TimeoutsConfig {
     /// # Errors
     ///
     /// Returns an error if any timeout is zero or exceeds 300 seconds.
+    ///
+    /// # Defense-in-Depth
+    ///
+    /// The upper bound check (timeout > 300) also handles extreme values like `u64::MAX`
+    /// (18446744073709551615), which would fail this check. This prevents arithmetic
+    /// overflow in timeout calculations and ensures reasonable timeout values.
     pub fn new(
         fast: Option<u64>,
         balanced: Option<u64>,
         deep: Option<u64>,
     ) -> crate::error::AppResult<Self> {
-        // Validate each timeout
+        // Validate each timeout (0, 300] seconds
+        // NOTE: Upper bound also prevents u64::MAX and other extreme values
         for (tier_name, timeout_opt) in [("fast", fast), ("balanced", balanced), ("deep", deep)] {
             if let Some(timeout) = timeout_opt {
                 if timeout == 0 {
@@ -199,7 +213,8 @@ impl TimeoutsConfig {
                 }
                 if timeout > 300 {
                     return Err(crate::error::AppError::Config(format!(
-                        "timeouts.{} cannot exceed 300 seconds, got {}",
+                        "timeouts.{} cannot exceed 300 seconds (5 minutes), got {}. \
+                        This limit prevents connection pool exhaustion and arithmetic overflow.",
                         tier_name, timeout
                     )));
                 }
@@ -225,6 +240,82 @@ impl TimeoutsConfig {
     /// Get the deep tier timeout (if configured)
     pub fn deep(&self) -> Option<u64> {
         self.deep
+    }
+}
+
+/// Custom Deserialize implementation for TimeoutsConfig
+///
+/// Enforces validation at deserialization time by calling the validated `new()` constructor.
+/// This eliminates the temporal gap where invalid instances could exist between parsing
+/// and validation.
+impl<'de> Deserialize<'de> for TimeoutsConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+        use std::fmt;
+
+        // Helper struct for deserializing raw values before validation
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "lowercase")]
+        enum Field {
+            Fast,
+            Balanced,
+            Deep,
+        }
+
+        struct TimeoutsConfigVisitor;
+
+        impl<'de> Visitor<'de> for TimeoutsConfigVisitor {
+            type Value = TimeoutsConfig;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a struct with optional timeout fields (fast, balanced, deep)")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<TimeoutsConfig, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut fast = None;
+                let mut balanced = None;
+                let mut deep = None;
+
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::Fast => {
+                            if fast.is_some() {
+                                return Err(de::Error::duplicate_field("fast"));
+                            }
+                            fast = Some(map.next_value()?);
+                        }
+                        Field::Balanced => {
+                            if balanced.is_some() {
+                                return Err(de::Error::duplicate_field("balanced"));
+                            }
+                            balanced = Some(map.next_value()?);
+                        }
+                        Field::Deep => {
+                            if deep.is_some() {
+                                return Err(de::Error::duplicate_field("deep"));
+                            }
+                            deep = Some(map.next_value()?);
+                        }
+                    }
+                }
+
+                // Call validated constructor - this is where validation happens!
+                TimeoutsConfig::new(fast, balanced, deep)
+                    .map_err(|e| de::Error::custom(format!("Invalid timeout configuration: {}", e)))
+            }
+        }
+
+        deserializer.deserialize_struct(
+            "TimeoutsConfig",
+            &["fast", "balanced", "deep"],
+            TimeoutsConfigVisitor,
+        )
     }
 }
 
@@ -419,29 +510,9 @@ impl Config {
             )));
         }
 
-        // Validate per-tier timeout overrides
-        // Note: TimeoutsConfig also validates in its constructor, but this provides
-        // additional validation when configs are parsed from TOML (which bypasses the constructor)
-        for (tier_name, timeout_opt) in [
-            ("fast", self.timeouts.fast()),
-            ("balanced", self.timeouts.balanced()),
-            ("deep", self.timeouts.deep()),
-        ] {
-            if let Some(timeout) = timeout_opt {
-                if timeout == 0 {
-                    return Err(crate::error::AppError::Config(format!(
-                        "Configuration error: timeouts.{} must be greater than 0, got {}",
-                        tier_name, timeout
-                    )));
-                }
-                if timeout > 300 {
-                    return Err(crate::error::AppError::Config(format!(
-                        "Configuration error: timeouts.{} cannot exceed 300 seconds (5 minutes), got {}",
-                        tier_name, timeout
-                    )));
-                }
-            }
-        }
+        // Per-tier timeout validation is now handled by TimeoutsConfig's custom Deserialize
+        // implementation, which calls the validated constructor at parse time.
+        // No duplicate validation needed here.
 
         Ok(())
     }
@@ -928,37 +999,18 @@ fast = 15
         assert_eq!(config.timeouts.deep, None);
     }
 
-    #[test]
-    fn test_config_validation_per_tier_timeout_too_low_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
-        config.timeouts.fast = Some(0); // Invalid: zero timeout
-
-        let result = config.validate();
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("fast") && err_msg.contains("timeout"));
-    }
-
-    #[test]
-    fn test_config_validation_per_tier_timeout_too_high_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
-        config.timeouts.deep = Some(301); // Invalid: exceeds 300 second limit
-
-        let result = config.validate();
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("deep") && err_msg.contains("300"));
-    }
-
-    #[test]
-    fn test_config_validation_per_tier_timeouts_valid_succeeds() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
-        config.timeouts.fast = Some(15);
-        config.timeouts.balanced = Some(30);
-        config.timeouts.deep = Some(60);
-
-        assert!(config.validate().is_ok());
-    }
+    // REMOVED: test_config_validation_per_tier_timeout_too_low_fails
+    // REMOVED: test_config_validation_per_tier_timeout_too_high_fails
+    // REMOVED: test_config_validation_per_tier_timeouts_valid_succeeds
+    //
+    // These tests tested the OLD behavior where timeouts.fast/balanced/deep fields were
+    // public and could be modified after construction, with validation happening later
+    // during validate(). This created a temporal gap where invalid TimeoutsConfig
+    // instances could exist.
+    //
+    // With Issue #3 fix (custom Deserialize), these fields are now PRIVATE and validation
+    // happens DURING deserialization. Invalid values are rejected immediately at parse time.
+    // See new tests: test_timeouts_config_deserialization_* for the CORRECT behavior.
 
     #[test]
     fn test_config_timeout_for_tier_uses_override() {
@@ -1022,5 +1074,180 @@ fast = 15
             config.timeout_for_tier(crate::router::TargetModel::Deep),
             40
         );
+    }
+
+    // ===== Issue #3 Fix: TimeoutsConfig Custom Deserialize Tests =====
+    // Tests written FIRST (TDD RED phase) - these should fail until custom Deserialize is implemented
+
+    #[test]
+    fn test_timeouts_config_deserialization_rejects_zero_timeout() {
+        // Test that zero timeout is rejected DURING deserialization, not later during validate()
+        let config_with_zero_timeout = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[[models.fast]]
+name = "test-fast"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+
+[[models.balanced]]
+name = "test-balanced"
+base_url = "http://localhost:1235/v1"
+max_tokens = 8192
+
+[[models.deep]]
+name = "test-deep"
+base_url = "http://localhost:1236/v1"
+max_tokens = 16384
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+
+[timeouts]
+fast = 0
+"#;
+
+        let result = Config::from_str(config_with_zero_timeout);
+        assert!(
+            result.is_err(),
+            "Config parsing should fail with zero timeout (custom Deserialize should reject it)"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("fast") && err_msg.contains("timeout"),
+            "Error should mention which timeout field is invalid"
+        );
+    }
+
+    #[test]
+    fn test_timeouts_config_deserialization_rejects_timeout_too_high() {
+        // Test that timeout > 300 is rejected DURING deserialization
+        let config_with_high_timeout = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[[models.fast]]
+name = "test-fast"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+
+[[models.balanced]]
+name = "test-balanced"
+base_url = "http://localhost:1235/v1"
+max_tokens = 8192
+
+[[models.deep]]
+name = "test-deep"
+base_url = "http://localhost:1236/v1"
+max_tokens = 16384
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+
+[timeouts]
+deep = 301
+"#;
+
+        let result = Config::from_str(config_with_high_timeout);
+        assert!(
+            result.is_err(),
+            "Config parsing should fail with timeout > 300 (custom Deserialize should reject it)"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("deep") && err_msg.contains("300"),
+            "Error should mention which timeout field exceeds limit"
+        );
+    }
+
+    #[test]
+    fn test_timeouts_config_deserialization_accepts_valid_timeouts() {
+        // Test that valid timeouts are accepted during deserialization
+        let config_with_valid_timeouts = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[[models.fast]]
+name = "test-fast"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+
+[[models.balanced]]
+name = "test-balanced"
+base_url = "http://localhost:1235/v1"
+max_tokens = 8192
+
+[[models.deep]]
+name = "test-deep"
+base_url = "http://localhost:1236/v1"
+max_tokens = 16384
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+
+[timeouts]
+fast = 15
+balanced = 30
+deep = 60
+"#;
+
+        let result = Config::from_str(config_with_valid_timeouts);
+        assert!(
+            result.is_ok(),
+            "Config parsing should succeed with valid timeouts (1-300)"
+        );
+        let config = result.unwrap();
+        assert_eq!(config.timeouts.fast(), Some(15));
+        assert_eq!(config.timeouts.balanced(), Some(30));
+        assert_eq!(config.timeouts.deep(), Some(60));
+    }
+
+    #[test]
+    fn test_timeouts_config_deserialization_accepts_boundary_values() {
+        // Test that boundary values (1 and 300) are accepted
+        let config_with_boundaries = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[[models.fast]]
+name = "test-fast"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+
+[[models.balanced]]
+name = "test-balanced"
+base_url = "http://localhost:1235/v1"
+max_tokens = 8192
+
+[[models.deep]]
+name = "test-deep"
+base_url = "http://localhost:1236/v1"
+max_tokens = 16384
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+
+[timeouts]
+fast = 1
+deep = 300
+"#;
+
+        let result = Config::from_str(config_with_boundaries);
+        assert!(
+            result.is_ok(),
+            "Config parsing should succeed with boundary values 1 and 300"
+        );
+        let config = result.unwrap();
+        assert_eq!(config.timeouts.fast(), Some(1));
+        assert_eq!(config.timeouts.deep(), Some(300));
     }
 }

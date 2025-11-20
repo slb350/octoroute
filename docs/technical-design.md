@@ -787,12 +787,15 @@ Using direct Prometheus integration for simple, homelab-friendly observability:
 [dependencies]
 # Metrics (optional, behind feature flag)
 prometheus = { version = "0.14", optional = true }
-lazy_static = { version = "1.5", optional = true }
 
 [features]
 default = []
-metrics = ["prometheus", "lazy_static"]
+metrics = ["prometheus"]
 ```
+
+**Note**: `lazy_static` is NOT a direct dependency. It's a transitive dependency pulled
+in by `prometheus` internally. The metrics module uses `Arc<Registry>` for thread-safe
+shared state, not `lazy_static` macros.
 
 **Implementation:**
 
@@ -1156,7 +1159,7 @@ proptest! {
   - Token estimation: ~5-10 nanoseconds
   - All performance targets met (<1ms for pure CPU operations)
 - [x] Set up CI/CD (GitHub Actions)
-  - Test suite on push/PR (all 270 tests: 203 lib + 67 integration)
+  - Test suite on push/PR (comprehensive test coverage - see `cargo test` output for current count)
   - Clippy and rustfmt checks (zero warnings policy enforced)
   - MSRV testing (1.90.0) + stable
   - Benchmark compilation check
@@ -1166,7 +1169,9 @@ proptest! {
 **Deliverable**: ✅ Production-ready router service ready for homelab deployment with full observability
 
 **Final Stats**:
-- 270 tests passing (203 lib + 67 integration)
+- Comprehensive test suite (221+ lib tests + integration tests as of Phase 5)
+  - Run `cargo test --all --features metrics` for current count
+  - Test count will grow as new features are added
 - Zero clippy warnings
 - Zero tech debt
 - 7 commits for Phase 5 (ae9fe21 → 84b3c6d)

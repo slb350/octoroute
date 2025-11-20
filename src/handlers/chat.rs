@@ -276,38 +276,42 @@ pub async fn handler(
     //       This distinction allows tracking routing overhead separately from query success rate.
     #[cfg(feature = "metrics")]
     if let Some(metrics) = state.metrics() {
-        let tier_str = match decision.target() {
-            TargetModel::Fast => "fast",
-            TargetModel::Balanced => "balanced",
-            TargetModel::Deep => "deep",
+        // Convert routing decision to type-safe metric enums
+        let tier_enum = match decision.target() {
+            TargetModel::Fast => crate::metrics::Tier::Fast,
+            TargetModel::Balanced => crate::metrics::Tier::Balanced,
+            TargetModel::Deep => crate::metrics::Tier::Deep,
         };
-        let strategy_str = decision.strategy().as_str();
+        let strategy_enum = match decision.strategy() {
+            RoutingStrategy::Rule => crate::metrics::Strategy::Rule,
+            RoutingStrategy::Llm => crate::metrics::Strategy::Llm,
+        };
 
         // Log-and-continue on metrics recording errors (observability should never break requests)
-        // Metrics failures indicate programming bugs (invalid labels, cardinality mismatch)
-        // but should NOT cause production request failures.
-        if let Err(e) = metrics.record_request(tier_str, strategy_str) {
+        // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
+        // Errors can only occur from Prometheus internal issues (registry problems, etc.).
+        if let Err(e) = metrics.record_request(tier_enum, strategy_enum) {
             tracing::error!(
                 request_id = %request_id,
                 error = %e,
-                tier = tier_str,
-                strategy = strategy_str,
+                tier = ?tier_enum,
+                strategy = ?strategy_enum,
                 "Metrics recording failed (non-fatal): {}. Request will continue. \
-                This indicates a programming bug (invalid labels, cardinality mismatch). \
+                This indicates an internal Prometheus error (not a cardinality issue). \
                 Monitor this error - frequent occurrence requires investigation.",
                 e
             );
             // DO NOT return error - metrics are non-critical
         }
 
-        if let Err(e) = metrics.record_routing_duration(strategy_str, routing_duration_ms) {
+        if let Err(e) = metrics.record_routing_duration(strategy_enum, routing_duration_ms) {
             tracing::error!(
                 request_id = %request_id,
                 error = %e,
-                strategy = strategy_str,
+                strategy = ?strategy_enum,
                 duration_ms = routing_duration_ms,
                 "Metrics recording failed (non-fatal): {}. Request will continue. \
-                This indicates a programming bug (invalid labels, cardinality mismatch). \
+                This indicates an internal Prometheus error (not a cardinality issue). \
                 Monitor this error - frequent occurrence requires investigation.",
                 e
             );
@@ -495,20 +499,21 @@ pub async fn handler(
                 //       success_rate = model_invocations_total / requests_total
                 #[cfg(feature = "metrics")]
                 if let Some(metrics) = state.metrics() {
-                    let tier_str = match decision.target() {
-                        TargetModel::Fast => "fast",
-                        TargetModel::Balanced => "balanced",
-                        TargetModel::Deep => "deep",
+                    let tier_enum = match decision.target() {
+                        TargetModel::Fast => crate::metrics::Tier::Fast,
+                        TargetModel::Balanced => crate::metrics::Tier::Balanced,
+                        TargetModel::Deep => crate::metrics::Tier::Deep,
                     };
 
                     // Log-and-continue on metrics recording errors (observability should never break requests)
-                    if let Err(e) = metrics.record_model_invocation(tier_str) {
+                    // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
+                    if let Err(e) = metrics.record_model_invocation(tier_enum) {
                         tracing::error!(
                             request_id = %request_id,
                             error = %e,
-                            tier = tier_str,
+                            tier = ?tier_enum,
                             "Metrics recording failed (non-fatal): {}. Request will continue. \
-                            This indicates a programming bug (invalid labels, cardinality mismatch). \
+                            This indicates an internal Prometheus error (not a cardinality issue). \
                             Monitor this error - frequent occurrence requires investigation.",
                             e
                         );

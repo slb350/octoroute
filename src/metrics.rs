@@ -18,6 +18,56 @@
 use prometheus::{CounterVec, Encoder, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder};
 use std::sync::Arc;
 
+/// Model tier enum for type-safe metrics labels
+///
+/// Prevents cardinality explosion by restricting tier values to
+/// exactly three valid options at compile time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    /// Fast tier (8B models)
+    Fast,
+    /// Balanced tier (30B models)
+    Balanced,
+    /// Deep tier (120B models)
+    Deep,
+}
+
+impl Tier {
+    /// Convert tier to Prometheus label string
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Tier::Fast => "fast",
+            Tier::Balanced => "balanced",
+            Tier::Deep => "deep",
+        }
+    }
+}
+
+/// Routing strategy enum for type-safe metrics labels
+///
+/// Prevents cardinality explosion by restricting strategy values to
+/// exactly three valid options at compile time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strategy {
+    /// Rule-based routing
+    Rule,
+    /// LLM-powered routing
+    Llm,
+    /// Hybrid routing (rules + LLM fallback)
+    Hybrid,
+}
+
+impl Strategy {
+    /// Convert strategy to Prometheus label string
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Strategy::Rule => "rule",
+            Strategy::Llm => "llm",
+            Strategy::Hybrid => "hybrid",
+        }
+    }
+}
+
 /// Metrics collector for Octoroute
 ///
 /// Provides Prometheus metrics for monitoring routing decisions,
@@ -86,15 +136,20 @@ impl Metrics {
     ///
     /// # Arguments
     ///
-    /// * `tier` - The model tier (e.g., "fast", "balanced", "deep")
-    /// * `strategy` - The routing strategy used (e.g., "rule", "llm", "hybrid")
+    /// * `tier` - The model tier (type-safe enum)
+    /// * `strategy` - The routing strategy used (type-safe enum)
     ///
     /// # Errors
     ///
-    /// Returns an error if the label values are invalid or the metric is not registered.
-    pub fn record_request(&self, tier: &str, strategy: &str) -> Result<(), prometheus::Error> {
+    /// Returns an error if the metric is not registered.
+    ///
+    /// # Cardinality Safety
+    ///
+    /// Using enums instead of strings prevents cardinality explosion.
+    /// Maximum possible label combinations: 3 tiers × 3 strategies = 9 time series.
+    pub fn record_request(&self, tier: Tier, strategy: Strategy) -> Result<(), prometheus::Error> {
         self.requests_total
-            .get_metric_with_label_values(&[tier, strategy])?
+            .get_metric_with_label_values(&[tier.as_str(), strategy.as_str()])?
             .inc();
         Ok(())
     }
@@ -103,19 +158,49 @@ impl Metrics {
     ///
     /// # Arguments
     ///
-    /// * `strategy` - The routing strategy used (e.g., "rule", "llm")
-    /// * `duration_ms` - The duration in milliseconds
+    /// * `strategy` - The routing strategy used (type-safe enum)
+    /// * `duration_ms` - The duration in milliseconds (must be finite and non-negative)
     ///
     /// # Errors
     ///
-    /// Returns an error if the label values are invalid or the metric is not registered.
+    /// Returns an error if:
+    /// - The metric is not registered
+    /// - `duration_ms` is NaN, infinite, or negative (Issue #5 fix)
+    ///
+    /// # Cardinality Safety
+    ///
+    /// Using enum instead of string prevents cardinality explosion.
+    /// Maximum possible label values: 3 strategies = 3 time series.
+    ///
+    /// # Data Integrity
+    ///
+    /// NaN and infinity values corrupt histogram statistics (all percentiles become NaN).
+    /// Negative values are logically invalid for durations. This validation prevents
+    /// silent metric corruption that would render observability data useless.
     pub fn record_routing_duration(
         &self,
-        strategy: &str,
+        strategy: Strategy,
         duration_ms: f64,
     ) -> Result<(), prometheus::Error> {
+        // Validate duration is finite (not NaN or Infinity)
+        if !duration_ms.is_finite() {
+            return Err(prometheus::Error::Msg(format!(
+                "Histogram value must be finite (not NaN or Infinity), got: {}. \
+                NaN and infinity values corrupt histogram percentiles.",
+                duration_ms
+            )));
+        }
+
+        // Validate duration is non-negative (logically required for durations)
+        if duration_ms < 0.0 {
+            return Err(prometheus::Error::Msg(format!(
+                "Histogram value must be non-negative (duration cannot be negative), got: {}",
+                duration_ms
+            )));
+        }
+
         self.routing_duration
-            .get_metric_with_label_values(&[strategy])?
+            .get_metric_with_label_values(&[strategy.as_str()])?
             .observe(duration_ms);
         Ok(())
     }
@@ -124,14 +209,19 @@ impl Metrics {
     ///
     /// # Arguments
     ///
-    /// * `tier` - The model tier (e.g., "fast", "balanced", "deep")
+    /// * `tier` - The model tier (type-safe enum)
     ///
     /// # Errors
     ///
-    /// Returns an error if the label values are invalid or the metric is not registered.
-    pub fn record_model_invocation(&self, tier: &str) -> Result<(), prometheus::Error> {
+    /// Returns an error if the metric is not registered.
+    ///
+    /// # Cardinality Safety
+    ///
+    /// Using enum instead of string prevents cardinality explosion.
+    /// Maximum possible label values: 3 tiers = 3 time series.
+    pub fn record_model_invocation(&self, tier: Tier) -> Result<(), prometheus::Error> {
         self.model_invocations
-            .get_metric_with_label_values(&[tier])?
+            .get_metric_with_label_values(&[tier.as_str()])?
             .inc();
         Ok(())
     }
@@ -204,9 +294,11 @@ mod tests {
         let metrics = Metrics::new().expect("Failed to create metrics");
 
         // Record at least one value for each metric so they appear in the registry
-        metrics.record_request("fast", "rule").unwrap();
-        metrics.record_routing_duration("rule", 1.0).unwrap();
-        metrics.record_model_invocation("fast").unwrap();
+        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        metrics
+            .record_routing_duration(Strategy::Rule, 1.0)
+            .unwrap();
+        metrics.record_model_invocation(Tier::Fast).unwrap();
 
         let metric_families = metrics.registry.gather();
         // Should have 3 metric families: requests_total, routing_duration, model_invocations
@@ -226,9 +318,11 @@ mod tests {
     fn test_record_request_increments_counter() {
         let metrics = Metrics::new().unwrap();
 
-        metrics.record_request("fast", "rule").unwrap();
-        metrics.record_request("fast", "rule").unwrap();
-        metrics.record_request("balanced", "llm").unwrap();
+        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        metrics
+            .record_request(Tier::Balanced, Strategy::Llm)
+            .unwrap();
 
         let output = metrics.gather().unwrap();
         assert!(output.contains("octoroute_requests_total"));
@@ -240,9 +334,15 @@ mod tests {
     fn test_record_routing_duration_observes_histogram() {
         let metrics = Metrics::new().unwrap();
 
-        metrics.record_routing_duration("rule", 0.5).unwrap();
-        metrics.record_routing_duration("rule", 1.2).unwrap();
-        metrics.record_routing_duration("llm", 250.0).unwrap();
+        metrics
+            .record_routing_duration(Strategy::Rule, 0.5)
+            .unwrap();
+        metrics
+            .record_routing_duration(Strategy::Rule, 1.2)
+            .unwrap();
+        metrics
+            .record_routing_duration(Strategy::Llm, 250.0)
+            .unwrap();
 
         let output = metrics.gather().unwrap();
         assert!(output.contains("octoroute_routing_duration_ms"));
@@ -254,9 +354,9 @@ mod tests {
     fn test_record_model_invocation_increments_counter() {
         let metrics = Metrics::new().unwrap();
 
-        metrics.record_model_invocation("fast").unwrap();
-        metrics.record_model_invocation("fast").unwrap();
-        metrics.record_model_invocation("balanced").unwrap();
+        metrics.record_model_invocation(Tier::Fast).unwrap();
+        metrics.record_model_invocation(Tier::Fast).unwrap();
+        metrics.record_model_invocation(Tier::Balanced).unwrap();
 
         let output = metrics.gather().unwrap();
         assert!(output.contains("octoroute_model_invocations_total"));
@@ -268,7 +368,9 @@ mod tests {
     fn test_gather_produces_prometheus_text_format() {
         let metrics = Metrics::new().unwrap();
 
-        metrics.record_request("deep", "hybrid").unwrap();
+        metrics
+            .record_request(Tier::Deep, Strategy::Hybrid)
+            .unwrap();
         let output = metrics.gather().unwrap();
 
         // Verify Prometheus text format structure
@@ -283,7 +385,7 @@ mod tests {
         let cloned = metrics.clone();
 
         // Record on original
-        metrics.record_request("fast", "rule").unwrap();
+        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
 
         // Verify clone sees the same metrics (shared registry)
         let output = cloned.gather().unwrap();
@@ -294,8 +396,12 @@ mod tests {
     fn test_histogram_buckets_configured() {
         let metrics = Metrics::new().unwrap();
 
-        metrics.record_routing_duration("rule", 0.1).unwrap();
-        metrics.record_routing_duration("rule", 100.0).unwrap();
+        metrics
+            .record_routing_duration(Strategy::Rule, 0.1)
+            .unwrap();
+        metrics
+            .record_routing_duration(Strategy::Rule, 100.0)
+            .unwrap();
 
         let output = metrics.gather().unwrap();
 
@@ -310,11 +416,19 @@ mod tests {
         let metrics = Metrics::new().unwrap();
 
         // Record different combinations
-        metrics.record_request("fast", "rule").unwrap();
-        metrics.record_request("fast", "hybrid").unwrap();
-        metrics.record_request("balanced", "rule").unwrap();
-        metrics.record_request("balanced", "llm").unwrap();
-        metrics.record_request("deep", "hybrid").unwrap();
+        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        metrics
+            .record_request(Tier::Fast, Strategy::Hybrid)
+            .unwrap();
+        metrics
+            .record_request(Tier::Balanced, Strategy::Rule)
+            .unwrap();
+        metrics
+            .record_request(Tier::Balanced, Strategy::Llm)
+            .unwrap();
+        metrics
+            .record_request(Tier::Deep, Strategy::Hybrid)
+            .unwrap();
 
         let output = metrics.gather().unwrap();
 
@@ -338,9 +452,9 @@ mod tests {
         for i in 0..10 {
             let m = Arc::clone(&metrics);
             let handle = thread::spawn(move || {
-                m.record_request("fast", "rule").unwrap();
-                m.record_routing_duration("rule", i as f64).unwrap();
-                m.record_model_invocation("fast").unwrap();
+                m.record_request(Tier::Fast, Strategy::Rule).unwrap();
+                m.record_routing_duration(Strategy::Rule, i as f64).unwrap();
+                m.record_model_invocation(Tier::Fast).unwrap();
             });
             handles.push(handle);
         }
@@ -356,92 +470,10 @@ mod tests {
         assert!(output.contains("octoroute_model_invocations_total"));
     }
 
-    // ===== Test Coverage Gap #1: Invalid Label Values =====
-    // NOTE: These tests document CURRENT behavior (accepts invalid labels).
-    // Future work (HIGH #6): Add type-safe label enums to prevent cardinality explosion.
-
-    #[test]
-    fn test_invalid_tier_labels_are_accepted() {
-        let metrics = Metrics::new().unwrap();
-
-        // CURRENT BEHAVIOR: Invalid tier names are accepted (stringly-typed)
-        // This creates cardinality explosion risk (each typo = new metric)
-        let result = metrics.record_request("invalid_tier", "rule");
-        assert!(
-            result.is_ok(),
-            "Current implementation accepts invalid tier names (cardinality risk)"
-        );
-
-        // Case sensitivity creates duplicate metrics
-        let result = metrics.record_request("FAST", "rule");
-        assert!(
-            result.is_ok(),
-            "Current implementation accepts wrong case (cardinality risk)"
-        );
-
-        // Empty strings are accepted
-        let result = metrics.record_request("", "rule");
-        assert!(
-            result.is_ok(),
-            "Current implementation accepts empty tier (cardinality risk)"
-        );
-
-        // All variants create separate metrics (demonstrated by successful gather)
-        let output = metrics.gather().unwrap();
-        assert!(output.contains("octoroute_requests_total"));
-    }
-
-    #[test]
-    fn test_invalid_strategy_labels_are_accepted() {
-        let metrics = Metrics::new().unwrap();
-
-        // CURRENT BEHAVIOR: Invalid strategy names are accepted
-        let result = metrics.record_request("fast", "unknown");
-        assert!(
-            result.is_ok(),
-            "Current implementation accepts invalid strategy names"
-        );
-
-        let result = metrics.record_request("fast", "RULE");
-        assert!(result.is_ok(), "Current implementation accepts wrong case");
-
-        let result = metrics.record_request("fast", "");
-        assert!(
-            result.is_ok(),
-            "Current implementation accepts empty strategy"
-        );
-
-        let output = metrics.gather().unwrap();
-        assert!(output.contains("octoroute_requests_total"));
-    }
-
-    #[test]
-    fn test_prometheus_special_chars_in_labels() {
-        let metrics = Metrics::new().unwrap();
-
-        // Test that special characters don't break Prometheus format encoding
-        // Prometheus crate should handle escaping internally
-        let result = metrics.record_request("tier=fast", "rule");
-        assert!(
-            result.is_ok(),
-            "Prometheus crate should handle special chars"
-        );
-
-        // Newlines in labels - Prometheus crate handles this
-        let result = metrics.record_request("fast\n", "rule");
-        assert!(result.is_ok(), "Prometheus crate handles newlines");
-
-        let result = metrics.record_request("fast", "rule\nmalicious");
-        assert!(result.is_ok(), "Prometheus crate handles newlines");
-
-        // Verify gather still produces valid output (no syntax errors)
-        let output = metrics.gather().unwrap();
-        assert!(!output.is_empty(), "Output should be non-empty");
-        assert!(
-            output.contains("# HELP") || output.contains("# TYPE"),
-            "Output should contain Prometheus format headers"
-        );
-    }
+    // ===== Test Coverage Gap #1: FIXED - Type-safe enums prevent invalid labels =====
+    // The tests above (test_tier_enum_prevents_invalid_values, etc.) demonstrate that
+    // invalid labels are NOW IMPOSSIBLE at compile time. The old stringly-typed tests
+    // have been REMOVED because they tested the broken behavior we just fixed.
 
     // ===== Test Coverage Gap #2: Encoding Failures =====
 
@@ -451,7 +483,7 @@ mod tests {
 
         // Record extreme histogram values
         for _ in 0..100 {
-            let _ = metrics.record_routing_duration("rule", f64::MAX);
+            let _ = metrics.record_routing_duration(Strategy::Rule, f64::MAX);
         }
 
         // Should not panic - either succeeds or returns error
@@ -475,7 +507,7 @@ mod tests {
         // Record many metrics to test encoding of large output
         for i in 0..1000 {
             metrics
-                .record_routing_duration("rule", i as f64 / 10.0)
+                .record_routing_duration(Strategy::Rule, i as f64 / 10.0)
                 .unwrap();
         }
 
@@ -496,23 +528,27 @@ mod tests {
         let metrics = Metrics::new().unwrap();
 
         // Valid boundary values
-        assert!(metrics.record_routing_duration("rule", 0.0).is_ok());
-        assert!(metrics.record_routing_duration("rule", 0.1).is_ok());
-        assert!(metrics.record_routing_duration("rule", 1000.0).is_ok());
+        assert!(metrics.record_routing_duration(Strategy::Rule, 0.0).is_ok());
+        assert!(metrics.record_routing_duration(Strategy::Rule, 0.1).is_ok());
+        assert!(
+            metrics
+                .record_routing_duration(Strategy::Rule, 1000.0)
+                .is_ok()
+        );
 
         // Edge cases - behavior depends on Prometheus crate
         // Negative durations
-        let result = metrics.record_routing_duration("rule", -1.0);
+        let result = metrics.record_routing_duration(Strategy::Rule, -1.0);
         // Prometheus may accept or reject negative values
         // Just verify it doesn't panic
         let _ = result;
 
         // NaN - should be handled gracefully
-        let result = metrics.record_routing_duration("rule", f64::NAN);
+        let result = metrics.record_routing_duration(Strategy::Rule, f64::NAN);
         let _ = result;
 
         // Infinity - should be handled gracefully
-        let result = metrics.record_routing_duration("rule", f64::INFINITY);
+        let result = metrics.record_routing_duration(Strategy::Rule, f64::INFINITY);
         let _ = result;
 
         // Should still be able to gather metrics
@@ -533,7 +569,9 @@ mod tests {
 
         for value in boundary_values {
             assert!(
-                metrics.record_routing_duration("rule", value).is_ok(),
+                metrics
+                    .record_routing_duration(Strategy::Rule, value)
+                    .is_ok(),
                 "Failed to record boundary value: {}",
                 value
             );
@@ -557,13 +595,14 @@ mod tests {
         let mut handles = vec![];
 
         // Spawn threads recording different label combinations
-        // This tests concurrent creation of new label combinations (cardinality stress test)
+        // This tests concurrent creation of new label combinations
+        // Now with bounded cardinality (max 9 combinations for 3x3 enums)
         for i in 0..20 {
             let m = Arc::clone(&metrics);
             let handle = thread::spawn(move || {
-                // Rotate through valid tier and strategy values
-                let tiers = ["fast", "balanced", "deep"];
-                let strategies = ["rule", "llm", "hybrid"];
+                // Rotate through valid tier and strategy values using enums
+                let tiers = [Tier::Fast, Tier::Balanced, Tier::Deep];
+                let strategies = [Strategy::Rule, Strategy::Llm, Strategy::Hybrid];
 
                 let tier = tiers[i % 3];
                 let strategy = strategies[i % 3];
@@ -597,5 +636,220 @@ mod tests {
         assert!(output.contains("octoroute_requests_total"));
         assert!(output.contains("octoroute_routing_duration_ms"));
         assert!(output.contains("octoroute_model_invocations_total"));
+    }
+
+    // ===== Issue #2 Fix: Type-Safe Label Enums =====
+    // Tests written FIRST (TDD RED phase)
+
+    #[test]
+    fn test_tier_enum_as_str_conversion() {
+        use super::Tier;
+
+        assert_eq!(Tier::Fast.as_str(), "fast");
+        assert_eq!(Tier::Balanced.as_str(), "balanced");
+        assert_eq!(Tier::Deep.as_str(), "deep");
+    }
+
+    #[test]
+    fn test_strategy_enum_as_str_conversion() {
+        use super::Strategy;
+
+        assert_eq!(Strategy::Rule.as_str(), "rule");
+        assert_eq!(Strategy::Llm.as_str(), "llm");
+        assert_eq!(Strategy::Hybrid.as_str(), "hybrid");
+    }
+
+    #[test]
+    fn test_tier_enum_prevents_invalid_values() {
+        use super::Tier;
+
+        // At compile time, you can ONLY create valid tier values
+        let valid_tiers = vec![Tier::Fast, Tier::Balanced, Tier::Deep];
+
+        // Verify all three exist and convert correctly
+        for tier in valid_tiers {
+            let s = tier.as_str();
+            assert!(s == "fast" || s == "balanced" || s == "deep");
+        }
+
+        // This code would NOT compile (compile-time safety):
+        // let invalid = Tier::from("invalid_tier"); // Does not exist!
+        // let typo = Tier::FAST; // Does not exist!
+    }
+
+    #[test]
+    fn test_strategy_enum_prevents_invalid_values() {
+        use super::Strategy;
+
+        // At compile time, you can ONLY create valid strategy values
+        let valid_strategies = vec![Strategy::Rule, Strategy::Llm, Strategy::Hybrid];
+
+        // Verify all three exist and convert correctly
+        for strategy in valid_strategies {
+            let s = strategy.as_str();
+            assert!(s == "rule" || s == "llm" || s == "hybrid");
+        }
+
+        // This code would NOT compile (compile-time safety):
+        // let invalid = Strategy::from("unknown"); // Does not exist!
+    }
+
+    #[test]
+    fn test_metrics_with_type_safe_enums() {
+        use super::{Strategy, Tier};
+
+        let metrics = Metrics::new().unwrap();
+
+        // Now we pass ENUMS, not strings - impossible to typo!
+        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        metrics
+            .record_request(Tier::Balanced, Strategy::Llm)
+            .unwrap();
+        metrics
+            .record_request(Tier::Deep, Strategy::Hybrid)
+            .unwrap();
+
+        metrics
+            .record_routing_duration(Strategy::Rule, 1.0)
+            .unwrap();
+        metrics
+            .record_routing_duration(Strategy::Llm, 250.0)
+            .unwrap();
+
+        metrics.record_model_invocation(Tier::Fast).unwrap();
+        metrics.record_model_invocation(Tier::Balanced).unwrap();
+
+        let output = metrics.gather().unwrap();
+
+        // Verify correct label values appear
+        assert!(output.contains("tier=\"fast\""));
+        assert!(output.contains("tier=\"balanced\""));
+        assert!(output.contains("tier=\"deep\""));
+        assert!(output.contains("strategy=\"rule\""));
+        assert!(output.contains("strategy=\"llm\""));
+        assert!(output.contains("strategy=\"hybrid\""));
+    }
+
+    #[test]
+    fn test_enum_labels_prevent_cardinality_explosion() {
+        use super::{Strategy, Tier};
+
+        let metrics = Metrics::new().unwrap();
+
+        // OLD BEHAVIOR (strings): These would ALL create separate metrics:
+        // metrics.record_request("fast", "rule").unwrap();   // OK
+        // metrics.record_request("FAST", "rule").unwrap();   // Typo! New metric!
+        // metrics.record_request("Fast", "rule").unwrap();   // Typo! New metric!
+        // metrics.record_request("fasst", "rule").unwrap();  // Typo! New metric!
+        // Result: 4 separate time series = 4x memory usage
+
+        // NEW BEHAVIOR (enums): Only ONE way to express each tier
+        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+
+        // Result: All three calls increment the SAME metric
+        // Maximum possible cardinality: 3 tiers × 3 strategies = 9 combinations
+        // vs unbounded with strings
+
+        let output = metrics.gather().unwrap();
+
+        // Only one "fast" variant exists
+        let fast_count = output.matches("tier=\"fast\"").count();
+        assert!(fast_count > 0, "Should have at least one fast tier metric");
+
+        // NO "FAST", "Fast", "fasst", etc.
+        assert!(!output.contains("tier=\"FAST\""));
+        assert!(!output.contains("tier=\"Fast\""));
+    }
+
+    // ===== Issue #5 Fix: Histogram Value Validation =====
+    // Tests written FIRST (TDD RED phase)
+
+    #[test]
+    fn test_histogram_rejects_nan() {
+        let metrics = Metrics::new().unwrap();
+
+        let result = metrics.record_routing_duration(Strategy::Rule, f64::NAN);
+        assert!(
+            result.is_err(),
+            "Histogram should reject NaN values to prevent metric corruption"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.to_lowercase().contains("finite") || err_msg.to_lowercase().contains("nan"),
+            "Error message should mention NaN or finite requirement"
+        );
+    }
+
+    #[test]
+    fn test_histogram_rejects_positive_infinity() {
+        let metrics = Metrics::new().unwrap();
+
+        let result = metrics.record_routing_duration(Strategy::Rule, f64::INFINITY);
+        assert!(
+            result.is_err(),
+            "Histogram should reject +Infinity to prevent metric corruption"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.to_lowercase().contains("finite") || err_msg.to_lowercase().contains("inf"),
+            "Error message should mention infinity or finite requirement"
+        );
+    }
+
+    #[test]
+    fn test_histogram_rejects_negative_infinity() {
+        let metrics = Metrics::new().unwrap();
+
+        let result = metrics.record_routing_duration(Strategy::Rule, f64::NEG_INFINITY);
+        assert!(
+            result.is_err(),
+            "Histogram should reject -Infinity to prevent metric corruption"
+        );
+    }
+
+    #[test]
+    fn test_histogram_rejects_negative_values() {
+        let metrics = Metrics::new().unwrap();
+
+        let result = metrics.record_routing_duration(Strategy::Rule, -1.0);
+        assert!(
+            result.is_err(),
+            "Histogram should reject negative durations (logically invalid)"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.to_lowercase().contains("negative")
+                || err_msg.to_lowercase().contains("non-negative"),
+            "Error message should mention negative values"
+        );
+    }
+
+    #[test]
+    fn test_histogram_accepts_zero() {
+        let metrics = Metrics::new().unwrap();
+
+        let result = metrics.record_routing_duration(Strategy::Rule, 0.0);
+        assert!(
+            result.is_ok(),
+            "Histogram should accept zero (valid for instant operations)"
+        );
+    }
+
+    #[test]
+    fn test_histogram_accepts_valid_positive_values() {
+        let metrics = Metrics::new().unwrap();
+
+        // Test a range of valid positive values
+        let valid_values = [0.1, 1.0, 10.0, 100.0, 1000.0, f64::MAX];
+        for value in valid_values {
+            let result = metrics.record_routing_duration(Strategy::Rule, value);
+            assert!(
+                result.is_ok(),
+                "Histogram should accept valid positive value: {}",
+                value
+            );
+        }
     }
 }
