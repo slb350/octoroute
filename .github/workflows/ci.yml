@@ -107,7 +107,7 @@ jobs:
           key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Check benchmarks compile
-        run: cargo bench --features metrics --no-run
+        run: cargo bench --no-run
 
   docs:
     name: Documentation Build
