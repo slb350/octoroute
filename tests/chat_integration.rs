@@ -32,8 +32,11 @@ async fn mock_chat_handler(
     // Convert to metadata for routing (test routing logic)
     let metadata = request.to_metadata();
 
-    // Use real hybrid router to test routing decisions
-    let decision = state.router().route(request.message(), &metadata).await?;
+    // Use real router to test routing decisions
+    let decision = state
+        .router()
+        .route(request.message(), &metadata, state.selector())
+        .await?;
 
     // Use real selector to test endpoint selection (with health filtering)
     let no_exclude = octoroute::models::ExclusionSet::new();
@@ -236,14 +239,22 @@ async fn test_chat_endpoint_with_invalid_json() {
 
 #[tokio::test]
 async fn test_chat_endpoint_with_no_available_endpoints() {
-    // Create config with only balanced tier (required for router construction)
-    // but all endpoints will be non-routable to trigger "no available endpoints" error
-    let mut config = create_test_config();
-    config.models.fast.clear();
-    // Keep balanced tier (required for LlmBasedRouter construction)
-    config.models.deep.clear();
-
+    // Create normal config but mark all endpoints as unhealthy
+    // This triggers "no available endpoints" error
+    let config = create_test_config();
     let state = AppState::new(Arc::new(config)).expect("AppState::new should succeed");
+
+    // Mark all endpoints as unhealthy (3 consecutive failures)
+    let health_checker = state.selector().health_checker();
+    for endpoint in ["test-fast-1", "test-balanced-1", "test-deep-1"] {
+        for _ in 0..3 {
+            health_checker
+                .mark_failure(endpoint)
+                .await
+                .expect("mark_failure should succeed");
+        }
+    }
+
     let app = Router::new()
         .route("/chat", post(mock_chat_handler))
         .with_state(state);
@@ -257,7 +268,7 @@ async fn test_chat_endpoint_with_no_available_endpoints() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Should return 500 Internal Server Error when no endpoints available
+    // Should return 500 Internal Server Error when no healthy endpoints available
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -268,7 +279,7 @@ async fn test_chat_endpoint_with_no_available_endpoints() {
     assert!(
         body_str.contains("No available endpoints")
             || body_str.contains("RoutingFailed")
-            || body_str.contains("No healthy")
+            || body_str.contains("no healthy endpoints")
             || body_str.contains("routing"),
         "error message should mention no available endpoints or routing failure, got: {}",
         body_str

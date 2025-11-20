@@ -54,7 +54,21 @@ router_model = "balanced"
     let config: Config = toml::from_str(config_toml).expect("should parse config");
     let config = Arc::new(config);
     let selector = Arc::new(ModelSelector::new(config.clone()));
-    let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
+    let router =
+        HybridRouter::new(config, selector.clone()).expect("HybridRouter::new should succeed");
+
+    // Mark all non-balanced endpoints as unhealthy to force LLM fallback
+    // With the new design, rule router tries default_tier() if no rule matches
+    // To force LLM fallback, we need to make rule router fail by marking all endpoints unhealthy
+    let health_checker = selector.health_checker();
+    for endpoint in ["fast-1", "deep-1"] {
+        for _ in 0..3 {
+            health_checker
+                .mark_failure(endpoint)
+                .await
+                .expect("mark_failure should succeed");
+        }
+    }
 
     // Create metadata that triggers LLM fallback
     // (casual_chat + high importance has no rule match in rule_based.rs)
@@ -66,9 +80,11 @@ router_model = "balanced"
 
     // Call router with user prompt
     // This will:
-    // 1. Try rule-based routing → None (no match for casual_chat + high importance)
-    // 2. Fall back to LLM router → will try to query balanced tier endpoint
-    // 3. Endpoint doesn't exist, so this will fail with an error
+    // 1. Try rule-based routing → no rule match for casual_chat + high importance
+    // 2. Try default_tier() → Balanced (only healthy tier)
+    // 3. But Balanced tier has no healthy endpoints in default_tier check → rule router fails
+    // 4. Fall back to LLM router → will try to query balanced tier endpoint
+    // 5. Endpoint doesn't exist (non-routable), so this will fail with an error
 
     let result = router.route("test message", &metadata).await;
 
@@ -244,14 +260,24 @@ router_model = "balanced"
     let config = Arc::new(config);
     let selector = Arc::new(ModelSelector::new(config.clone()));
 
-    // Mark both balanced endpoints as unhealthy (3 failures each)
+    // Mark Fast and Deep endpoints as unhealthy to force LLM fallback
+    // (Rule router will try default_tier() and fail if only Balanced is healthy)
     let health_checker = selector.health_checker();
+    for _ in 0..3 {
+        health_checker.mark_failure("fast-1").await.unwrap();
+        health_checker.mark_failure("deep-1").await.unwrap();
+    }
+
+    // Also mark both balanced endpoints as unhealthy (3 failures each)
+    // This ensures LLM router will fail when it tries to use Balanced tier
     for _ in 0..3 {
         health_checker.mark_failure("balanced-1").await.unwrap();
         health_checker.mark_failure("balanced-2").await.unwrap();
     }
 
-    // Verify both are unhealthy
+    // Verify all endpoints are unhealthy
+    assert!(!health_checker.is_healthy("fast-1").await);
+    assert!(!health_checker.is_healthy("deep-1").await);
     assert!(!health_checker.is_healthy("balanced-1").await);
     assert!(!health_checker.is_healthy("balanced-2").await);
 
@@ -343,9 +369,15 @@ router_model = "balanced"
     let config = Arc::new(config);
     let selector = Arc::new(ModelSelector::new(config.clone()));
 
+    // Mark Fast and Deep endpoints as unhealthy to force LLM fallback
+    let health_checker = selector.health_checker();
+    for _ in 0..3 {
+        health_checker.mark_failure("fast-1").await.unwrap();
+        health_checker.mark_failure("deep-1").await.unwrap();
+    }
+
     // Mark ONLY balanced-unhealthy as unhealthy (3 failures)
     // Leave balanced-healthy as healthy
-    let health_checker = selector.health_checker();
     for _ in 0..3 {
         health_checker
             .mark_failure("balanced-unhealthy")
@@ -354,6 +386,8 @@ router_model = "balanced"
     }
 
     // Verify health states
+    assert!(!health_checker.is_healthy("fast-1").await);
+    assert!(!health_checker.is_healthy("deep-1").await);
     assert!(!health_checker.is_healthy("balanced-unhealthy").await);
     assert!(health_checker.is_healthy("balanced-healthy").await);
 

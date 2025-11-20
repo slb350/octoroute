@@ -227,6 +227,76 @@ impl ModelSelector {
             TargetModel::Deep => self.config.models.deep.len(),
         }
     }
+
+    /// Get the default tier when no routing rule matches
+    ///
+    /// Selects the tier with the highest priority endpoint across ALL tiers
+    /// (fast, balanced, deep). This is used as a fallback when rule-based routing
+    /// returns None and LLM routing is not available.
+    ///
+    /// # Selection Logic
+    /// 1. Find the maximum priority value across all configured endpoints in all tiers
+    /// 2. Return the first tier (in order: Fast, Balanced, Deep) that has an endpoint with that priority
+    ///
+    /// # Returns
+    /// Returns `Some(TargetModel)` with the tier of the highest-priority endpoint,
+    /// or `None` if no endpoints are configured at all.
+    ///
+    /// # Example
+    /// ```text
+    /// Config:
+    ///   Fast tier: priority 2
+    ///   Balanced tier: (empty)
+    ///   Deep tier: priority 3
+    ///
+    /// default_tier() returns Deep (priority 3 is highest)
+    /// ```
+    pub fn default_tier(&self) -> Option<TargetModel> {
+        // Find max priority across all tiers
+        let all_endpoints = self
+            .config
+            .models
+            .fast
+            .iter()
+            .chain(self.config.models.balanced.iter())
+            .chain(self.config.models.deep.iter());
+
+        let max_priority = all_endpoints.map(|e| e.priority()).max()?;
+
+        // Return first tier with that priority (check in order: Fast, Balanced, Deep)
+        if self
+            .config
+            .models
+            .fast
+            .iter()
+            .any(|e| e.priority() == max_priority)
+        {
+            return Some(TargetModel::Fast);
+        }
+
+        if self
+            .config
+            .models
+            .balanced
+            .iter()
+            .any(|e| e.priority() == max_priority)
+        {
+            return Some(TargetModel::Balanced);
+        }
+
+        if self
+            .config
+            .models
+            .deep
+            .iter()
+            .any(|e| e.priority() == max_priority)
+        {
+            return Some(TargetModel::Deep);
+        }
+
+        // Should never reach here if max_priority exists
+        None
+    }
 }
 
 // Test modules

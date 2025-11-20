@@ -231,9 +231,12 @@ pub async fn handler(
     // Convert to metadata for routing
     let metadata = request.to_metadata();
 
-    // Use hybrid router to determine target tier
-    // Tries rule-based first, falls back to LLM router if needed
-    let decision = state.router().route(request.message(), &metadata).await?;
+    // Use router to determine target tier
+    // Router type determined by config.routing.strategy (rule, llm, or hybrid)
+    let decision = state
+        .router()
+        .route(request.message(), &metadata, state.selector())
+        .await?;
 
     tracing::info!(
         request_id = %request_id,

@@ -1,9 +1,9 @@
 //! HTTP request handlers for Octoroute API
 
-use crate::config::Config;
-use crate::error::AppResult;
+use crate::config::{Config, RoutingStrategy};
+use crate::error::{AppError, AppResult};
 use crate::models::ModelSelector;
-use crate::router::HybridRouter;
+use crate::router::{HybridRouter, LlmBasedRouter, Router, RuleBasedRouter};
 use std::sync::Arc;
 
 pub mod chat;
@@ -15,12 +15,15 @@ pub mod models;
 /// Contains configuration, model selector, and router instances.
 /// All fields are Arc'd for cheap cloning across Axum handlers.
 ///
-/// Uses `HybridRouter` for intelligent routing (rule-based with LLM fallback for ambiguous cases).
+/// The router type is determined by `config.routing.strategy`:
+/// - `Rule`: Only rule-based routing (no balanced tier required)
+/// - `Llm`: Only LLM-based routing (balanced tier required)
+/// - `Hybrid`: Rule-based with LLM fallback (balanced tier required)
 #[derive(Clone)]
 pub struct AppState {
     config: Arc<Config>,
     selector: Arc<ModelSelector>,
-    router: Arc<HybridRouter>,
+    router: Arc<Router>,
 }
 
 impl AppState {
@@ -29,10 +32,55 @@ impl AppState {
     /// Accepts `Arc<Config>` to avoid unnecessary cloning when the configuration
     /// is already wrapped in an Arc.
     ///
-    /// Returns an error if router construction fails (e.g., no balanced tier endpoints).
+    /// # Errors
+    /// Returns an error if:
+    /// - Llm/Hybrid strategy is selected but no balanced tier endpoints are configured
+    /// - Router construction fails for any other reason
     pub fn new(config: Arc<Config>) -> AppResult<Self> {
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router = Arc::new(HybridRouter::new(config.clone(), selector.clone())?);
+
+        // Construct router based on config.routing.strategy
+        let router = match config.routing.strategy {
+            RoutingStrategy::Rule => {
+                // Rule-only routing: no balanced tier required
+                tracing::info!("Initializing rule-based router (no LLM routing)");
+                Arc::new(Router::Rule(RuleBasedRouter::new()))
+            }
+            RoutingStrategy::Llm => {
+                // LLM-only routing: balanced tier required
+                tracing::info!("Initializing LLM-based router (requires balanced tier)");
+                if config.models.balanced.is_empty() {
+                    return Err(AppError::Config(
+                        "LLM routing strategy selected but no balanced tier endpoints configured. \
+                        Either add balanced tier endpoints or change routing.strategy to 'rule'."
+                            .to_string(),
+                    ));
+                }
+                let llm_router = LlmBasedRouter::new(selector.clone())?;
+                Arc::new(Router::Llm(llm_router))
+            }
+            RoutingStrategy::Hybrid => {
+                // Hybrid routing: balanced tier required for LLM fallback
+                tracing::info!(
+                    "Initializing hybrid router (rule-based with LLM fallback, requires balanced tier)"
+                );
+                if config.models.balanced.is_empty() {
+                    return Err(AppError::Config(
+                        "Hybrid routing strategy selected but no balanced tier endpoints configured. \
+                        Either add balanced tier endpoints or change routing.strategy to 'rule'."
+                            .to_string(),
+                    ));
+                }
+                let hybrid_router = HybridRouter::new(config.clone(), selector.clone())?;
+                Arc::new(Router::Hybrid(hybrid_router))
+            }
+            RoutingStrategy::Tool => {
+                return Err(AppError::Config(
+                    "Tool-based routing is not yet implemented. Use 'rule', 'llm', or 'hybrid'."
+                        .to_string(),
+                ));
+            }
+        };
 
         Ok(Self {
             config,
@@ -51,8 +99,8 @@ impl AppState {
         &self.selector
     }
 
-    /// Get reference to the hybrid router
-    pub fn router(&self) -> &HybridRouter {
+    /// Get reference to the router
+    pub fn router(&self) -> &Router {
         &self.router
     }
 }

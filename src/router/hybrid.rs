@@ -6,9 +6,7 @@
 use crate::config::Config;
 use crate::error::AppResult;
 use crate::models::selector::ModelSelector;
-use crate::router::{
-    LlmBasedRouter, RouteMetadata, RoutingDecision, RoutingStrategy, RuleBasedRouter,
-};
+use crate::router::{LlmBasedRouter, RouteMetadata, RoutingDecision, RuleBasedRouter};
 use std::sync::Arc;
 
 /// Hybrid router combining rule-based and LLM-based strategies
@@ -18,6 +16,7 @@ use std::sync::Arc;
 pub struct HybridRouter {
     rule_router: RuleBasedRouter,
     llm_router: LlmBasedRouter,
+    selector: Arc<ModelSelector>,
 }
 
 impl HybridRouter {
@@ -28,7 +27,8 @@ impl HybridRouter {
     pub fn new(_config: Arc<Config>, selector: Arc<ModelSelector>) -> AppResult<Self> {
         Ok(Self {
             rule_router: RuleBasedRouter::new(),
-            llm_router: LlmBasedRouter::new(selector)?,
+            llm_router: LlmBasedRouter::new(selector.clone())?,
+            selector,
         })
     }
 
@@ -55,27 +55,39 @@ impl HybridRouter {
         meta: &RouteMetadata,
     ) -> AppResult<RoutingDecision> {
         // Try rule-based first (fast path)
-        if let Some(target) = self.rule_router.route(meta) {
-            tracing::info!(
-                target = ?target,
-                strategy = "rule",
-                token_estimate = meta.token_estimate,
-                importance = ?meta.importance,
-                task_type = ?meta.task_type,
-                "Route decision made via rule-based routing"
-            );
-            return Ok(RoutingDecision::new(target, RoutingStrategy::Rule));
+        // Rule router now tries matching rules, and falls back to default_tier() if no match
+        let rule_result = self
+            .rule_router
+            .route(user_prompt, meta, &self.selector)
+            .await;
+
+        match rule_result {
+            Ok(decision) => {
+                // Rule router succeeded (either via rule match or default tier)
+                tracing::info!(
+                    target = ?decision.target(),
+                    strategy = ?decision.strategy(),
+                    token_estimate = meta.token_estimate,
+                    importance = ?meta.importance,
+                    task_type = ?meta.task_type,
+                    "Route decision made via rule-based routing"
+                );
+                return Ok(decision);
+            }
+            Err(_) => {
+                // Rule router failed (no configured endpoints at all)
+                // Fall back to LLM router
+                tracing::debug!(
+                    token_estimate = meta.token_estimate,
+                    importance = ?meta.importance,
+                    task_type = ?meta.task_type,
+                    "Rule router failed (no endpoints), delegating to LLM router"
+                );
+            }
         }
 
-        // Fall back to LLM router for ambiguous cases
-        tracing::debug!(
-            token_estimate = meta.token_estimate,
-            importance = ?meta.importance,
-            task_type = ?meta.task_type,
-            "No rule matched, delegating to LLM router"
-        );
-
-        let target = self
+        // Fall back to LLM router
+        let decision = self
             .llm_router
             .route(user_prompt, meta)
             .await
@@ -86,21 +98,21 @@ impl HybridRouter {
                     task_type = ?meta.task_type,
                     importance = ?meta.importance,
                     token_estimate = meta.token_estimate,
-                    "LLM router failed after rule router returned None"
+                    "LLM router failed after rule router failed"
                 );
                 e
             })?;
 
         tracing::info!(
-            target = ?target,
-            strategy = "llm",
+            target = ?decision.target(),
+            strategy = ?decision.strategy(),
             token_estimate = meta.token_estimate,
             importance = ?meta.importance,
             task_type = ?meta.task_type,
             "Route decision made via LLM-based routing"
         );
 
-        Ok(RoutingDecision::new(target, RoutingStrategy::Llm))
+        Ok(decision)
     }
 }
 
@@ -261,23 +273,26 @@ mod tests {
             task_type: TaskType::CasualChat,
         };
 
-        // 2. Mark all balanced endpoints unhealthy (3 consecutive failures)
+        // 2. Mark ALL endpoints unhealthy (3 consecutive failures each)
+        // This ensures both rule router (via default_tier) and LLM router fail
         let health_checker = selector.health_checker();
-        for _ in 0..3 {
-            health_checker
-                .mark_failure("test-balanced")
-                .await
-                .expect("mark_failure should succeed");
+        for endpoint_name in ["test-fast", "test-balanced", "test-deep"] {
+            for _ in 0..3 {
+                health_checker
+                    .mark_failure(endpoint_name)
+                    .await
+                    .expect("mark_failure should succeed");
+            }
         }
 
         // 3. Attempt routing - should fail because:
-        //    - Rule router returns None (ambiguous case)
-        //    - LLM router has no healthy balanced endpoints
+        //    - Rule router: no rule matches AND default_tier() finds no healthy endpoints
+        //    - LLM router: no healthy balanced endpoints
         let result = router.route("test prompt", &meta).await;
 
         assert!(
             result.is_err(),
-            "Should fail when both rule and LLM routing fail"
+            "Should fail when all endpoints are unhealthy"
         );
 
         // 4. Verify error message is informative
@@ -288,7 +303,8 @@ mod tests {
         assert!(
             err_msg.contains("routing")
                 || err_msg.contains("router")
-                || err_msg.contains("available"),
+                || err_msg.contains("available")
+                || err_msg.contains("healthy"),
             "Error should indicate routing failure, got: {}",
             err_msg
         );

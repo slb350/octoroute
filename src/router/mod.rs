@@ -10,6 +10,7 @@ pub use hybrid::HybridRouter;
 pub use llm_based::LlmBasedRouter;
 pub use rule_based::RuleBasedRouter;
 
+use crate::error::AppResult;
 use serde::{Deserialize, Serialize};
 
 /// Target model selection (generic tiers)
@@ -140,6 +141,58 @@ impl RouteMetadata {
     /// Estimate token count from a prompt string (simple heuristic: chars / 4)
     pub fn estimate_tokens(prompt: &str) -> usize {
         prompt.chars().count() / 4
+    }
+}
+
+/// Router type enum supporting different routing strategies
+///
+/// Enables clean separation of router types and allows conditional construction
+/// based on configuration. Each variant wraps its corresponding router implementation.
+///
+/// # Configuration-Driven Construction
+/// The router type is determined by `config.routing.strategy`:
+/// - `Rule`: Only rule-based routing (no LLM routing, no balanced tier required)
+/// - `Llm`: Only LLM-based routing (requires balanced tier configured)
+/// - `Hybrid`: Rule-based with LLM fallback (requires balanced tier configured)
+///
+/// This design allows deployments to opt-out of LLM routing (and its balanced tier requirement)
+/// by setting `strategy = "rule"` in configuration.
+pub enum Router {
+    /// Rule-based router (deterministic, fast, no LLM required)
+    Rule(RuleBasedRouter),
+    /// LLM-based router (intelligent, requires balanced tier)
+    Llm(LlmBasedRouter),
+    /// Hybrid router (rule-based with LLM fallback, requires balanced tier)
+    Hybrid(HybridRouter),
+}
+
+impl Router {
+    /// Route a request using the configured strategy
+    ///
+    /// Delegates to the appropriate router implementation based on the variant.
+    /// All routers return a RoutingDecision containing the target tier and
+    /// the strategy that made the decision.
+    ///
+    /// # Arguments
+    /// * `user_prompt` - The user's prompt/message
+    /// * `meta` - Request metadata (token estimate, importance, task type)
+    /// * `selector` - Model selector (needed for rule-based default tier)
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - LLM routing fails (network error, no healthy balanced endpoints, etc.)
+    /// - Rule routing fails and no default tier is available
+    pub async fn route(
+        &self,
+        user_prompt: &str,
+        meta: &RouteMetadata,
+        selector: &crate::models::ModelSelector,
+    ) -> AppResult<RoutingDecision> {
+        match self {
+            Router::Rule(r) => r.route(user_prompt, meta, selector).await,
+            Router::Llm(r) => r.route(user_prompt, meta).await,
+            Router::Hybrid(r) => r.route(user_prompt, meta).await,
+        }
     }
 }
 

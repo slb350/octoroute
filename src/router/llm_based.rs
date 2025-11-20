@@ -25,7 +25,7 @@
 use crate::error::{AppError, AppResult};
 use crate::models::endpoint_name::ExclusionSet;
 use crate::models::{BalancedSelector, ModelSelector};
-use crate::router::{RouteMetadata, TargetModel};
+use crate::router::{RouteMetadata, RoutingDecision, RoutingStrategy, TargetModel};
 use std::sync::Arc;
 
 /// Errors specific to LLM-based routing decisions
@@ -256,7 +256,11 @@ impl LlmBasedRouter {
     /// If the returned Future is dropped (cancelled), in-flight LLM queries will be
     /// aborted but endpoint health state remains consistent (mark_success/mark_failure
     /// only called after query completes).
-    pub async fn route(&self, user_prompt: &str, meta: &RouteMetadata) -> AppResult<TargetModel> {
+    pub async fn route(
+        &self,
+        user_prompt: &str,
+        meta: &RouteMetadata,
+    ) -> AppResult<RoutingDecision> {
         // Build router prompt
         let router_prompt = Self::build_router_prompt(user_prompt, meta);
 
@@ -365,7 +369,7 @@ impl LlmBasedRouter {
                         "Router LLM successfully determined target model"
                     );
 
-                    return Ok(target_model);
+                    return Ok(RoutingDecision::new(target_model, RoutingStrategy::Llm));
                 }
                 Err(e) => {
                     // Classify error as retryable or systemic
