@@ -10,6 +10,9 @@ pub mod chat;
 pub mod health;
 pub mod models;
 
+#[cfg(feature = "metrics")]
+pub mod metrics;
+
 /// Application state shared across all handlers
 ///
 /// Contains configuration, model selector, and router instances.
@@ -19,11 +22,15 @@ pub mod models;
 /// - `Rule`: Only rule-based routing (no balanced tier required)
 /// - `Llm`: Only LLM-based routing (balanced tier required)
 /// - `Hybrid`: Rule-based with LLM fallback (balanced tier required)
+///
+/// When the `metrics` feature is enabled, also contains a Prometheus metrics collector.
 #[derive(Clone)]
 pub struct AppState {
     config: Arc<Config>,
     selector: Arc<ModelSelector>,
     router: Arc<Router>,
+    #[cfg(feature = "metrics")]
+    metrics: Arc<crate::metrics::Metrics>,
 }
 
 impl AppState {
@@ -82,10 +89,20 @@ impl AppState {
             }
         };
 
+        #[cfg(feature = "metrics")]
+        let metrics = {
+            let m = crate::metrics::Metrics::new()
+                .map_err(|e| AppError::Internal(format!("Failed to initialize metrics: {}", e)))?;
+            tracing::info!("Metrics collection enabled");
+            Arc::new(m)
+        };
+
         Ok(Self {
             config,
             selector,
             router,
+            #[cfg(feature = "metrics")]
+            metrics,
         })
     }
 
@@ -102,6 +119,23 @@ impl AppState {
     /// Get reference to the router
     pub fn router(&self) -> &Router {
         &self.router
+    }
+
+    /// Get reference to the metrics collector (if metrics feature is enabled)
+    ///
+    /// Returns `Some(Arc<Metrics>)` when compiled with `--features metrics`,
+    /// otherwise returns `None`.
+    #[cfg(feature = "metrics")]
+    pub fn metrics(&self) -> Option<Arc<crate::metrics::Metrics>> {
+        Some(self.metrics.clone())
+    }
+
+    /// Get reference to the metrics collector (if metrics feature is enabled)
+    ///
+    /// Returns `None` when compiled without the `metrics` feature.
+    #[cfg(not(feature = "metrics"))]
+    pub fn metrics(&self) -> Option<Arc<crate::metrics::Metrics>> {
+        None
     }
 }
 
