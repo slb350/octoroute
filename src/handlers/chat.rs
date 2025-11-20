@@ -289,9 +289,13 @@ pub async fn handler(
     // - Request-scoped exclusion ensures no wasted retries on known-bad endpoints in THIS request
     // - Global health tracking prevents all requests from hitting persistently failing endpoints
     // - Without request-scoped: Could retry the same failed endpoint on attempts 1, 2, 3
-    //   (Example assumes equal-weight endpoints: With 2 endpoints where 1 is down, there's a
+    //   (Example with **equal-weight** endpoints: With 2 endpoints where 1 is down, there's a
     //   50% chance per attempt of selecting the broken one. Probability of hitting it on
-    //   all 3 attempts: 0.5³ = 12.5%. Note: Probability varies with weighted selection.
+    //   all 3 attempts: 0.5³ = 12.5%.
+    //
+    //   **IMPORTANT**: This probability changes dramatically with weighted selection. If one
+    //   endpoint has weight=10 and the other weight=1, the high-weight endpoint will be
+    //   selected ~91% of the time, making the failure probability much higher.
     //   Request-scoped exclusion eliminates this waste by forcing different endpoints.)
     // - Without global health: Every request would independently discover failing endpoints
     //
@@ -569,25 +573,26 @@ async fn try_query_model(
         "Starting model query"
     );
 
-    // **PER-ATTEMPT TIMEOUT**: Each retry gets a fresh timeout budget.
+    // **TIMEOUT IS PER-ATTEMPT**: Each retry gets its own independent timeout budget.
+    // The timeout applies to EACH attempt, not cumulative across retries.
     //
     // **TOTAL WORST-CASE LATENCY**: With MAX_RETRIES=3 and 30s timeout:
-    // - Total latency = 3 attempts × 30s = **90 seconds maximum**
-    // - Formula: MAX_RETRIES × timeout_seconds
+    // - Attempt 1: up to 30s → retry
+    // - Attempt 2: up to 30s more (60s total elapsed) → retry
+    // - Attempt 3: up to 30s more (90s total elapsed) → final failure
+    // - **Maximum total latency: 90 seconds** (3 attempts × 30s timeout per attempt)
     //
-    // Example timing breakdown (30s timeout):
-    // - Attempt 1 times out at 30s → retry
-    // - Attempt 2 times out at 60s total (30s + 30s) → retry
-    // - Attempt 3 times out at 90s total (30s + 30s + 30s) → final failure
-    //
-    // The timeout wraps the ENTIRE operation: connection establishment,
+    // The timeout wraps the ENTIRE operation per attempt: connection establishment,
     // query initiation, and streaming all response chunks.
     //
     // **BILLING IMPACT**: When timeout triggers, Tokio cancels the Future, which drops the HTTP
     // stream and closes the connection to the endpoint. However, the endpoint may continue processing
     // the request (we don't send HTTP cancellation signals), so timeouts are billed as full requests
-    // by most LLM APIs. If you're seeing frequent timeouts, consider increasing timeout_seconds in
-    // the configuration rather than accepting higher retry costs.
+    // by most LLM APIs.
+    //
+    // Users pay for 90 seconds of API time in worst-case (3 timeouts × 30s), even though each attempt
+    // only consumed ~5 seconds before timing out. If you're seeing frequent timeouts, consider
+    // increasing timeout_seconds in the configuration rather than accepting higher retry costs.
     let timeout_duration = Duration::from_secs(timeout_seconds);
 
     use futures::StreamExt;

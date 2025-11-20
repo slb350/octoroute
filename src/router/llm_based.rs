@@ -134,19 +134,21 @@ impl LlmRouterError {
 /// ## Expected Response Format
 ///
 /// Router responses should be "FAST", "BALANCED", or "DEEP" (~10 bytes).
-/// While the parser can extract keywords from verbose responses (e.g., "I recommend
-/// BALANCED because..."), this limit is intentionally set to catch serious LLM
-/// malfunctions:
-/// - LLM generating essays instead of classifications (>100 words indicates malfunction)
-/// - Infinite generation loops
-/// - Prompt injection attacks attempting to overwhelm the parser
+/// The parser correctly extracts keywords from verbose responses (e.g., "I recommend
+/// BALANCED because..."), so this 1KB limit is defensive: it prevents unbounded memory
+/// growth from runaway generation while supporting legitimate verbose responses.
+///
+/// Responses exceeding 1KB may indicate:
+/// - LLM generating essays instead of single-word classifications (>100 words)
+/// - Runaway generation (repeating text, hallucination loops)
+/// - Prompt injection attempts attempting to overwhelm the parser
 ///
 /// ## Rationale for 1KB Limit
 ///
-/// The limit is 100x larger than expected (~10 bytes) to accommodate minor verbosity
-/// while still catching runaway generation. Legitimate verbose responses (100-200 bytes)
-/// are supported, but multi-paragraph responses indicate the LLM is not following
-/// instructions.
+/// The limit is 100x larger than expected (~10 bytes) to accommodate verbose responses
+/// while preventing unbounded memory growth. Legitimate verbose responses (100-200 bytes)
+/// are fully supported and parsed correctly. Multi-paragraph responses indicate the LLM
+/// is not following instructions or has entered a runaway generation loop.
 const MAX_ROUTER_RESPONSE: usize = 1024;
 
 /// LLM-powered router that uses a model to make routing decisions
@@ -241,6 +243,8 @@ impl LlmBasedRouter {
     /// - Makes HTTP requests to LLM endpoints (network I/O, ~10-100ms connection overhead)
     /// - Awaits endpoint selection from ModelSelector (async lock acquisition, <1ms)
     /// - Performs health tracking mark_success/mark_failure (async lock, <1ms)
+    ///
+    /// Total typical latency: ~110-600ms (dominated by LLM inference)
     ///
     /// # Retry Logic & Failure Tracking (Dual-Level)
     /// Implements sophisticated retry with TWO failure tracking mechanisms:
@@ -677,8 +681,12 @@ impl LlmBasedRouter {
             let before_is_boundary = if pos == 0 {
                 true
             } else {
-                // Check if previous character is non-alphanumeric (whitespace or punctuation).
-                // Punctuation counts as word boundary: "FAST-TRACK" WILL match "FAST"
+                // Check if previous character is non-alphanumeric (whitespace, punctuation, or non-ASCII).
+                // Word boundary definition: Any character where is_ascii_alphanumeric() == false.
+                // Examples:
+                //   - "FAST-TRACK" matches "FAST" (dash is boundary)
+                //   - "你FAST好" matches "FAST" (Chinese chars are boundary)
+                //   - "steadFAST" does NOT match "FAST" (lowercase 'd' is alphanumeric)
                 text_bytes[pos - 1].is_ascii_whitespace()
                     || !text_bytes[pos - 1].is_ascii_alphanumeric()
             };
@@ -688,8 +696,8 @@ impl LlmBasedRouter {
             let after_is_boundary = if after_pos >= text.len() {
                 true
             } else {
-                // Check if next character is non-alphanumeric (whitespace or punctuation).
-                // Punctuation counts as word boundary: "FAST-TRACK" WILL match "FAST"
+                // Check if next character is non-alphanumeric (whitespace, punctuation, or non-ASCII).
+                // Word boundary definition: Any character where is_ascii_alphanumeric() == false.
                 text_bytes[after_pos].is_ascii_whitespace()
                     || !text_bytes[after_pos].is_ascii_alphanumeric()
             };
@@ -705,9 +713,14 @@ impl LlmBasedRouter {
     /// Parse LLM response to extract routing decision
     ///
     /// Uses **word-boundary-aware fuzzy matching** with refusal detection to extract
-    /// FAST, BALANCED, or DEEP. Prevents false positives like "FAST" in "BREAKFAST" by
-    /// requiring keywords to be surrounded by word boundaries (whitespace, punctuation,
-    /// or start/end of string). See `find_word_boundary()` for matching logic.
+    /// FAST, BALANCED, or DEEP. Word boundaries are critical because:
+    /// - Without them, "BREAKFAST" would match "FAST" (substring match)
+    /// - Without them, "STEADFAST" would match "FAST" (substring match)
+    /// - With boundaries, only whole-word matches succeed
+    ///
+    /// Prevents false positives like "FAST" in "BREAKFAST" by requiring keywords
+    /// to be surrounded by word boundaries (whitespace, punctuation, or start/end of string).
+    /// See `find_word_boundary()` for matching logic.
     ///
     /// Returns an error if response is empty, unparseable, or indicates refusal/error.
     ///

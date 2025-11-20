@@ -44,8 +44,10 @@ impl HybridRouter {
     ///
     /// # Why This Order?
     /// - Rule-based first: Zero-latency for obvious cases, saves LLM calls for ~70-80% of requests
-    /// - LLM fallback: Prevents defaulting to BALANCED for ambiguous cases (which could waste
-    ///   compute by routing complex analysis to medium model)
+    /// - LLM fallback: Prevents defaulting to BALANCED for ambiguous cases. For example,
+    ///   "Write a 10,000-word analysis of quantum computing" has no matching rule (high tokens,
+    ///   ambiguous task type). Defaulting to BALANCED would waste compute and produce poor results.
+    ///   LLM router intelligently routes to DEEP, justifying the 100-500ms latency overhead.
     ///
     /// Returns a RoutingDecision containing the target model tier and
     /// the strategy that was used (Rule or Llm).
