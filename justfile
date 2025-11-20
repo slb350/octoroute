@@ -62,15 +62,10 @@ clippy-fix:
     @echo "Running clippy with auto-fix..."
     cargo clippy --all-targets --all-features --fix --allow-dirty
 
-# Build optimized release binary
+# Build optimized release binary (metrics always enabled)
 build-release:
     @echo "Building release binary..."
     cargo build --release
-
-# Build with metrics feature enabled
-build-metrics:
-    @echo "Building with metrics feature..."
-    cargo build --release --features metrics
 
 # Build all features
 build-all:
