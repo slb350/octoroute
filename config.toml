@@ -68,3 +68,10 @@ log_level = "info"
 # Enable Prometheus metrics endpoint
 metrics_enabled = false
 metrics_port = 9090
+
+# Per-tier timeout overrides (optional)
+# If not specified, server.request_timeout_seconds is used
+[timeouts]
+fast = 15       # 8B models respond quickly
+balanced = 30   # 30B models moderate speed
+deep = 60       # 120B models need more time

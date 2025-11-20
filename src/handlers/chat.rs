@@ -380,10 +380,12 @@ pub async fn handler(
         );
 
         // Try to query this endpoint
+        // Use per-tier timeout if configured, otherwise use global default
+        let timeout_seconds = state.config().timeout_for_tier(decision.target());
         match try_query_model(
             &endpoint,
             &request,
-            state.config().server.request_timeout_seconds,
+            timeout_seconds,
             request_id,
             attempt,
             MAX_RETRIES,

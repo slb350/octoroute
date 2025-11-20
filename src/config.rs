@@ -14,6 +14,8 @@ pub struct Config {
     pub routing: RoutingConfig,
     #[serde(default)]
     pub observability: ObservabilityConfig,
+    #[serde(default)]
+    pub timeouts: TimeoutsConfig,
 }
 
 /// Server configuration
@@ -152,6 +154,23 @@ fn default_metrics_port() -> u16 {
     9090
 }
 
+/// Per-tier timeout overrides
+///
+/// Allows configuring different timeouts for each model tier.
+/// If a tier timeout is None, the global `server.request_timeout_seconds` is used.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct TimeoutsConfig {
+    /// Timeout for fast tier (8B models) in seconds
+    #[serde(default)]
+    pub fast: Option<u64>,
+    /// Timeout for balanced tier (30B models) in seconds
+    #[serde(default)]
+    pub balanced: Option<u64>,
+    /// Timeout for deep tier (120B models) in seconds
+    #[serde(default)]
+    pub deep: Option<u64>,
+}
+
 impl Config {
     /// Load configuration from a TOML file
     pub fn from_file<P: AsRef<Path>>(path: P) -> crate::error::AppResult<Self> {
@@ -171,6 +190,19 @@ impl Config {
         })?;
         config.validate()?;
         Ok(config)
+    }
+
+    /// Get timeout for a specific model tier
+    ///
+    /// Returns the per-tier timeout if configured, otherwise falls back to
+    /// the global `server.request_timeout_seconds`.
+    pub fn timeout_for_tier(&self, tier: crate::router::TargetModel) -> u64 {
+        let tier_timeout = match tier {
+            crate::router::TargetModel::Fast => self.timeouts.fast,
+            crate::router::TargetModel::Balanced => self.timeouts.balanced,
+            crate::router::TargetModel::Deep => self.timeouts.deep,
+        };
+        tier_timeout.unwrap_or(self.server.request_timeout_seconds)
     }
 
     /// Validate configuration after parsing
@@ -302,6 +334,28 @@ impl Config {
                 "Configuration error: request_timeout_seconds cannot exceed 300 seconds (5 minutes), got {}",
                 self.server.request_timeout_seconds
             )));
+        }
+
+        // Validate per-tier timeout overrides
+        for (tier_name, timeout_opt) in [
+            ("fast", self.timeouts.fast),
+            ("balanced", self.timeouts.balanced),
+            ("deep", self.timeouts.deep),
+        ] {
+            if let Some(timeout) = timeout_opt {
+                if timeout == 0 {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: timeouts.{} must be greater than 0, got {}",
+                        tier_name, timeout
+                    )));
+                }
+                if timeout > 300 {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: timeouts.{} cannot exceed 300 seconds (5 minutes), got {}",
+                        tier_name, timeout
+                    )));
+                }
+            }
         }
 
         Ok(())
@@ -698,5 +752,190 @@ metrics_port = 3000
         // Test typical value (30 seconds)
         config.server.request_timeout_seconds = 30;
         assert!(config.validate().is_ok());
+    }
+
+    // ===== Per-Tier Timeout Tests (RED phase) =====
+
+    #[test]
+    fn test_config_parses_per_tier_timeouts() {
+        let config_with_timeouts = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "test-fast"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+
+[[models.balanced]]
+name = "test-balanced"
+base_url = "http://localhost:1235/v1"
+max_tokens = 8192
+
+[[models.deep]]
+name = "test-deep"
+base_url = "http://localhost:1236/v1"
+max_tokens = 16384
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+
+[timeouts]
+fast = 15
+balanced = 30
+deep = 60
+"#;
+
+        let config =
+            Config::from_str(config_with_timeouts).expect("should parse config with timeouts");
+        assert_eq!(config.timeouts.fast, Some(15));
+        assert_eq!(config.timeouts.balanced, Some(30));
+        assert_eq!(config.timeouts.deep, Some(60));
+    }
+
+    #[test]
+    fn test_config_timeouts_optional_fields_default_to_none() {
+        let config_partial_timeouts = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[[models.fast]]
+name = "test-fast"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+
+[[models.balanced]]
+name = "test-balanced"
+base_url = "http://localhost:1235/v1"
+max_tokens = 8192
+
+[[models.deep]]
+name = "test-deep"
+base_url = "http://localhost:1236/v1"
+max_tokens = 16384
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+
+[timeouts]
+fast = 15
+# balanced and deep use global default
+"#;
+
+        let config =
+            Config::from_str(config_partial_timeouts).expect("should parse partial timeouts");
+        assert_eq!(config.timeouts.fast, Some(15));
+        assert_eq!(config.timeouts.balanced, None); // Uses global default
+        assert_eq!(config.timeouts.deep, None); // Uses global default
+    }
+
+    #[test]
+    fn test_config_timeouts_section_optional() {
+        // Config without [timeouts] section should work
+        let config = Config::from_str(TEST_CONFIG).expect("should parse without timeouts section");
+        assert_eq!(config.timeouts.fast, None);
+        assert_eq!(config.timeouts.balanced, None);
+        assert_eq!(config.timeouts.deep, None);
+    }
+
+    #[test]
+    fn test_config_validation_per_tier_timeout_too_low_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.timeouts.fast = Some(0); // Invalid: zero timeout
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("fast") && err_msg.contains("timeout"));
+    }
+
+    #[test]
+    fn test_config_validation_per_tier_timeout_too_high_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.timeouts.deep = Some(301); // Invalid: exceeds 300 second limit
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("deep") && err_msg.contains("300"));
+    }
+
+    #[test]
+    fn test_config_validation_per_tier_timeouts_valid_succeeds() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.timeouts.fast = Some(15);
+        config.timeouts.balanced = Some(30);
+        config.timeouts.deep = Some(60);
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_timeout_for_tier_uses_override() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.server.request_timeout_seconds = 30; // Global default
+        config.timeouts.fast = Some(15);
+        config.timeouts.balanced = Some(45);
+        config.timeouts.deep = Some(60);
+
+        // Should use per-tier overrides
+        assert_eq!(
+            config.timeout_for_tier(crate::router::TargetModel::Fast),
+            15
+        );
+        assert_eq!(
+            config.timeout_for_tier(crate::router::TargetModel::Balanced),
+            45
+        );
+        assert_eq!(
+            config.timeout_for_tier(crate::router::TargetModel::Deep),
+            60
+        );
+    }
+
+    #[test]
+    fn test_config_timeout_for_tier_uses_global_default() {
+        let config = Config::from_str(TEST_CONFIG).unwrap();
+        // No per-tier overrides, should use global default (30s)
+
+        assert_eq!(
+            config.timeout_for_tier(crate::router::TargetModel::Fast),
+            30
+        );
+        assert_eq!(
+            config.timeout_for_tier(crate::router::TargetModel::Balanced),
+            30
+        );
+        assert_eq!(
+            config.timeout_for_tier(crate::router::TargetModel::Deep),
+            30
+        );
+    }
+
+    #[test]
+    fn test_config_timeout_for_tier_mixed_overrides() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        config.server.request_timeout_seconds = 40; // Global default
+        config.timeouts.fast = Some(20); // Override only fast tier
+
+        // Fast tier uses override
+        assert_eq!(
+            config.timeout_for_tier(crate::router::TargetModel::Fast),
+            20
+        );
+        // Balanced and deep use global default
+        assert_eq!(
+            config.timeout_for_tier(crate::router::TargetModel::Balanced),
+            40
+        );
+        assert_eq!(
+            config.timeout_for_tier(crate::router::TargetModel::Deep),
+            40
+        );
     }
 }
