@@ -6,10 +6,8 @@
 pub mod config;
 pub mod error;
 pub mod handlers;
+pub mod metrics;
 pub mod middleware;
 pub mod models;
 pub mod router;
 pub mod telemetry;
-
-#[cfg(feature = "metrics")]
-pub mod metrics;

@@ -39,19 +39,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown_state = state.clone();
 
     // Build router with state and middleware
-    let mut app = Router::new()
+    let app = Router::new()
         .route("/health", get(handlers::health::handler))
         .route("/chat", post(handlers::chat::handler))
-        .route("/models", get(handlers::models::handler));
-
-    // Add /metrics endpoint if metrics feature is enabled
-    #[cfg(feature = "metrics")]
-    {
-        app = app.route("/metrics", get(handlers::metrics::handler));
-        tracing::info!("Metrics endpoint enabled at /metrics");
-    }
-
-    let app = app
+        .route("/models", get(handlers::models::handler))
+        .route("/metrics", get(handlers::metrics::handler))
         .with_state(state)
         .layer(middleware::from_fn(request_id_middleware));
 
@@ -73,8 +65,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Health check available at http://{}/health", addr);
     tracing::info!("Chat endpoint available at http://{}/chat", addr);
     tracing::info!("Models status available at http://{}/models", addr);
-
-    #[cfg(feature = "metrics")]
     tracing::info!("Metrics endpoint available at http://{}/metrics", addr);
 
     // Start server with graceful shutdown

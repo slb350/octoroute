@@ -874,12 +874,10 @@ impl Metrics {
 ```rust
 // Expose /metrics endpoint for Prometheus scraping
 pub async fn handler(State(state): State<AppState>) -> (StatusCode, String) {
-    match state.metrics() {
-        Some(metrics) => match metrics.gather() {
-            Ok(output) => (StatusCode::OK, output),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to gather metrics: {}", e)),
-        },
-        None => (StatusCode::NOT_FOUND, "Metrics not enabled. Build with --features metrics".to_string()),
+    let metrics = state.metrics();
+    match metrics.gather() {
+        Ok(output) => (StatusCode::OK, output),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to gather metrics: {}", e)),
     }
 }
 ```
@@ -1170,7 +1168,7 @@ proptest! {
 
 **Final Stats**:
 - Comprehensive test suite (unit tests + integration tests)
-  - Run `cargo test --all --features metrics` to verify current count
+  - Run `cargo test --all` to verify current count
   - Test suite grows as new features are added
 - Zero clippy warnings
 - Zero tech debt
@@ -1242,13 +1240,8 @@ router_model = "balanced"
 # Log level: "trace", "debug", "info", "warn", "error"
 log_level = "info"
 
-# Metrics configuration (requires --features metrics)
-# Exposes /metrics endpoint in Prometheus format via OpenTelemetry
-metrics_enabled = false
-
-# Optional: OTLP exporter for sending traces to OTEL collector
-# If not set, only Prometheus export is available
-# otlp_endpoint = "http://localhost:4317"
+# Note: Prometheus metrics are always enabled at /metrics endpoint
+# See README.md for security recommendations (nginx reverse proxy, firewall rules)
 ```
 
 ---

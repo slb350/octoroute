@@ -6,17 +6,12 @@ use crate::models::ModelSelector;
 use crate::router::{HybridRouter, LlmBasedRouter, Router, RuleBasedRouter};
 use std::sync::Arc;
 
-#[cfg(feature = "metrics")]
 type MetricsHandle = Arc<crate::metrics::Metrics>;
-#[cfg(not(feature = "metrics"))]
-type MetricsHandle = ();
 
 pub mod chat;
 pub mod health;
-pub mod models;
-
-#[cfg(feature = "metrics")]
 pub mod metrics;
+pub mod models;
 
 /// Application state shared across all handlers
 ///
@@ -34,13 +29,12 @@ pub mod metrics;
 /// - `Llm`: Only LLM-based routing (balanced tier required)
 /// - `Hybrid`: Rule-based with LLM fallback (balanced tier required)
 ///
-/// When the `metrics` feature is enabled, also contains a Prometheus metrics collector.
+/// Also contains a Prometheus metrics collector for observability.
 #[derive(Clone)]
 pub struct AppState {
     config: Arc<Config>,
     selector: Arc<ModelSelector>,
     router: Arc<Router>,
-    #[cfg(feature = "metrics")]
     metrics: Arc<crate::metrics::Metrics>,
 }
 
@@ -100,7 +94,6 @@ impl AppState {
             }
         };
 
-        #[cfg(feature = "metrics")]
         let metrics = {
             let m = crate::metrics::Metrics::new()
                 .map_err(|e| AppError::Internal(format!("Failed to initialize metrics: {}", e)))?;
@@ -112,7 +105,6 @@ impl AppState {
             config,
             selector,
             router,
-            #[cfg(feature = "metrics")]
             metrics,
         })
     }
@@ -132,21 +124,11 @@ impl AppState {
         &self.router
     }
 
-    /// Get reference to the metrics collector (if metrics feature is enabled)
+    /// Get reference to the metrics collector
     ///
-    /// Returns `Some(Arc<Metrics>)` when compiled with `--features metrics`,
-    /// otherwise returns `None`.
-    #[cfg(feature = "metrics")]
-    pub fn metrics(&self) -> Option<MetricsHandle> {
-        Some(self.metrics.clone())
-    }
-
-    /// Get reference to the metrics collector (if metrics feature is enabled)
-    ///
-    /// Returns `None` when compiled without the `metrics` feature.
-    #[cfg(not(feature = "metrics"))]
-    pub fn metrics(&self) -> Option<MetricsHandle> {
-        None
+    /// Metrics are always enabled for observability.
+    pub fn metrics(&self) -> MetricsHandle {
+        self.metrics.clone()
     }
 }
 

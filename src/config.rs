@@ -130,28 +130,18 @@ pub enum RoutingStrategy {
 pub struct ObservabilityConfig {
     #[serde(default = "default_log_level")]
     pub log_level: String,
-    #[serde(default)]
-    pub metrics_enabled: bool,
-    #[serde(default = "default_metrics_port")]
-    pub metrics_port: u16,
 }
 
 impl Default for ObservabilityConfig {
     fn default() -> Self {
         Self {
             log_level: default_log_level(),
-            metrics_enabled: false,
-            metrics_port: default_metrics_port(),
         }
     }
 }
 
 fn default_log_level() -> String {
     "info".to_string()
-}
-
-fn default_metrics_port() -> u16 {
-    9090
 }
 
 /// Per-tier timeout overrides
@@ -488,15 +478,6 @@ impl Config {
             )));
         }
 
-        // Validate port conflict
-        if self.observability.metrics_enabled && self.observability.metrics_port == self.server.port
-        {
-            return Err(crate::error::AppError::Config(format!(
-                "Configuration error: metrics_port ({}) cannot be the same as server port ({})",
-                self.observability.metrics_port, self.server.port
-            )));
-        }
-
         // Validate request timeout
         if self.server.request_timeout_seconds == 0 {
             return Err(crate::error::AppError::Config(
@@ -576,8 +557,6 @@ router_model = "balanced"
 
 [observability]
 log_level = "info"
-metrics_enabled = false
-metrics_port = 9090
 "#;
 
     #[test]
@@ -632,8 +611,6 @@ metrics_port = 9090
     fn test_config_parses_observability() {
         let config = Config::from_str(TEST_CONFIG).expect("should parse config");
         assert_eq!(config.observability.log_level, "info");
-        assert!(!config.observability.metrics_enabled);
-        assert_eq!(config.observability.metrics_port, 9090);
     }
 
     #[test]
@@ -686,8 +663,6 @@ router_model = "balanced"
 
         let config = Config::from_str(minimal_config).expect("should parse minimal config");
         assert_eq!(config.observability.log_level, "info");
-        assert!(!config.observability.metrics_enabled);
-        assert_eq!(config.observability.metrics_port, 9090);
 
         // Verify defaults for weight and priority
         assert_eq!(config.models.fast[0].weight, 1.0);
@@ -738,45 +713,6 @@ router_model = "invalid"
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("router_model"));
         assert!(err_msg.contains("invalid"));
-    }
-
-    #[test]
-    fn test_config_validation_port_conflict_fails() {
-        let config_str = r#"
-[server]
-host = "127.0.0.1"
-port = 3000
-
-[[models.fast]]
-name = "test"
-base_url = "http://localhost:1234/v1"
-max_tokens = 4096
-
-[[models.balanced]]
-name = "test"
-base_url = "http://localhost:1235/v1"
-max_tokens = 8192
-
-[[models.deep]]
-name = "test"
-base_url = "http://localhost:1236/v1"
-max_tokens = 16384
-
-[routing]
-strategy = "rule"
-router_model = "balanced"
-
-[observability]
-metrics_enabled = true
-metrics_port = 3000
-"#;
-
-        let config = Config::from_str(config_str).unwrap();
-        let result = config.validate();
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("metrics_port"));
-        assert!(err_msg.contains("3000"));
     }
 
     #[test]

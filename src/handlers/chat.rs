@@ -274,8 +274,9 @@ pub async fn handler(
     // NOTE: record_request() counts routing decisions, NOT successful responses.
     //       record_model_invocation() (called later on success) counts actual model queries.
     //       This distinction allows tracking routing overhead separately from query success rate.
-    #[cfg(feature = "metrics")]
-    if let Some(metrics) = state.metrics() {
+    {
+        let metrics = state.metrics();
+
         // Convert routing decision to type-safe metric enums
         let tier_enum = match decision.target() {
             TargetModel::Fast => crate::metrics::Tier::Fast,
@@ -493,12 +494,12 @@ pub async fn handler(
                     decision.strategy(),
                 );
 
-                // Record successful model invocation (if metrics feature is enabled)
+                // Record successful model invocation
                 // NOTE: This is only recorded on SUCCESS, unlike record_request() which is
                 //       recorded before the query attempt. This allows tracking success rate:
                 //       success_rate = model_invocations_total / requests_total
-                #[cfg(feature = "metrics")]
-                if let Some(metrics) = state.metrics() {
+                {
+                    let metrics = state.metrics();
                     let tier_enum = match decision.target() {
                         TargetModel::Fast => crate::metrics::Tier::Fast,
                         TargetModel::Balanced => crate::metrics::Tier::Balanced,

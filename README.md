@@ -158,16 +158,16 @@ RUST_LOG=octoroute=debug cargo run
 - Health check status updates
 - Error traces with full context
 
-### Level 2: Metrics (Optional - Prometheus Export)
+### Level 2: Metrics (Prometheus Export)
 
-Enable with the `metrics` feature flag for time-series metrics:
+Metrics are always enabled and available at the `/metrics` endpoint:
 
 ```bash
-# Build with metrics support
-cargo build --release --features metrics
-
-# Run and expose /metrics endpoint
+# Build and run
+cargo build --release
 ./target/release/octoroute
+
+# Metrics endpoint available at http://localhost:3000/metrics
 ```
 
 **Available metrics:**
@@ -320,11 +320,8 @@ cargo install just cargo-nextest
 # Development build
 cargo build
 
-# Release build (optimized)
+# Release build (optimized, includes Prometheus metrics)
 cargo build --release
-
-# Build with metrics support (Prometheus)
-cargo build --release --features metrics
 ```
 
 ### Test
@@ -396,7 +393,7 @@ RUST_LOG=debug cargo run
 - ✅ CI/CD pipeline (GitHub Actions)
 - ✅ Comprehensive config validation
 - ✅ Development tooling (justfile with 20+ recipes)
-- ✅ **Comprehensive test coverage** (run `cargo test --all --features metrics` to verify current count)
+- ✅ **Comprehensive test coverage** (run `cargo test --all` to verify current count)
 - ✅ **Zero clippy warnings**
 - ✅ **Zero tech debt**
 
@@ -502,14 +499,14 @@ Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guideli
 
 **A**: Octoroute provides three observability levels:
 1. **Structured logs** (always enabled): Use `RUST_LOG=info` to see routing decisions and health status
-2. **Metrics** (optional): Build with `--features metrics` to expose Prometheus metrics at `/metrics`
+2. **Metrics** (always enabled): Prometheus metrics exposed at `/metrics` endpoint
 3. **Traces** (future): Distributed tracing showing full request flow (coming soon)
 
 For homelab deployments, we recommend Prometheus + Grafana for metrics visualization.
 
 ### Q: Is the `/metrics` endpoint secure?
 
-**A**: The `/metrics` endpoint (when `metrics` feature is enabled) is **unauthenticated** by design for simplicity in homelab deployments. It exposes operational metrics like request counts and routing latency.
+**A**: The `/metrics` endpoint is **unauthenticated** by design for simplicity in homelab deployments. It exposes operational metrics like request counts and routing latency.
 
 **Security recommendations**:
 - **Homelab**: Ensure Octoroute is only accessible on trusted networks (not exposed to the internet)

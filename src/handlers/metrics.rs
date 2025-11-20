@@ -26,31 +26,20 @@ use crate::handlers::AppState;
 /// octoroute_requests_total{tier="fast",strategy="rule"} 42
 /// ```
 pub async fn handler(State(state): State<AppState>) -> (StatusCode, String) {
-    match state.metrics() {
-        Some(metrics) => match metrics.gather() {
-            Ok(output) => (StatusCode::OK, output),
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    "Failed to gather metrics for Prometheus scraping. \
-                    This indicates a metrics encoding issue (invalid UTF-8, \
-                    corrupted labels, or encoder failure). Error: {}",
-                    e
-                );
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed to gather metrics: {}", e),
-                )
-            }
-        },
-        None => {
-            tracing::warn!(
-                "Metrics endpoint accessed but metrics feature not enabled. \
-                Returning 404. Build with --features metrics to enable."
+    let metrics = state.metrics();
+    match metrics.gather() {
+        Ok(output) => (StatusCode::OK, output),
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "Failed to gather metrics for Prometheus scraping. \
+                This indicates a metrics encoding issue (invalid UTF-8, \
+                corrupted labels, or encoder failure). Error: {}",
+                e
             );
             (
-                StatusCode::NOT_FOUND,
-                "Metrics not enabled. Build with --features metrics".to_string(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to gather metrics: {}", e),
             )
         }
     }
@@ -101,86 +90,20 @@ mod tests {
         let config: Config = toml::from_str(config_str).unwrap();
         let state = AppState::new(Arc::new(config)).unwrap();
 
-        // Record some metrics if available
-        if let Some(metrics) = state.metrics() {
-            metrics
-                .record_request(crate::metrics::Tier::Fast, crate::metrics::Strategy::Rule)
-                .unwrap();
-        }
+        // Record some metrics
+        let metrics = state.metrics();
+        metrics
+            .record_request(crate::metrics::Tier::Fast, crate::metrics::Strategy::Rule)
+            .unwrap();
 
         let (status, body) = handler(State(state)).await;
 
-        #[cfg(feature = "metrics")]
-        {
-            assert_eq!(status, StatusCode::OK);
-            assert!(body.contains("# HELP"));
-            assert!(body.contains("# TYPE"));
-        }
-
-        #[cfg(not(feature = "metrics"))]
-        {
-            assert_eq!(status, StatusCode::NOT_FOUND);
-            assert!(body.contains("Metrics not enabled"));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_metrics_handler_without_feature_returns_404() {
-        let config_str = r#"
-            [server]
-            host = "127.0.0.1"
-            port = 3000
-
-            [[models.fast]]
-            name = "test-8b"
-            base_url = "http://localhost:11434/v1"
-            max_tokens = 4096
-            temperature = 0.7
-            weight = 1.0
-            priority = 1
-
-            [[models.balanced]]
-            name = "test-balanced"
-            base_url = "http://localhost:1235/v1"
-            max_tokens = 8192
-            temperature = 0.7
-            weight = 1.0
-            priority = 1
-
-            [[models.deep]]
-            name = "test-deep"
-            base_url = "http://localhost:1236/v1"
-            max_tokens = 16384
-            temperature = 0.7
-            weight = 1.0
-            priority = 1
-
-            [routing]
-            strategy = "rule"
-            router_model = "balanced"
-        "#;
-
-        let config: Config = toml::from_str(config_str).unwrap();
-        let state = AppState::new(Arc::new(config)).unwrap();
-
-        let (status, _body) = handler(State(state)).await;
-
-        #[cfg(not(feature = "metrics"))]
-        {
-            assert_eq!(status, StatusCode::NOT_FOUND);
-            assert!(_body.contains("Metrics not enabled"));
-        }
-
-        #[cfg(feature = "metrics")]
-        {
-            // When metrics are enabled, should return OK even with no data
-            assert_eq!(status, StatusCode::OK);
-        }
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("# HELP"));
+        assert!(body.contains("# TYPE"));
     }
 
     // ===== GAP #5 Fix: /metrics Endpoint Error Cases =====
-
-    #[cfg(feature = "metrics")]
     #[tokio::test]
     async fn test_concurrent_metrics_scraping() {
         use std::sync::Arc;
@@ -224,20 +147,19 @@ mod tests {
         let state = Arc::new(AppState::new(Arc::new(config)).unwrap());
 
         // Record some metrics
-        if let Some(metrics) = state.metrics() {
-            for i in 0..100 {
-                let tier = match i % 3 {
-                    0 => crate::metrics::Tier::Fast,
-                    1 => crate::metrics::Tier::Balanced,
-                    _ => crate::metrics::Tier::Deep,
-                };
-                let strategy = if i % 2 == 0 {
-                    crate::metrics::Strategy::Rule
-                } else {
-                    crate::metrics::Strategy::Llm
-                };
-                metrics.record_request(tier, strategy).unwrap();
-            }
+        let metrics = state.metrics();
+        for i in 0..100 {
+            let tier = match i % 3 {
+                0 => crate::metrics::Tier::Fast,
+                1 => crate::metrics::Tier::Balanced,
+                _ => crate::metrics::Tier::Deep,
+            };
+            let strategy = if i % 2 == 0 {
+                crate::metrics::Strategy::Rule
+            } else {
+                crate::metrics::Strategy::Llm
+            };
+            metrics.record_request(tier, strategy).unwrap();
         }
 
         // Spawn 10 concurrent scraping requests
@@ -282,7 +204,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "metrics")]
     #[tokio::test]
     async fn test_metrics_output_valid_prometheus_format() {
         let config_str = r#"
@@ -323,17 +244,16 @@ mod tests {
         let state = AppState::new(Arc::new(config)).unwrap();
 
         // Record various metrics
-        if let Some(metrics) = state.metrics() {
-            metrics
-                .record_request(crate::metrics::Tier::Fast, crate::metrics::Strategy::Rule)
-                .unwrap();
-            metrics
-                .record_routing_duration(crate::metrics::Strategy::Rule, 1.5)
-                .unwrap();
-            metrics
-                .record_model_invocation(crate::metrics::Tier::Fast)
-                .unwrap();
-        }
+        let metrics = state.metrics();
+        metrics
+            .record_request(crate::metrics::Tier::Fast, crate::metrics::Strategy::Rule)
+            .unwrap();
+        metrics
+            .record_routing_duration(crate::metrics::Strategy::Rule, 1.5)
+            .unwrap();
+        metrics
+            .record_model_invocation(crate::metrics::Tier::Fast)
+            .unwrap();
 
         let (status, body) = handler(State(state)).await;
 
@@ -432,7 +352,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "metrics")]
     #[tokio::test]
     async fn test_metrics_handler_with_empty_registry() {
         // Test that handler works even when no metrics have been recorded

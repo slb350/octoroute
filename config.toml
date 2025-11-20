@@ -65,9 +65,8 @@ router_model = "balanced"
 # Log level: "trace", "debug", "info", "warn", "error"
 log_level = "info"
 
-# Enable Prometheus metrics endpoint
-metrics_enabled = false
-metrics_port = 9090
+# Note: Prometheus metrics are always enabled at /metrics on the main server port
+# See README.md for security recommendations (nginx reverse proxy, firewall rules)
 
 # Per-tier timeout overrides (optional)
 # If not specified, server.request_timeout_seconds is used

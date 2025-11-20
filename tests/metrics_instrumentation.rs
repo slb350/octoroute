@@ -2,7 +2,6 @@
 //!
 //! These tests verify that metrics are correctly recorded when chat requests are processed.
 
-#[cfg(feature = "metrics")]
 mod metrics_tests {
     use octoroute::{
         config::Config,
@@ -54,7 +53,7 @@ router_model = "balanced"
         let state = AppState::new(config).expect("should create state");
 
         // Get metrics before request
-        let metrics = state.metrics().expect("metrics should be available");
+        let metrics = state.metrics();
         let output_before = metrics.gather().expect("should gather metrics");
 
         // Record a fake request (simulating what chat handler does)
@@ -94,7 +93,7 @@ router_model = "balanced"
         let config = Arc::new(create_test_config());
         let state = AppState::new(config).expect("should create state");
 
-        let metrics = state.metrics().expect("metrics should be available");
+        let metrics = state.metrics();
 
         // Simulate multiple requests with different tiers and strategies
         metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
@@ -135,7 +134,7 @@ router_model = "balanced"
         let config = Arc::new(create_test_config());
         let state = AppState::new(config).expect("should create state");
 
-        let metrics = state.metrics().expect("metrics should be available");
+        let metrics = state.metrics();
 
         // Record durations across different buckets
         metrics
@@ -213,7 +212,7 @@ router_model = "balanced"
         let state = AppState::new(Arc::new(config)).expect("should create state");
 
         // Get metrics before request
-        let metrics = state.metrics().expect("metrics should be available");
+        let metrics = state.metrics();
         let output_before = metrics.gather().expect("should gather metrics before");
 
         // Create a chat request that will hit Fast tier (casual chat, low importance)
@@ -284,7 +283,7 @@ router_model = "balanced"
         let config = Arc::new(create_test_config());
         let state = AppState::new(config).expect("should create state");
 
-        let metrics = state.metrics().expect("metrics should be available");
+        let metrics = state.metrics();
 
         // Record metrics with edge case values
         // These should either succeed OR return Err (not panic)
@@ -316,102 +315,5 @@ router_model = "balanced"
         );
 
         // If we got here without panic, the defensive error handling works
-    }
-}
-
-// Tests when metrics feature is NOT enabled
-#[cfg(not(feature = "metrics"))]
-mod no_metrics_tests {
-    use octoroute::{config::Config, handlers::AppState};
-    use std::sync::Arc;
-
-    fn create_test_config() -> Config {
-        let toml = r#"
-[server]
-host = "127.0.0.1"
-port = 3000
-
-[[models.fast]]
-name = "test-fast"
-base_url = "http://localhost:11434/v1"
-max_tokens = 4096
-temperature = 0.7
-weight = 1.0
-priority = 1
-
-[routing]
-strategy = "rule"
-router_model = "balanced"
-"#;
-        toml::from_str(toml).expect("should parse config")
-    }
-
-    #[tokio::test]
-    async fn test_metrics_not_available_without_feature() {
-        let config = Arc::new(create_test_config());
-        let state = AppState::new(config).expect("should create state");
-
-        // Metrics should not be available
-        assert!(
-            state.metrics().is_none(),
-            "Metrics should be None without feature flag"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_chat_handler_runs_without_metrics_feature() {
-        use axum::Extension;
-        use axum::extract::State;
-        use octoroute::handlers::chat::{ChatRequest, handler};
-        use octoroute::middleware::RequestId;
-
-        // Config intentionally uses TEST-NET addresses to avoid real network calls
-        let config_str = r#"
-[server]
-host = "127.0.0.1"
-port = 3000
-request_timeout_seconds = 1
-
-[[models.fast]]
-name = "test-fast"
-base_url = "http://192.0.2.10:11434/v1"
-max_tokens = 4096
-temperature = 0.7
-weight = 1.0
-priority = 1
-
-[routing]
-strategy = "rule"
-router_model = "balanced"
-"#;
-
-        let config: Config = toml::from_str(config_str).expect("should parse config");
-        let state = AppState::new(Arc::new(config)).expect("should create state without metrics");
-
-        // Metrics are not compiled into this binary
-        assert!(state.metrics().is_none());
-
-        // Create a chat request
-        let request_json = serde_json::json!({
-            "message": "Hello without metrics",
-            "importance": "low",
-            "task_type": "casual_chat"
-        });
-        let request: ChatRequest =
-            serde_json::from_value(request_json).expect("should deserialize");
-
-        // Send request through handler; expect an error because the endpoint is non-routable,
-        // but the handler must still execute without metrics
-        let result = handler(
-            State(state.clone()),
-            Extension(RequestId::new()),
-            axum::Json(request),
-        )
-        .await;
-
-        assert!(
-            result.is_err(),
-            "Handler should execute without metrics feature even when downstream request fails"
-        );
     }
 }
