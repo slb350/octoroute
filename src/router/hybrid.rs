@@ -55,64 +55,61 @@ impl HybridRouter {
         meta: &RouteMetadata,
     ) -> AppResult<RoutingDecision> {
         // Try rule-based first (fast path)
-        // Rule router now tries matching rules, and falls back to default_tier() if no match
-        let rule_result = self
+        // Rule router returns Ok(Some) if rule matched, Ok(None) if no match
+        match self
             .rule_router
             .route(user_prompt, meta, &self.selector)
-            .await;
-
-        match rule_result {
-            Ok(decision) => {
-                // Rule router succeeded (either via rule match or default tier)
+            .await?
+        {
+            Some(decision) => {
+                // Rule matched - use it immediately
                 tracing::info!(
                     target = ?decision.target(),
                     strategy = ?decision.strategy(),
                     token_estimate = meta.token_estimate,
                     importance = ?meta.importance,
                     task_type = ?meta.task_type,
-                    "Route decision made via rule-based routing"
+                    "Route decision made via rule-based routing (rule matched)"
                 );
-                return Ok(decision);
+                Ok(decision)
             }
-            Err(_) => {
-                // Rule router failed (no configured endpoints at all)
-                // Fall back to LLM router
-                tracing::debug!(
+            None => {
+                // No rule matched - fall back to LLM router (this is the fix!)
+                tracing::info!(
                     token_estimate = meta.token_estimate,
                     importance = ?meta.importance,
                     task_type = ?meta.task_type,
-                    "Rule router failed (no endpoints), delegating to LLM router"
+                    "No rule matched, delegating to LLM router for intelligent routing"
                 );
+
+                let decision = self
+                    .llm_router
+                    .route(user_prompt, meta)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(
+                            error = %e,
+                            user_prompt_preview = &user_prompt.chars().take(100).collect::<String>(),
+                            task_type = ?meta.task_type,
+                            importance = ?meta.importance,
+                            token_estimate = meta.token_estimate,
+                            "LLM router failed after no rule match"
+                        );
+                        e
+                    })?;
+
+                tracing::info!(
+                    target = ?decision.target(),
+                    strategy = ?decision.strategy(),
+                    token_estimate = meta.token_estimate,
+                    importance = ?meta.importance,
+                    task_type = ?meta.task_type,
+                    "Route decision made via LLM-based routing"
+                );
+
+                Ok(decision)
             }
         }
-
-        // Fall back to LLM router
-        let decision = self
-            .llm_router
-            .route(user_prompt, meta)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    error = %e,
-                    user_prompt_preview = &user_prompt.chars().take(100).collect::<String>(),
-                    task_type = ?meta.task_type,
-                    importance = ?meta.importance,
-                    token_estimate = meta.token_estimate,
-                    "LLM router failed after rule router failed"
-                );
-                e
-            })?;
-
-        tracing::info!(
-            target = ?decision.target(),
-            strategy = ?decision.strategy(),
-            token_estimate = meta.token_estimate,
-            importance = ?meta.importance,
-            task_type = ?meta.task_type,
-            "Route decision made via LLM-based routing"
-        );
-
-        Ok(decision)
     }
 }
 
@@ -266,7 +263,7 @@ mod tests {
             HybridRouter::new(config, selector.clone()).expect("HybridRouter::new should succeed");
 
         // 1. Create metadata that triggers LLM fallback (no rule match)
-        // CasualChat + High importance is explicitly ambiguous (see rule_based.rs line 42)
+        // CasualChat + High importance is explicitly ambiguous (see rule_based.rs line 103)
         let meta = RouteMetadata {
             token_estimate: 100,
             importance: Importance::High,
@@ -274,7 +271,7 @@ mod tests {
         };
 
         // 2. Mark ALL endpoints unhealthy (3 consecutive failures each)
-        // This ensures both rule router (via default_tier) and LLM router fail
+        // This ensures LLM router fails (no healthy balanced endpoints)
         let health_checker = selector.health_checker();
         for endpoint_name in ["test-fast", "test-balanced", "test-deep"] {
             for _ in 0..3 {
@@ -286,13 +283,14 @@ mod tests {
         }
 
         // 3. Attempt routing - should fail because:
-        //    - Rule router: no rule matches AND default_tier() finds no healthy endpoints
-        //    - LLM router: no healthy balanced endpoints
+        //    - Rule router: returns None (no rule matches)
+        //    - Hybrid router: delegates to LLM router
+        //    - LLM router: fails (no healthy balanced endpoints)
         let result = router.route("test prompt", &meta).await;
 
         assert!(
             result.is_err(),
-            "Should fail when all endpoints are unhealthy"
+            "Should fail when LLM router has no healthy balanced endpoints"
         );
 
         // 4. Verify error message is informative
@@ -304,9 +302,106 @@ mod tests {
             err_msg.contains("routing")
                 || err_msg.contains("router")
                 || err_msg.contains("available")
-                || err_msg.contains("healthy"),
+                || err_msg.contains("healthy")
+                || err_msg.contains("balanced") // LLM router specifically needs balanced tier
+                || err_msg.contains("Balanced"),
             "Error should indicate routing failure, got: {}",
             err_msg
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TDD: Tests for Option 1 - HybridRouter LLM fallback when no rule matches
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[tokio::test]
+    async fn test_hybrid_router_llm_fallback_on_no_rule_match() {
+        // This test verifies the CRITICAL FIX: when no rule matches, hybrid router
+        // should call LLM router, NOT use default tier.
+        //
+        // Bug: Previously, rule router used default_tier() when no match, so hybrid
+        //      router never called LLM. This test ensures LLM fallback works.
+
+        let config = test_config();
+        let selector = Arc::new(ModelSelector::new(config.clone()));
+        let router =
+            HybridRouter::new(config, selector.clone()).expect("HybridRouter::new should succeed");
+
+        // CasualChat + High importance has NO rule match (see rule_based.rs line 103)
+        // This is the "ambiguous case" that should trigger LLM routing
+        let meta = RouteMetadata {
+            token_estimate: 100,
+            importance: Importance::High,
+            task_type: TaskType::CasualChat,
+        };
+
+        // Attempt routing
+        // Expected behavior:
+        // 1. Rule router returns None (no match)
+        // 2. Hybrid router sees None, calls LLM router
+        // 3. LLM router tries to query balanced tier endpoint
+        // 4. Since endpoint doesn't exist (localhost:1235), it will fail with network error
+        //
+        // The failure proves LLM router was called! If it wasn't called, we'd get
+        // success with default tier.
+        let result = router.route("Am I allowed to do this?", &meta).await;
+
+        // Result should be an error (endpoint doesn't exist)
+        // But the ERROR TYPE tells us which router was used:
+        // - If LLM router called: error about balanced tier or connection failed
+        // - If default tier used: might succeed or different error
+        assert!(
+            result.is_err(),
+            "Should fail because balanced tier endpoint doesn't exist (proves LLM was called)"
+        );
+
+        let err = result.unwrap_err();
+        let err_msg = format!("{}", err);
+
+        // Error should mention balanced tier or routing, indicating LLM router was used
+        // (Not a generic "no healthy endpoints" which could be from default tier logic)
+        println!(
+            "Error message (indicates LLM router was called): {}",
+            err_msg
+        );
+
+        // The error being present proves LLM router was attempted!
+        // If rule router had used default_tier, the error would be different
+        // or might not occur at all.
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_router_rule_match_skips_llm() {
+        // Verify that when a rule DOES match, LLM is NOT called (fast path works)
+        let config = test_config();
+        let selector = Arc::new(ModelSelector::new(config.clone()));
+        let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
+
+        // CasualChat + Low + <256 tokens matches Rule 1 → Fast
+        let meta = RouteMetadata {
+            token_estimate: 50,
+            importance: Importance::Low,
+            task_type: TaskType::CasualChat,
+        };
+
+        let result = router.route("Hi there", &meta).await;
+
+        // Should succeed without querying any endpoints (rule match is synchronous)
+        assert!(
+            result.is_ok(),
+            "Rule match should succeed without endpoint query"
+        );
+
+        let decision = result.unwrap();
+        assert_eq!(
+            decision.target(),
+            TargetModel::Fast,
+            "Should route to Fast tier"
+        );
+        assert_eq!(
+            decision.strategy(),
+            RoutingStrategy::Rule,
+            "Should use Rule strategy (not Llm)"
         );
     }
 }

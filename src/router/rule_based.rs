@@ -9,7 +9,7 @@
 //! - User-specified importance level
 
 use super::{Importance, RouteMetadata, RoutingDecision, RoutingStrategy, TargetModel, TaskType};
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::models::ModelSelector;
 
 /// Rule-based router that uses fast pattern matching
@@ -26,59 +26,40 @@ impl RuleBasedRouter {
     ///
     /// # Routing Logic
     /// 1. Tries to match request metadata against predefined rules
-    /// 2. If a rule matches, returns that tier with RoutingStrategy::Rule
-    /// 3. If no rule matches, falls back to selector.default_tier() (highest priority tier across all tiers)
+    /// 2. If a rule matches, returns `Ok(Some(decision))` with RoutingStrategy::Rule
+    /// 3. If no rule matches, returns `Ok(None)` to signal the caller should use fallback logic
+    ///
+    /// # Return Value
+    /// - `Ok(Some(decision))` - A rule matched, use this routing decision
+    /// - `Ok(None)` - No rule matched, caller should decide (e.g., use default tier or try LLM routing)
+    /// - `Err(e)` - Catastrophic failure (should not happen in rule-based routing)
     ///
     /// # Arguments
     /// * `_user_prompt` - The user's prompt (unused in rule-based routing, but required for Router trait compatibility)
     /// * `meta` - Request metadata (token estimate, importance, task type)
-    /// * `selector` - Model selector for default tier fallback
-    ///
-    /// # Errors
-    /// Returns an error if no rules match AND no endpoints are configured at all.
+    /// * `_selector` - Model selector (unused in current implementation, reserved for future use)
     pub async fn route(
         &self,
         _user_prompt: &str,
         meta: &RouteMetadata,
-        selector: &ModelSelector,
-    ) -> AppResult<RoutingDecision> {
-        // Try rule-based matching first
+        _selector: &ModelSelector,
+    ) -> AppResult<Option<RoutingDecision>> {
+        // Try rule-based matching
         if let Some(target) = self.evaluate_rules(meta) {
-            return Ok(RoutingDecision::new(target, RoutingStrategy::Rule));
+            return Ok(Some(RoutingDecision::new(target, RoutingStrategy::Rule)));
         }
 
-        // No rule matched - fall back to default tier (highest priority across all tiers)
-        let default_target = selector.default_tier().ok_or_else(|| {
-            AppError::Config(
-                "No routing rule matched and no endpoints configured for default fallback"
-                    .to_string(),
-            )
-        })?;
-
-        // Verify that the default tier has at least one healthy endpoint
-        // If all endpoints are unhealthy, we should fail instead of returning a tier
-        // that can't actually be used
-        let exclusion_set = crate::models::ExclusionSet::new();
-        if selector
-            .select(default_target, &exclusion_set)
-            .await
-            .is_none()
-        {
-            return Err(AppError::RoutingFailed(format!(
-                "No rule matched and default tier {:?} has no healthy endpoints available",
-                default_target
-            )));
-        }
-
-        tracing::info!(
-            default_tier = ?default_target,
+        // No rule matched - return None to signal "I don't know, caller should decide"
+        // This allows hybrid routers to use LLM fallback, and rule-only routers
+        // to use default_tier fallback at a higher level
+        tracing::debug!(
             token_estimate = meta.token_estimate,
             importance = ?meta.importance,
             task_type = ?meta.task_type,
-            "No rule matched, using default tier (highest priority across all tiers)"
+            "No rule matched, returning None for caller to handle"
         );
 
-        Ok(RoutingDecision::new(default_target, RoutingStrategy::Rule))
+        Ok(None)
     }
 
     /// Evaluate rules against metadata
@@ -185,11 +166,15 @@ log_level = "info"
         let config = test_config();
         let selector = ModelSelector::new(config);
 
-        // Request with no rule match should use default tier
+        // Request with no rule match should return None (not default tier)
         let result = router
             .route("test", &RouteMetadata::new(100), &selector)
             .await;
         assert!(result.is_ok());
+        assert!(
+            result.unwrap().is_none(),
+            "No rule match should return None"
+        );
     }
 
     // Rule 1: Trivial/casual tasks → Fast tier
@@ -461,5 +446,60 @@ log_level = "info"
             target, None,
             "2048 tokens should NOT match Rule 4 (requires < 2048)"
         );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TDD: Tests for Option 1 - route() returns Ok(None) when no rule matches
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[tokio::test]
+    async fn test_route_returns_none_when_no_rule_matches() {
+        // RED: This test will fail until we update the signature
+        let router = RuleBasedRouter::new();
+        let config = test_config();
+        let selector = ModelSelector::new(config);
+
+        // CasualChat + High importance has no rule match (see line 103)
+        let meta = RouteMetadata::new(100)
+            .with_task_type(TaskType::CasualChat)
+            .with_importance(Importance::High);
+
+        let result = router.route("test prompt", &meta, &selector).await;
+
+        // Should return Ok(None) to signal "no rule matched, caller should decide"
+        assert!(
+            result.is_ok(),
+            "route() should succeed even when no rule matches"
+        );
+        assert!(
+            result.unwrap().is_none(),
+            "route() should return None when no rule matches (not default tier)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_route_returns_some_when_rule_matches() {
+        // Verify that rule matches still return Some(decision)
+        let router = RuleBasedRouter::new();
+        let config = test_config();
+        let selector = ModelSelector::new(config);
+
+        // CasualChat + Normal + <256 tokens matches Rule 1 → Fast
+        let meta = RouteMetadata::new(100)
+            .with_task_type(TaskType::CasualChat)
+            .with_importance(Importance::Normal);
+
+        let result = router.route("test prompt", &meta, &selector).await;
+
+        assert!(result.is_ok(), "route() should succeed when rule matches");
+        let decision = result.unwrap();
+        assert!(
+            decision.is_some(),
+            "route() should return Some when rule matches"
+        );
+
+        let decision = decision.unwrap();
+        assert_eq!(decision.target(), TargetModel::Fast);
+        assert_eq!(decision.strategy(), RoutingStrategy::Rule);
     }
 }

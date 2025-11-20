@@ -176,12 +176,12 @@ impl Router {
     /// # Arguments
     /// * `user_prompt` - The user's prompt/message
     /// * `meta` - Request metadata (token estimate, importance, task type)
-    /// * `selector` - Model selector (needed for rule-based default tier)
+    /// * `selector` - Model selector (needed for rule-based default tier fallback)
     ///
     /// # Errors
     /// Returns an error if:
     /// - LLM routing fails (network error, no healthy balanced endpoints, etc.)
-    /// - Rule routing fails and no default tier is available
+    /// - Rule routing with no match and no default tier available
     pub async fn route(
         &self,
         user_prompt: &str,
@@ -189,7 +189,44 @@ impl Router {
         selector: &crate::models::ModelSelector,
     ) -> AppResult<RoutingDecision> {
         match self {
-            Router::Rule(r) => r.route(user_prompt, meta, selector).await,
+            Router::Rule(r) => {
+                // Rule router returns Option - if None, use default tier fallback
+                match r.route(user_prompt, meta, selector).await? {
+                    Some(decision) => Ok(decision),
+                    None => {
+                        // No rule matched - use default tier for rule-only mode
+                        let default_target = selector.default_tier().ok_or_else(|| {
+                            crate::error::AppError::Config(
+                                "No routing rule matched and no endpoints configured for default fallback"
+                                    .to_string(),
+                            )
+                        })?;
+
+                        // Verify default tier has healthy endpoints
+                        let exclusion_set = crate::models::ExclusionSet::new();
+                        if selector
+                            .select(default_target, &exclusion_set)
+                            .await
+                            .is_none()
+                        {
+                            return Err(crate::error::AppError::RoutingFailed(format!(
+                                "No rule matched and default tier {:?} has no healthy endpoints available",
+                                default_target
+                            )));
+                        }
+
+                        tracing::info!(
+                            default_tier = ?default_target,
+                            token_estimate = meta.token_estimate,
+                            importance = ?meta.importance,
+                            task_type = ?meta.task_type,
+                            "No rule matched, using default tier (rule-only mode)"
+                        );
+
+                        Ok(RoutingDecision::new(default_target, RoutingStrategy::Rule))
+                    }
+                }
+            }
             Router::Llm(r) => r.route(user_prompt, meta).await,
             Router::Hybrid(r) => r.route(user_prompt, meta).await,
         }
