@@ -213,6 +213,27 @@ impl<'de> Deserialize<'de> for ChatResponse {
 }
 
 /// POST /chat handler
+///
+/// # Async Latency Characteristics
+///
+/// This handler is async with variable latency depending on routing strategy:
+///
+/// - **Rule-based routing** (~1ms): Fast, deterministic routing with immediate endpoint selection
+/// - **LLM-based routing** (~100-500ms): Intelligent routing using 30B model for decision-making
+/// - **Model query execution** (variable): Depends on selected model tier and prompt complexity
+///
+/// ## Worst-Case Latency
+///
+/// With MAX_RETRIES=3 and 30s timeout per attempt:
+/// - **Total maximum latency**: 90 seconds (3 attempts × 30s timeout)
+/// - **Typical latency**: 1-5 seconds for successful requests
+///
+/// ## Blocking Points
+///
+/// - Routing decision (rule or LLM-based)
+/// - Endpoint selection with health checking
+/// - Model query with streaming response
+/// - Health state updates (async lock acquisition)
 pub async fn handler(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -268,9 +289,9 @@ pub async fn handler(
     // - Request-scoped exclusion ensures no wasted retries on known-bad endpoints in THIS request
     // - Global health tracking prevents all requests from hitting persistently failing endpoints
     // - Without request-scoped: Could retry the same failed endpoint on attempts 1, 2, 3
-    //   (Example with equal-weight endpoints: With 2 endpoints where 1 is down, there's a
+    //   (Example assumes equal-weight endpoints: With 2 endpoints where 1 is down, there's a
     //   50% chance per attempt of selecting the broken one. Probability of hitting it on
-    //   all 3 attempts: 0.5³ = 12.5%. With weighted selection, this probability varies.
+    //   all 3 attempts: 0.5³ = 12.5%. Note: Probability varies with weighted selection.
     //   Request-scoped exclusion eliminates this waste by forcing different endpoints.)
     // - Without global health: Every request would independently discover failing endpoints
     //
@@ -352,10 +373,11 @@ pub async fn handler(
             Ok(response_text) => {
                 // Success! Mark endpoint as healthy to enable immediate recovery
                 //
-                // INVARIANT CHECK: mark_success should never fail in normal operation (endpoint names come
-                // from ModelSelector which only returns valid endpoints). If it fails, this indicates
-                // a serious bug (race condition, typo, or config reload during request). Propagate the
-                // error to expose the bug immediately rather than silently continuing.
+                // DEFENSIVE CHECK: mark_success should never fail in normal operation because endpoint
+                // names come from ModelSelector which only returns valid endpoints. However, we check
+                // explicitly to catch rare edge cases (race conditions, config reload mid-request, or bugs).
+                // If it fails, propagate the error to expose the issue immediately rather than silently
+                // continuing with inconsistent health state.
                 state
                     .selector()
                     .health_checker()
@@ -371,7 +393,7 @@ pub async fn handler(
                                     unknown_name = %name,
                                     selected_tier = ?decision.target(),
                                     attempt = attempt,
-                                    "INVARIANT VIOLATION: mark_success called with unknown endpoint name. \
+                                    "DEFENSIVE ERROR: mark_success called with unknown endpoint name. \
                                     Endpoint names come from ModelSelector which only returns valid endpoints. \
                                     This indicates a serious bug (race condition, naming mismatch, or config \
                                     reload during request). Failing request to expose issue."
@@ -432,10 +454,11 @@ pub async fn handler(
                 // After 3 consecutive failures (across all requests), endpoint becomes unhealthy
                 // and won't be selected by ANY request until it recovers.
                 //
-                // INVARIANT CHECK: mark_failure should never fail in normal operation (endpoint names come
-                // from ModelSelector which only returns valid endpoints). If it fails, this indicates
-                // a serious bug (race condition, typo, or config reload during request). Propagate the
-                // error to expose the bug immediately rather than silently continuing.
+                // DEFENSIVE CHECK: mark_failure should never fail in normal operation because endpoint
+                // names come from ModelSelector which only returns valid endpoints. However, we check
+                // explicitly to catch rare edge cases (race conditions, config reload mid-request, or bugs).
+                // If it fails, propagate the error to expose the issue immediately rather than silently
+                // continuing with inconsistent health state.
                 state
                     .selector()
                     .health_checker()
@@ -451,7 +474,7 @@ pub async fn handler(
                                     unknown_name = %name,
                                     selected_tier = ?decision.target(),
                                     attempt = attempt,
-                                    "INVARIANT VIOLATION: mark_failure called with unknown endpoint name. \
+                                    "DEFENSIVE ERROR: mark_failure called with unknown endpoint name. \
                                     Endpoint won't be marked unhealthy and will continue receiving traffic. \
                                     Endpoint names come from ModelSelector which only returns valid endpoints. \
                                     This indicates a serious bug (race condition or naming mismatch). \
@@ -546,10 +569,11 @@ async fn try_query_model(
         "Starting model query"
     );
 
-    // Enforce PER-ATTEMPT timeout - each retry gets a fresh timeout budget.
+    // **PER-ATTEMPT TIMEOUT**: Each retry gets a fresh timeout budget.
     //
-    // **TOTAL WORST-CASE LATENCY**: With MAX_RETRIES=3, total latency = 3 × timeout_seconds
-    // Example with 30s timeout: 3 retries × 30s = 90s maximum total latency
+    // **TOTAL WORST-CASE LATENCY**: With MAX_RETRIES=3 and 30s timeout:
+    // - Total latency = 3 attempts × 30s = **90 seconds maximum**
+    // - Formula: MAX_RETRIES × timeout_seconds
     //
     // Example timing breakdown (30s timeout):
     // - Attempt 1 times out at 30s → retry
