@@ -88,7 +88,7 @@ mod tests {
 
         // Record some metrics if available
         if let Some(metrics) = state.metrics() {
-            metrics.record_request("fast", "rule");
+            metrics.record_request("fast", "rule").unwrap();
         }
 
         let (status, body) = handler(State(state)).await;

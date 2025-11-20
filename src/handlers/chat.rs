@@ -270,7 +270,10 @@ pub async fn handler(
         "Routing decision made"
     );
 
-    // Record metrics (if metrics feature is enabled)
+    // Record routing decision metrics (recorded regardless of query success)
+    // NOTE: record_request() counts routing decisions, NOT successful responses.
+    //       record_model_invocation() (called later on success) counts actual model queries.
+    //       This distinction allows tracking routing overhead separately from query success rate.
     #[cfg(feature = "metrics")]
     if let Some(metrics) = state.metrics() {
         let tier_str = match decision.target() {
@@ -279,8 +282,27 @@ pub async fn handler(
             TargetModel::Deep => "deep",
         };
         let strategy_str = decision.strategy().as_str();
-        metrics.record_request(tier_str, strategy_str);
-        metrics.record_routing_duration(strategy_str, routing_duration_ms);
+
+        // DEFENSIVE: Handle metrics recording errors gracefully (non-fatal)
+        // Metrics recording should never crash request handling
+        if let Err(e) = metrics.record_request(tier_str, strategy_str) {
+            tracing::warn!(
+                request_id = %request_id,
+                error = %e,
+                tier = tier_str,
+                strategy = strategy_str,
+                "Failed to record request metric (non-fatal, metrics may be incomplete)"
+            );
+        }
+        if let Err(e) = metrics.record_routing_duration(strategy_str, routing_duration_ms) {
+            tracing::warn!(
+                request_id = %request_id,
+                error = %e,
+                strategy = strategy_str,
+                duration_ms = routing_duration_ms,
+                "Failed to record routing duration metric (non-fatal, metrics may be incomplete)"
+            );
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -458,6 +480,9 @@ pub async fn handler(
                 );
 
                 // Record successful model invocation (if metrics feature is enabled)
+                // NOTE: This is only recorded on SUCCESS, unlike record_request() which is
+                //       recorded before the query attempt. This allows tracking success rate:
+                //       success_rate = model_invocations_total / requests_total
                 #[cfg(feature = "metrics")]
                 if let Some(metrics) = state.metrics() {
                     let tier_str = match decision.target() {
@@ -465,7 +490,16 @@ pub async fn handler(
                         TargetModel::Balanced => "balanced",
                         TargetModel::Deep => "deep",
                     };
-                    metrics.record_model_invocation(tier_str);
+
+                    // DEFENSIVE: Handle metrics recording errors gracefully (non-fatal)
+                    if let Err(e) = metrics.record_model_invocation(tier_str) {
+                        tracing::warn!(
+                            request_id = %request_id,
+                            error = %e,
+                            tier = tier_str,
+                            "Failed to record model invocation metric (non-fatal, metrics may be incomplete)"
+                        );
+                    }
                 }
 
                 return Ok(Json(response));

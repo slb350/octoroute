@@ -287,3 +287,138 @@ async fn test_timeout_during_initial_connection() {
     // This is implicit in the error type - connection timeouts don't return partial data
     println!("✓ Test verified: Timeout protection works during initial connection");
 }
+
+#[tokio::test]
+async fn test_per_tier_timeout_configuration() {
+    // This test verifies that per-tier timeout overrides are correctly applied
+    // when making requests to different tiers.
+    //
+    // Config: fast=2s, balanced=3s, deep=5s, global=10s
+    // Expectations:
+    // - Fast tier requests should use 2s timeout (not 10s global)
+    // - Balanced tier requests should use 3s timeout
+    // - Deep tier requests should use 5s timeout
+    //
+    // This test verifies the handler actually calls config.timeout_for_tier()
+    // and uses tier-specific timeouts, not just the global timeout.
+
+    // Create config with per-tier timeouts
+    let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 10
+
+[[models.fast]]
+name = "fast-tier-timeout"
+base_url = "http://192.0.2.1:11434/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-tier-timeout"
+base_url = "http://192.0.2.2:11434/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-tier-timeout"
+base_url = "http://192.0.2.3:11434/v1"
+max_tokens = 8192
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+default_importance = "normal"
+router_model = "balanced"
+
+[timeouts]
+fast = 2
+balanced = 3
+deep = 5
+"#;
+
+    let config: Config = toml::from_str(config_str).expect("should parse config");
+    let state = AppState::new(Arc::new(config.clone())).expect("should create state");
+
+    // Test 1: Fast tier should timeout faster than deep tier
+    // Send a request that will route to Fast tier (casual chat, low importance)
+    let fast_request = serde_json::json!({
+        "message": "Quick question",
+        "importance": "low",
+        "task_type": "casual_chat"
+    });
+    let fast_request: octoroute::handlers::chat::ChatRequest =
+        serde_json::from_value(fast_request).unwrap();
+
+    let fast_start = std::time::Instant::now();
+    let fast_result = octoroute::handlers::chat::handler(
+        axum::extract::State(state.clone()),
+        axum::Extension(RequestId::new()),
+        axum::Json(fast_request),
+    )
+    .await;
+    let fast_elapsed = fast_start.elapsed();
+
+    assert!(
+        fast_result.is_err(),
+        "Fast tier request should fail (non-routable IP)"
+    );
+
+    // Fast tier should complete within ~6 seconds (2s timeout × 3 retries)
+    // Allow some overhead
+    assert!(
+        fast_elapsed.as_secs() <= 8,
+        "Fast tier should timeout faster than global timeout (took {:?}, expected ≤8s)",
+        fast_elapsed
+    );
+
+    // Test 2: Deep tier should have longer timeout
+    // Send a request that will route to Deep tier (deep analysis, high importance)
+    let deep_request = serde_json::json!({
+        "message": "Analyze the economic implications of quantum computing on global markets",
+        "importance": "high",
+        "task_type": "deep_analysis"
+    });
+    let deep_request: octoroute::handlers::chat::ChatRequest =
+        serde_json::from_value(deep_request).unwrap();
+
+    let deep_start = std::time::Instant::now();
+    let deep_result = octoroute::handlers::chat::handler(
+        axum::extract::State(state.clone()),
+        axum::Extension(RequestId::new()),
+        axum::Json(deep_request),
+    )
+    .await;
+    let deep_elapsed = deep_start.elapsed();
+
+    assert!(
+        deep_result.is_err(),
+        "Deep tier request should fail (non-routable IP)"
+    );
+
+    // Deep tier should complete within ~15 seconds (5s timeout × 3 retries)
+    // Allow some overhead, but verify it's using the tier-specific timeout
+    assert!(
+        deep_elapsed.as_secs() <= 18,
+        "Deep tier should use 5s timeout, not global 10s (took {:?}, expected ≤18s)",
+        deep_elapsed
+    );
+
+    println!("✓ Per-tier timeouts verified:");
+    println!(
+        "  Fast tier: {:?} (expected ≤8s with 2s tier timeout)",
+        fast_elapsed
+    );
+    println!(
+        "  Deep tier: {:?} (expected ≤18s with 5s tier timeout)",
+        deep_elapsed
+    );
+    println!("  Both significantly less than global 30s timeout (10s × 3 retries)");
+}

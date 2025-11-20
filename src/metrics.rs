@@ -88,10 +88,15 @@ impl Metrics {
     ///
     /// * `tier` - The model tier (e.g., "fast", "balanced", "deep")
     /// * `strategy` - The routing strategy used (e.g., "rule", "llm", "hybrid")
-    pub fn record_request(&self, tier: &str, strategy: &str) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the label values are invalid or the metric is not registered.
+    pub fn record_request(&self, tier: &str, strategy: &str) -> Result<(), prometheus::Error> {
         self.requests_total
-            .with_label_values(&[tier, strategy])
+            .get_metric_with_label_values(&[tier, strategy])?
             .inc();
+        Ok(())
     }
 
     /// Record routing decision duration
@@ -100,10 +105,19 @@ impl Metrics {
     ///
     /// * `strategy` - The routing strategy used (e.g., "rule", "llm")
     /// * `duration_ms` - The duration in milliseconds
-    pub fn record_routing_duration(&self, strategy: &str, duration_ms: f64) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the label values are invalid or the metric is not registered.
+    pub fn record_routing_duration(
+        &self,
+        strategy: &str,
+        duration_ms: f64,
+    ) -> Result<(), prometheus::Error> {
         self.routing_duration
-            .with_label_values(&[strategy])
+            .get_metric_with_label_values(&[strategy])?
             .observe(duration_ms);
+        Ok(())
     }
 
     /// Record a model invocation
@@ -111,8 +125,15 @@ impl Metrics {
     /// # Arguments
     ///
     /// * `tier` - The model tier (e.g., "fast", "balanced", "deep")
-    pub fn record_model_invocation(&self, tier: &str) {
-        self.model_invocations.with_label_values(&[tier]).inc();
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the label values are invalid or the metric is not registered.
+    pub fn record_model_invocation(&self, tier: &str) -> Result<(), prometheus::Error> {
+        self.model_invocations
+            .get_metric_with_label_values(&[tier])?
+            .inc();
+        Ok(())
     }
 
     /// Gather all metrics and encode them in Prometheus text format
@@ -146,9 +167,9 @@ mod tests {
         let metrics = Metrics::new().expect("Failed to create metrics");
 
         // Record at least one value for each metric so they appear in the registry
-        metrics.record_request("fast", "rule");
-        metrics.record_routing_duration("rule", 1.0);
-        metrics.record_model_invocation("fast");
+        metrics.record_request("fast", "rule").unwrap();
+        metrics.record_routing_duration("rule", 1.0).unwrap();
+        metrics.record_model_invocation("fast").unwrap();
 
         let metric_families = metrics.registry.gather();
         // Should have 3 metric families: requests_total, routing_duration, model_invocations
@@ -168,9 +189,9 @@ mod tests {
     fn test_record_request_increments_counter() {
         let metrics = Metrics::new().unwrap();
 
-        metrics.record_request("fast", "rule");
-        metrics.record_request("fast", "rule");
-        metrics.record_request("balanced", "llm");
+        metrics.record_request("fast", "rule").unwrap();
+        metrics.record_request("fast", "rule").unwrap();
+        metrics.record_request("balanced", "llm").unwrap();
 
         let output = metrics.gather().unwrap();
         assert!(output.contains("octoroute_requests_total"));
@@ -182,9 +203,9 @@ mod tests {
     fn test_record_routing_duration_observes_histogram() {
         let metrics = Metrics::new().unwrap();
 
-        metrics.record_routing_duration("rule", 0.5);
-        metrics.record_routing_duration("rule", 1.2);
-        metrics.record_routing_duration("llm", 250.0);
+        metrics.record_routing_duration("rule", 0.5).unwrap();
+        metrics.record_routing_duration("rule", 1.2).unwrap();
+        metrics.record_routing_duration("llm", 250.0).unwrap();
 
         let output = metrics.gather().unwrap();
         assert!(output.contains("octoroute_routing_duration_ms"));
@@ -196,9 +217,9 @@ mod tests {
     fn test_record_model_invocation_increments_counter() {
         let metrics = Metrics::new().unwrap();
 
-        metrics.record_model_invocation("fast");
-        metrics.record_model_invocation("fast");
-        metrics.record_model_invocation("balanced");
+        metrics.record_model_invocation("fast").unwrap();
+        metrics.record_model_invocation("fast").unwrap();
+        metrics.record_model_invocation("balanced").unwrap();
 
         let output = metrics.gather().unwrap();
         assert!(output.contains("octoroute_model_invocations_total"));
@@ -210,7 +231,7 @@ mod tests {
     fn test_gather_produces_prometheus_text_format() {
         let metrics = Metrics::new().unwrap();
 
-        metrics.record_request("deep", "hybrid");
+        metrics.record_request("deep", "hybrid").unwrap();
         let output = metrics.gather().unwrap();
 
         // Verify Prometheus text format structure
@@ -225,7 +246,7 @@ mod tests {
         let cloned = metrics.clone();
 
         // Record on original
-        metrics.record_request("fast", "rule");
+        metrics.record_request("fast", "rule").unwrap();
 
         // Verify clone sees the same metrics (shared registry)
         let output = cloned.gather().unwrap();
@@ -236,8 +257,8 @@ mod tests {
     fn test_histogram_buckets_configured() {
         let metrics = Metrics::new().unwrap();
 
-        metrics.record_routing_duration("rule", 0.1);
-        metrics.record_routing_duration("rule", 100.0);
+        metrics.record_routing_duration("rule", 0.1).unwrap();
+        metrics.record_routing_duration("rule", 100.0).unwrap();
 
         let output = metrics.gather().unwrap();
 
@@ -252,11 +273,11 @@ mod tests {
         let metrics = Metrics::new().unwrap();
 
         // Record different combinations
-        metrics.record_request("fast", "rule");
-        metrics.record_request("fast", "hybrid");
-        metrics.record_request("balanced", "rule");
-        metrics.record_request("balanced", "llm");
-        metrics.record_request("deep", "hybrid");
+        metrics.record_request("fast", "rule").unwrap();
+        metrics.record_request("fast", "hybrid").unwrap();
+        metrics.record_request("balanced", "rule").unwrap();
+        metrics.record_request("balanced", "llm").unwrap();
+        metrics.record_request("deep", "hybrid").unwrap();
 
         let output = metrics.gather().unwrap();
 
@@ -280,9 +301,9 @@ mod tests {
         for i in 0..10 {
             let m = Arc::clone(&metrics);
             let handle = thread::spawn(move || {
-                m.record_request("fast", "rule");
-                m.record_routing_duration("rule", i as f64);
-                m.record_model_invocation("fast");
+                m.record_request("fast", "rule").unwrap();
+                m.record_routing_duration("rule", i as f64).unwrap();
+                m.record_model_invocation("fast").unwrap();
             });
             handles.push(handle);
         }
