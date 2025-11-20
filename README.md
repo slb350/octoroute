@@ -234,6 +234,19 @@ Built on:
 
 ---
 
+## Documentation
+
+Comprehensive documentation is available in the `/docs` directory:
+
+- **[Architecture Guide](docs/architecture.md)** - System design, routing strategies, data flow, and technical decisions
+- **[API Reference](docs/api-reference.md)** - Complete HTTP API documentation with request/response schemas and examples
+- **[Configuration Guide](docs/configuration.md)** - Detailed configuration reference with examples for different deployment scenarios
+- **[Observability Guide](docs/observability.md)** - Logging, Prometheus metrics, Grafana dashboards, and monitoring setup
+- **[Development Guide](docs/development.md)** - Testing, benchmarking, code quality, and contributing guidelines
+- **[Deployment Guide](docs/deployment.md)** - Homelab deployment with systemd, Docker, reverse proxy, and security hardening
+
+---
+
 ## API Reference
 
 ### `POST /chat`

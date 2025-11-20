@@ -1,0 +1,479 @@
+# API Reference
+
+Complete HTTP API documentation for Octoroute.
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Request/Response Format](#requestresponse-format)
+3. [Endpoints](#endpoints)
+4. [Error Responses](#error-responses)
+5. [Examples](#examples)
+
+---
+
+## Overview
+
+Octoroute exposes a simple HTTP API for routing requests to local LLM endpoints. All endpoints return JSON responses.
+
+**Base URL**: `http://localhost:3000` (configurable via `config.toml`)
+
+**Content-Type**: All requests and responses use `application/json`
+
+---
+
+## Request/Response Format
+
+### Common Types
+
+#### Importance
+
+Optional importance level hint for routing decisions.
+
+```json
+"importance": "low" | "normal" | "high"
+```
+
+Default: `"normal"`
+
+#### TaskType
+
+Optional task type hint for routing decisions.
+
+```json
+"task_type": "casual_chat" | "code" | "creative_writing" | "deep_analysis" | "document_summary" | "question_answer"
+```
+
+Default: `"question_answer"`
+
+#### ModelTier
+
+Represents which model tier to use.
+
+```json
+"tier": "fast" | "balanced" | "deep"
+```
+
+- `fast`: 8B models for quick tasks
+- `balanced`: 30B models for coding/analysis
+- `deep`: 120B models for complex reasoning
+
+---
+
+## Endpoints
+
+### POST /chat
+
+Submit a chat request and get a routed response.
+
+#### Request Body
+
+```json
+{
+  "prompt": "string (required)",
+  "importance": "low | normal | high (optional, default: normal)",
+  "task_type": "casual_chat | code | creative_writing | deep_analysis | document_summary | question_answer (optional, default: question_answer)",
+  "tier": "fast | balanced | deep (optional, overrides routing)"
+}
+```
+
+**Fields**:
+
+- `prompt` (string, required): The user's message or question
+- `importance` (enum, optional): Importance level for routing decisions
+- `task_type` (enum, optional): Task type hint for routing decisions
+- `tier` (enum, optional): Explicit tier override (skips routing logic)
+
+#### Response Body
+
+```json
+{
+  "content": "string",
+  "model_tier": "fast | balanced | deep",
+  "model_name": "string",
+  "routing_strategy": "rule | llm | override"
+}
+```
+
+**Fields**:
+
+- `content` (string): The model's response text
+- `model_tier` (enum): Which tier was used (fast/balanced/deep)
+- `model_name` (string): Specific model name that handled the request
+- `routing_strategy` (string): How the routing decision was made
+  - `"rule"`: Rule-based router matched a pattern
+  - `"llm"`: LLM router made the decision (ambiguous case)
+  - `"override"`: User specified explicit tier
+
+#### Status Codes
+
+- `200 OK`: Request successful
+- `400 Bad Request`: Invalid request (empty prompt, invalid enum values)
+- `500 Internal Server Error`: Configuration or routing error
+- `502 Bad Gateway`: Model invocation failed
+- `503 Service Unavailable`: All endpoints for selected tier are unhealthy
+- `504 Gateway Timeout`: Request exceeded timeout
+
+---
+
+### GET /health
+
+Health check endpoint for monitoring.
+
+#### Response Body
+
+```json
+"OK"
+```
+
+#### Status Codes
+
+- `200 OK`: Server is running
+
+**Note**: This endpoint only checks if the server is running, not model availability. Use `GET /models` for detailed health status.
+
+---
+
+### GET /models
+
+List all configured model endpoints with health status.
+
+#### Response Body
+
+```json
+{
+  "models": [
+    {
+      "name": "string",
+      "tier": "fast | balanced | deep",
+      "endpoint": "string",
+      "healthy": true | false,
+      "priority": 1,
+      "weight": 1.0
+    }
+  ]
+}
+```
+
+**Fields**:
+
+- `name` (string): Model name (e.g., "qwen3-8b-instruct")
+- `tier` (enum): Which tier this model belongs to
+- `endpoint` (string): Base URL for the model endpoint
+- `healthy` (boolean): Current health status
+- `priority` (integer): Priority level (higher = tried first)
+- `weight` (number): Load balancing weight
+
+#### Status Codes
+
+- `200 OK`: Models list retrieved successfully
+
+---
+
+### GET /metrics
+
+Prometheus metrics endpoint for monitoring.
+
+#### Response Format
+
+Prometheus text exposition format.
+
+#### Example Response
+
+```
+# HELP octoroute_requests_total Total number of chat requests
+# TYPE octoroute_requests_total counter
+octoroute_requests_total{tier="fast",strategy="rule"} 42
+octoroute_requests_total{tier="balanced",strategy="llm"} 15
+
+# HELP octoroute_routing_duration_ms Routing decision latency in milliseconds
+# TYPE octoroute_routing_duration_ms histogram
+octoroute_routing_duration_ms_bucket{strategy="rule",le="0.1"} 30
+octoroute_routing_duration_ms_bucket{strategy="rule",le="0.5"} 42
+octoroute_routing_duration_ms_bucket{strategy="rule",le="+Inf"} 42
+octoroute_routing_duration_ms_sum{strategy="rule"} 12.5
+octoroute_routing_duration_ms_count{strategy="rule"} 42
+
+# HELP octoroute_model_invocations_total Total model invocations by tier
+# TYPE octoroute_model_invocations_total counter
+octoroute_model_invocations_total{tier="fast"} 42
+octoroute_model_invocations_total{tier="balanced"} 15
+```
+
+#### Metrics
+
+- `octoroute_requests_total{tier, strategy}`: Total requests by tier and routing strategy
+- `octoroute_routing_duration_ms{strategy}`: Histogram of routing decision latency
+- `octoroute_model_invocations_total{tier}`: Total model invocations by tier
+
+#### Status Codes
+
+- `200 OK`: Metrics exported successfully
+- `500 Internal Server Error`: Failed to gather metrics
+
+**Security Note**: This endpoint is unauthenticated. See [Deployment Guide](deployment.md) for security recommendations.
+
+---
+
+## Error Responses
+
+All errors return JSON with an `error` field:
+
+```json
+{
+  "error": "Human-readable error message"
+}
+```
+
+### Error Scenarios
+
+#### 400 Bad Request
+
+**Cause**: Invalid request (validation failed)
+
+**Examples**:
+- Empty prompt: `{"error": "prompt cannot be empty"}`
+- Invalid importance: `{"error": "unknown variant 'urgent', expected 'low', 'normal', or 'high'"}`
+
+#### 500 Internal Server Error
+
+**Cause**: Configuration or routing logic error
+
+**Examples**:
+- `{"error": "Configuration error: no endpoints defined for Fast tier"}`
+- `{"error": "Routing failed: unable to determine target tier"}`
+
+#### 502 Bad Gateway
+
+**Cause**: Model invocation failed
+
+**Examples**:
+- `{"error": "Model error: connection refused"}`
+- `{"error": "Model error: unexpected response format"}`
+
+#### 503 Service Unavailable
+
+**Cause**: All endpoints for selected tier are unhealthy
+
+**Example**:
+- `{"error": "Fast tier unavailable"}`
+
+#### 504 Gateway Timeout
+
+**Cause**: Request exceeded configured timeout
+
+**Example**:
+- `{"error": "Request timeout after 30s"}`
+
+---
+
+## Examples
+
+### Basic Chat Request
+
+```bash
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "What is the capital of France?"
+  }'
+```
+
+**Response**:
+
+```json
+{
+  "content": "The capital of France is Paris.",
+  "model_tier": "fast",
+  "model_name": "qwen3-8b-instruct",
+  "routing_strategy": "rule"
+}
+```
+
+**Routing Decision**: Simple question → rule-based router → fast tier (8B model)
+
+---
+
+### High Importance Request
+
+```bash
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Analyze the implications of quantum computing on cryptography.",
+    "importance": "high",
+    "task_type": "deep_analysis"
+  }'
+```
+
+**Response**:
+
+```json
+{
+  "content": "Quantum computing poses significant challenges to current cryptographic systems...",
+  "model_tier": "deep",
+  "model_name": "gpt-oss-120b",
+  "routing_strategy": "rule"
+}
+```
+
+**Routing Decision**: High importance + deep analysis → rule-based router → deep tier (120B model)
+
+---
+
+### Code Generation Request
+
+```bash
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Write a function to parse JSON in Rust with error handling.",
+    "task_type": "code"
+  }'
+```
+
+**Response**:
+
+```json
+{
+  "content": "Here's a Rust function to parse JSON with proper error handling:\n\n```rust\nuse serde_json::Value;\n...",
+  "model_tier": "balanced",
+  "model_name": "qwen3-30b-instruct",
+  "routing_strategy": "rule"
+}
+```
+
+**Routing Decision**: Code task, moderate size → rule-based router → balanced tier (30B model)
+
+---
+
+### Ambiguous Request (LLM Routing)
+
+```bash
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Tell me about Rust",
+    "importance": "high",
+    "task_type": "casual_chat"
+  }'
+```
+
+**Response**:
+
+```json
+{
+  "content": "Rust is a systems programming language...",
+  "model_tier": "balanced",
+  "model_name": "qwen3-30b-instruct",
+  "routing_strategy": "llm"
+}
+```
+
+**Routing Decision**: Ambiguous (casual chat but high importance) → no rule match → LLM router decides → balanced tier
+
+**Routing Latency**: +100-500ms for LLM routing decision
+
+---
+
+### Explicit Tier Override
+
+```bash
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Quick test",
+    "tier": "deep"
+  }'
+```
+
+**Response**:
+
+```json
+{
+  "content": "Hello! How can I help you?",
+  "model_tier": "deep",
+  "model_name": "gpt-oss-120b",
+  "routing_strategy": "override"
+}
+```
+
+**Routing Decision**: User specified deep tier → skip routing logic → deep tier (120B model)
+
+---
+
+### Check Model Health
+
+```bash
+curl http://localhost:3000/models
+```
+
+**Response**:
+
+```json
+{
+  "models": [
+    {
+      "name": "qwen3-8b-instruct",
+      "tier": "fast",
+      "endpoint": "http://macmini-1:11434/v1",
+      "healthy": true,
+      "priority": 1,
+      "weight": 1.0
+    },
+    {
+      "name": "qwen3-8b-instruct",
+      "tier": "fast",
+      "endpoint": "http://macmini-2:11434/v1",
+      "healthy": false,
+      "priority": 1,
+      "weight": 1.0
+    },
+    {
+      "name": "qwen3-30b-instruct",
+      "tier": "balanced",
+      "endpoint": "http://lmstudio-host:1234/v1",
+      "healthy": true,
+      "priority": 1,
+      "weight": 1.0
+    },
+    {
+      "name": "gpt-oss-120b",
+      "tier": "deep",
+      "endpoint": "http://llamacpp-box:8080/v1",
+      "healthy": true,
+      "priority": 1,
+      "weight": 1.0
+    }
+  ]
+}
+```
+
+**Interpretation**:
+- Fast tier: 2 endpoints (1 healthy, 1 unhealthy)
+- Balanced tier: 1 endpoint (healthy)
+- Deep tier: 1 endpoint (healthy)
+
+---
+
+### Scrape Metrics
+
+```bash
+curl http://localhost:3000/metrics
+```
+
+**Response**: Prometheus text format (see `/metrics` endpoint documentation above)
+
+**Use Case**: Configure Prometheus to scrape this endpoint for monitoring routing decisions and model usage.
+
+---
+
+## Rate Limiting
+
+Octoroute does not implement rate limiting. Consider using a reverse proxy (nginx, Caddy) for rate limiting in production.
+
+## Authentication
+
+Octoroute does not implement authentication. All endpoints are unauthenticated by default. See [Deployment Guide](deployment.md) for security recommendations.
