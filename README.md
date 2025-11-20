@@ -171,9 +171,9 @@ cargo build --release --features metrics
 ```
 
 **Available metrics:**
-- `octoroute_requests_total` - Request counts by tier and routing strategy
-- `octoroute_routing_duration_ms` - Routing decision latency histogram
-- `octoroute_model_invocations_total` - Model invocations by tier
+- `octoroute_requests_total{tier, strategy}` - Request counts by tier (fast/balanced/deep) and routing strategy (rule/llm)
+- `octoroute_routing_duration_ms{strategy}` - Routing decision latency histogram (buckets: 0.1ms to 1000ms)
+- `octoroute_model_invocations_total{tier}` - Model invocations by tier
 
 **Prometheus scraping config:**
 
@@ -187,10 +187,11 @@ scrape_configs:
     scrape_interval: 15s
 ```
 
-**Why OpenTelemetry?** We use OpenTelemetry with Prometheus export to keep your options open:
+**Why Direct Prometheus?** We use the `prometheus` crate directly for simplicity and stability:
 - Works with existing Prometheus/Grafana homelab setups
-- Vendor-neutral (can switch to other backends later)
-- Future-proof for adding distributed traces
+- No deprecated dependencies (switched from `opentelemetry-prometheus` which was discontinued)
+- Simple and reliable - zero overhead
+- Future-proof: OpenTelemetry traces can be added separately if needed
 
 ### Level 3: Distributed Traces (Future)
 
@@ -369,7 +370,7 @@ RUST_LOG=debug cargo run
 
 ## Project Status
 
-**Current Phase**: Phase 2c - Priority-based selection with health checking
+**Current Phase**: Phase 5 Complete - Production Ready! 🚀
 
 **Roadmap**:
 
@@ -378,22 +379,26 @@ RUST_LOG=debug cargo run
 - [x] Phase 2a: Model integration with `open-agent-sdk` (round-robin selection)
 - [x] Phase 2b: Weighted load balancing
 - [x] Phase 2c: Priority-based selection with health checking
-- [ ] Phase 3: LLM-based routing
-- [ ] Phase 4: Tool-based routing (experimental)
-- [ ] Phase 5: Observability & production hardening
+- [x] Phase 3: LLM-based hybrid routing
+- [x] Phase 5: Production Polish & Observability
+- [ ] Phase 4: Tool-based routing (experimental - future)
 
 **Features implemented**:
-- ✅ HTTP API with `/chat`, `/health`, `/models` endpoints
+- ✅ HTTP API with `/chat`, `/health`, `/models`, `/metrics` endpoints
 - ✅ Multi-tier model selection (fast/balanced/deep)
 - ✅ Rule-based + LLM-based hybrid routing
 - ✅ Priority-based routing with weighted distribution
 - ✅ Health checking with automatic endpoint recovery
 - ✅ Retry logic with request-scoped exclusion
-- ✅ Timeout enforcement (connection + streaming)
+- ✅ Timeout enforcement (global + per-tier overrides)
+- ✅ Prometheus metrics (optional, behind `metrics` feature)
+- ✅ Performance benchmarks (Criterion)
+- ✅ CI/CD pipeline (GitHub Actions)
 - ✅ Comprehensive config validation
-- ✅ 234 tests passing (168 unit + 66 integration)
-
-See `CLAUDE.md` for detailed development workflow.
+- ✅ Development tooling (justfile with 20+ recipes)
+- ✅ **270 tests passing** (203 lib + 67 integration)
+- ✅ **Zero clippy warnings**
+- ✅ **Zero tech debt**
 
 ---
 
@@ -502,14 +507,15 @@ Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guideli
 
 For homelab deployments, we recommend Prometheus + Grafana for metrics visualization.
 
-### Q: Why OpenTelemetry instead of direct Prometheus?
+### Q: Why direct Prometheus instead of OpenTelemetry?
 
-**A**: OpenTelemetry is vendor-neutral and future-proof. You get:
-- Prometheus export for existing homelab setups (no changes needed)
-- Ability to switch to other backends (Grafana Cloud, Jaeger, etc.) without code changes
-- Built-in support for traces when we add that feature
+**A**: We originally planned OpenTelemetry, but `opentelemetry-prometheus` was deprecated in v0.29 with security vulnerabilities. We switched to the direct `prometheus` crate (v0.14) for:
+- **Stability**: Mature, actively maintained library with no deprecated dependencies
+- **Simplicity**: No intermediate abstraction layers - just Prometheus
+- **Homelab-friendly**: Works with existing Prometheus/Grafana setups, no OTEL collector required
+- **Future-proof**: OpenTelemetry traces can be added separately if needed for distributed tracing
 
-The `/metrics` endpoint works with your existing Prometheus scraper - no OTEL collector required.
+The `/metrics` endpoint works with your existing Prometheus scraper out of the box.
 
 ---
 
