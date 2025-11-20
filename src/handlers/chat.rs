@@ -254,18 +254,34 @@ pub async fn handler(
 
     // Use router to determine target tier
     // Router type determined by config.routing.strategy (rule, llm, or hybrid)
+    let routing_start = std::time::Instant::now();
     let decision = state
         .router()
         .route(request.message(), &metadata, state.selector())
         .await?;
+    let routing_duration_ms = routing_start.elapsed().as_secs_f64() * 1000.0;
 
     tracing::info!(
         request_id = %request_id,
         target_tier = ?decision.target(),
         routing_strategy = ?decision.strategy(),
         token_estimate = metadata.token_estimate,
+        routing_duration_ms = %routing_duration_ms,
         "Routing decision made"
     );
+
+    // Record metrics (if metrics feature is enabled)
+    #[cfg(feature = "metrics")]
+    if let Some(metrics) = state.metrics() {
+        let tier_str = match decision.target() {
+            TargetModel::Fast => "fast",
+            TargetModel::Balanced => "balanced",
+            TargetModel::Deep => "deep",
+        };
+        let strategy_str = decision.strategy().as_str();
+        metrics.record_request(tier_str, strategy_str);
+        metrics.record_routing_duration(strategy_str, routing_duration_ms);
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // RETRY STRATEGY: Dual-Level Failure Tracking
@@ -438,6 +454,17 @@ pub async fn handler(
                     decision.target(),
                     decision.strategy(),
                 );
+
+                // Record successful model invocation (if metrics feature is enabled)
+                #[cfg(feature = "metrics")]
+                if let Some(metrics) = state.metrics() {
+                    let tier_str = match decision.target() {
+                        TargetModel::Fast => "fast",
+                        TargetModel::Balanced => "balanced",
+                        TargetModel::Deep => "deep",
+                    };
+                    metrics.record_model_invocation(tier_str);
+                }
 
                 return Ok(Json(response));
             }
