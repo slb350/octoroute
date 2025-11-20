@@ -320,12 +320,13 @@ RUST_LOG=debug cargo run
 **Features implemented**:
 - ✅ HTTP API with `/chat`, `/health`, `/models` endpoints
 - ✅ Multi-tier model selection (fast/balanced/deep)
+- ✅ Rule-based + LLM-based hybrid routing
 - ✅ Priority-based routing with weighted distribution
 - ✅ Health checking with automatic endpoint recovery
 - ✅ Retry logic with request-scoped exclusion
 - ✅ Timeout enforcement (connection + streaming)
 - ✅ Comprehensive config validation
-- ✅ 99 tests passing (unit + integration)
+- ✅ 234 tests passing (168 unit + 66 integration)
 
 See `CLAUDE.md` for detailed development workflow.
 

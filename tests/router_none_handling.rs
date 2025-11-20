@@ -55,7 +55,7 @@ fn create_test_app() -> Router {
     use octoroute::middleware::request_id_middleware;
 
     let config = Arc::new(create_test_config());
-    let state = AppState::new(config);
+    let state = AppState::new(config).expect("AppState::new should succeed");
 
     Router::new()
         .route("/chat", post(octoroute::handlers::chat::handler))
@@ -65,13 +65,12 @@ fn create_test_app() -> Router {
 
 #[tokio::test]
 async fn test_router_returns_none_results_in_error() {
-    // This test verifies that when the router returns None (no routing rule matches),
-    // the chat handler returns an appropriate error rather than panicking or
-    // silently defaulting to some tier.
+    // This test verifies that when the rule-based router returns None (no routing rule matches),
+    // the hybrid router falls back to LLM routing. Since the test endpoints don't exist,
+    // the LLM router will fail to connect and return an appropriate error.
     //
     // Scenario: Send a request with metadata that doesn't match any routing rule.
-    // The rule-based router will return None, and the handler should convert this
-    // to a RoutingFailed error.
+    // The rule-based router will return None, triggering LLM fallback.
 
     let app = create_test_app();
 
@@ -92,23 +91,30 @@ async fn test_router_returns_none_results_in_error() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Verify status code is 500 (Internal Server Error)
-    // This indicates a configuration/routing issue
-    assert_eq!(
-        response.status(),
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "should return 500 when no routing rule matches"
+    // With HybridRouter, when rule-based routing returns None, it falls back to LLM routing.
+    // Since the test endpoints don't exist, the LLM router fails to connect to the balanced tier.
+    // This results in 500 (Internal Server Error) or 502 (Bad Gateway).
+    assert!(
+        matches!(
+            response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR | StatusCode::BAD_GATEWAY
+        ),
+        "should return 500 or 502 when LLM fallback fails to connect, got: {}",
+        response.status()
     );
 
-    // Verify error message mentions routing failure
+    // Verify error message indicates the issue
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let body_str = String::from_utf8_lossy(&body);
 
     assert!(
-        body_str.contains("routing") || body_str.contains("Routing") || body_str.contains("rule"),
-        "error message should mention routing failure, got: {}",
+        body_str.contains("routing")
+            || body_str.contains("Routing")
+            || body_str.contains("endpoints")
+            || body_str.contains("Router query failed"),
+        "error message should indicate routing or endpoint issue, got: {}",
         body_str
     );
 }
@@ -116,6 +122,7 @@ async fn test_router_returns_none_results_in_error() {
 #[tokio::test]
 async fn test_router_none_includes_helpful_error_details() {
     // Verify that the error message includes helpful details for debugging
+    // With HybridRouter, when rule-based routing fails, it falls back to LLM routing
 
     let app = create_test_app();
 
@@ -134,19 +141,27 @@ async fn test_router_none_includes_helpful_error_details() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    // With HybridRouter fallback, expect either 500 or 502
+    assert!(
+        matches!(
+            response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR | StatusCode::BAD_GATEWAY
+        ),
+        "expected 500 or 502, got: {}",
+        response.status()
+    );
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let body_str = String::from_utf8_lossy(&body);
 
-    // Verify error includes task_type and importance for debugging
-    // The actual error format may vary, but it should help identify what went wrong
+    // Verify error message is informative
+    // With LLM fallback, the error will mention endpoint connection or routing issues
     assert!(
-        body_str.contains("task_type")
-            || body_str.contains("importance")
-            || body_str.contains("rule"),
+        body_str.contains("Router query failed")
+            || body_str.contains("endpoints")
+            || body_str.contains("routing"),
         "error should include debugging information, got: {}",
         body_str
     );

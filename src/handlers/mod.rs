@@ -1,8 +1,9 @@
 //! HTTP request handlers for Octoroute API
 
-use crate::config::Config;
+use crate::config::{Config, RoutingStrategy};
+use crate::error::{AppError, AppResult};
 use crate::models::ModelSelector;
-use crate::router::RuleBasedRouter;
+use crate::router::{HybridRouter, LlmBasedRouter, Router, RuleBasedRouter};
 use std::sync::Arc;
 
 pub mod chat;
@@ -13,11 +14,16 @@ pub mod models;
 ///
 /// Contains configuration, model selector, and router instances.
 /// All fields are Arc'd for cheap cloning across Axum handlers.
+///
+/// The router type is determined by `config.routing.strategy`:
+/// - `Rule`: Only rule-based routing (no balanced tier required)
+/// - `Llm`: Only LLM-based routing (balanced tier required)
+/// - `Hybrid`: Rule-based with LLM fallback (balanced tier required)
 #[derive(Clone)]
 pub struct AppState {
     config: Arc<Config>,
     selector: Arc<ModelSelector>,
-    router: Arc<RuleBasedRouter>,
+    router: Arc<Router>,
 }
 
 impl AppState {
@@ -25,15 +31,62 @@ impl AppState {
     ///
     /// Accepts `Arc<Config>` to avoid unnecessary cloning when the configuration
     /// is already wrapped in an Arc.
-    pub fn new(config: Arc<Config>) -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - Llm/Hybrid strategy is selected but no balanced tier endpoints are configured
+    /// - Router construction fails for any other reason
+    pub fn new(config: Arc<Config>) -> AppResult<Self> {
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router = Arc::new(RuleBasedRouter::new());
 
-        Self {
+        // Construct router based on config.routing.strategy
+        let router = match config.routing.strategy {
+            RoutingStrategy::Rule => {
+                // Rule-only routing: no balanced tier required
+                tracing::info!("Initializing rule-based router (no LLM routing)");
+                Arc::new(Router::Rule(RuleBasedRouter::new()))
+            }
+            RoutingStrategy::Llm => {
+                // LLM-only routing: balanced tier required
+                tracing::info!("Initializing LLM-based router (requires balanced tier)");
+                if config.models.balanced.is_empty() {
+                    return Err(AppError::Config(
+                        "LLM routing strategy selected but no balanced tier endpoints configured. \
+                        Either add balanced tier endpoints or change routing.strategy to 'rule'."
+                            .to_string(),
+                    ));
+                }
+                let llm_router = LlmBasedRouter::new(selector.clone())?;
+                Arc::new(Router::Llm(llm_router))
+            }
+            RoutingStrategy::Hybrid => {
+                // Hybrid routing: balanced tier required for LLM fallback
+                tracing::info!(
+                    "Initializing hybrid router (rule-based with LLM fallback, requires balanced tier)"
+                );
+                if config.models.balanced.is_empty() {
+                    return Err(AppError::Config(
+                        "Hybrid routing strategy selected but no balanced tier endpoints configured. \
+                        Either add balanced tier endpoints or change routing.strategy to 'rule'."
+                            .to_string(),
+                    ));
+                }
+                let hybrid_router = HybridRouter::new(config.clone(), selector.clone())?;
+                Arc::new(Router::Hybrid(hybrid_router))
+            }
+            RoutingStrategy::Tool => {
+                return Err(AppError::Config(
+                    "Tool-based routing is not yet implemented. Use 'rule', 'llm', or 'hybrid'."
+                        .to_string(),
+                ));
+            }
+        };
+
+        Ok(Self {
             config,
             selector,
             router,
-        }
+        })
     }
 
     /// Get reference to the configuration
@@ -46,8 +99,8 @@ impl AppState {
         &self.selector
     }
 
-    /// Get reference to the rule-based router
-    pub fn router(&self) -> &RuleBasedRouter {
+    /// Get reference to the router
+    pub fn router(&self) -> &Router {
         &self.router
     }
 }
@@ -99,7 +152,7 @@ router_model = "balanced"
     #[tokio::test]
     async fn test_appstate_new_creates_state() {
         let config = Arc::new(create_test_config());
-        let state = AppState::new(config);
+        let state = AppState::new(config).expect("AppState::new should succeed with balanced tier");
 
         // Verify we can create state and access components
         assert_eq!(state.config().server.port, 3000);
@@ -114,7 +167,7 @@ router_model = "balanced"
     #[tokio::test]
     async fn test_appstate_is_clonable() {
         let config = Arc::new(create_test_config());
-        let state = AppState::new(config);
+        let state = AppState::new(config).expect("AppState::new should succeed with balanced tier");
 
         // Clone should work (cheap Arc clone)
         let state2 = state.clone();
@@ -124,7 +177,7 @@ router_model = "balanced"
     #[tokio::test]
     async fn test_appstate_provides_access_to_components() {
         let config = Arc::new(create_test_config());
-        let state = AppState::new(config);
+        let state = AppState::new(config).expect("AppState::new should succeed with balanced tier");
 
         // Should be able to access all components
         let _ = state.config();

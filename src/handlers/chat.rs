@@ -7,7 +7,7 @@ use crate::error::{AppError, AppResult};
 use crate::handlers::AppState;
 use crate::middleware::RequestId;
 use crate::models::{EndpointName, ExclusionSet};
-use crate::router::{Importance, RouteMetadata, TargetModel, TaskType};
+use crate::router::{Importance, RouteMetadata, RoutingStrategy, TargetModel, TaskType};
 use axum::{Extension, Json, extract::State, response::IntoResponse};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::time::Duration;
@@ -113,14 +113,19 @@ impl From<crate::router::TargetModel> for ModelTier {
 }
 
 /// Chat response to client
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Fields are private to enforce construction through the validated `new()` constructor.
+/// This ensures `model_name` always matches an actual endpoint from configuration.
+#[derive(Debug, Clone, Serialize)]
 pub struct ChatResponse {
     /// Model's response content
-    pub content: String,
+    content: String,
     /// Which model tier was used
-    pub model_tier: ModelTier,
+    model_tier: ModelTier,
     /// Which specific endpoint was used
-    pub model_name: String,
+    model_name: String,
+    /// Which routing strategy made the decision (Rule or Llm)
+    routing_strategy: RoutingStrategy,
 }
 
 impl ChatResponse {
@@ -133,16 +138,102 @@ impl ChatResponse {
     /// * `content` - The model's response text
     /// * `endpoint` - The endpoint that generated the response (guarantees valid model_name)
     /// * `tier` - The tier used for routing (fast, balanced, deep)
-    pub fn new(content: String, endpoint: &ModelEndpoint, tier: TargetModel) -> Self {
+    /// * `routing_strategy` - Which routing strategy was used (Rule or Llm)
+    pub fn new(
+        content: String,
+        endpoint: &ModelEndpoint,
+        tier: TargetModel,
+        routing_strategy: RoutingStrategy,
+    ) -> Self {
         Self {
             content,
             model_tier: tier.into(),
             model_name: endpoint.name().to_string(),
+            routing_strategy,
         }
+    }
+
+    /// Get the response content
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    /// Get the model tier used
+    pub fn model_tier(&self) -> ModelTier {
+        self.model_tier
+    }
+
+    /// Get the model name (endpoint) used
+    pub fn model_name(&self) -> &str {
+        &self.model_name
+    }
+
+    /// Get the routing strategy used
+    pub fn routing_strategy(&self) -> RoutingStrategy {
+        self.routing_strategy
+    }
+}
+
+/// Custom Deserialize implementation for ChatResponse that validates fields
+///
+/// Defense-in-depth: Prevents creation of invalid ChatResponse instances via deserialization,
+/// even though ChatResponse is never deserialized from user input in current code.
+impl<'de> Deserialize<'de> for ChatResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawChatResponse {
+            content: String,
+            model_tier: ModelTier,
+            model_name: String,
+            routing_strategy: RoutingStrategy,
+        }
+
+        let raw = RawChatResponse::deserialize(deserializer)?;
+
+        // Validate content is not empty
+        if raw.content.trim().is_empty() {
+            return Err(serde::de::Error::custom("content cannot be empty"));
+        }
+
+        // Validate model_name is not empty
+        if raw.model_name.trim().is_empty() {
+            return Err(serde::de::Error::custom("model_name cannot be empty"));
+        }
+
+        Ok(ChatResponse {
+            content: raw.content,
+            model_tier: raw.model_tier,
+            model_name: raw.model_name,
+            routing_strategy: raw.routing_strategy,
+        })
     }
 }
 
 /// POST /chat handler
+///
+/// # Async Latency Characteristics
+///
+/// This handler is async with variable latency depending on routing strategy:
+///
+/// - **Rule-based routing** (~1ms): Fast, deterministic routing with immediate endpoint selection
+/// - **LLM-based routing** (~100-500ms): Intelligent routing using 30B model for decision-making
+/// - **Model query execution** (variable): Depends on selected model tier and prompt complexity
+///
+/// ## Worst-Case Latency
+///
+/// With MAX_RETRIES=3 and 30s timeout per attempt:
+/// - **Total maximum latency**: 90 seconds (3 attempts × 30s timeout)
+/// - **Typical latency**: 1-5 seconds for successful requests
+///
+/// ## Blocking Points
+///
+/// - Routing decision (rule or LLM-based)
+/// - Endpoint selection with health checking
+/// - Model query with streaming response
+/// - Health state updates (async lock acquisition)
 pub async fn handler(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -161,25 +252,17 @@ pub async fn handler(
     // Convert to metadata for routing
     let metadata = request.to_metadata();
 
-    // Use rule-based router to determine target tier
-    // If no routing rule matches, return an error to expose configuration issues
-    let target = state.router().route(&metadata).ok_or_else(|| {
-        tracing::error!(
-            request_id = %request_id,
-            task_type = ?metadata.task_type,
-            importance = ?metadata.importance,
-            token_estimate = metadata.token_estimate,
-            "ROUTING FAILED: No routing rule matched request. Check routing configuration."
-        );
-        AppError::RoutingFailed(format!(
-            "No routing rule for task_type={:?}, importance={:?}. Configuration error.",
-            metadata.task_type, metadata.importance
-        ))
-    })?;
+    // Use router to determine target tier
+    // Router type determined by config.routing.strategy (rule, llm, or hybrid)
+    let decision = state
+        .router()
+        .route(request.message(), &metadata, state.selector())
+        .await?;
 
     tracing::info!(
         request_id = %request_id,
-        target_tier = ?target,
+        target_tier = ?decision.target(),
+        routing_strategy = ?decision.strategy(),
         token_estimate = metadata.token_estimate,
         "Routing decision made"
     );
@@ -206,6 +289,14 @@ pub async fn handler(
     // - Request-scoped exclusion ensures no wasted retries on known-bad endpoints in THIS request
     // - Global health tracking prevents all requests from hitting persistently failing endpoints
     // - Without request-scoped: Could retry the same failed endpoint on attempts 1, 2, 3
+    //   (Example with **equal-weight** endpoints: With 2 endpoints where 1 is down, there's a
+    //   50% chance per attempt of selecting the broken one. Probability of hitting it on
+    //   all 3 attempts: 0.5³ = 12.5%.
+    //
+    //   **IMPORTANT**: This probability changes dramatically with weighted selection. If one
+    //   endpoint has weight=10 and the other weight=1, the high-weight endpoint will be
+    //   selected ~91% of the time, making the failure probability much higher.
+    //   Request-scoped exclusion eliminates this waste by forcing different endpoints.)
     // - Without global health: Every request would independently discover failing endpoints
     //
     // RETRY FLOW:
@@ -228,15 +319,19 @@ pub async fn handler(
 
     for attempt in 1..=MAX_RETRIES {
         // Select endpoint from target tier (with health filtering + priority + exclusion)
-        let endpoint = match state.selector().select(target, &failed_endpoints).await {
+        let endpoint = match state
+            .selector()
+            .select(decision.target(), &failed_endpoints)
+            .await
+        {
             Some(ep) => ep.clone(),
             None => {
-                let total_configured = state.selector().endpoint_count(target);
+                let total_configured = state.selector().endpoint_count(decision.target());
                 let excluded_count = failed_endpoints.len();
 
                 tracing::error!(
                     request_id = %request_id,
-                    tier = ?target,
+                    tier = ?decision.target(),
                     attempt = attempt,
                     max_retries = MAX_RETRIES,
                     total_configured_endpoints = total_configured,
@@ -249,7 +344,11 @@ pub async fn handler(
                 last_error = Some(AppError::RoutingFailed(format!(
                     "No available healthy endpoints for tier {:?} \
                     (configured: {}, excluded: {}, attempt {}/{})",
-                    target, total_configured, excluded_count, attempt, MAX_RETRIES
+                    decision.target(),
+                    total_configured,
+                    excluded_count,
+                    attempt,
+                    MAX_RETRIES
                 )));
                 continue; // Try again (may have different healthy endpoints)
             }
@@ -278,10 +377,11 @@ pub async fn handler(
             Ok(response_text) => {
                 // Success! Mark endpoint as healthy to enable immediate recovery
                 //
-                // INVARIANT CHECK: mark_success should never fail in normal operation (endpoint names come
-                // from ModelSelector which only returns valid endpoints). If it fails, this indicates
-                // a serious bug (race condition, typo, or config reload during request). Propagate the
-                // error to expose the bug immediately rather than silently continuing.
+                // DEFENSIVE CHECK: mark_success should never fail in normal operation because endpoint
+                // names come from ModelSelector which only returns valid endpoints. However, we check
+                // explicitly to catch rare edge cases (race conditions, config reload mid-request, or bugs).
+                // If it fails, propagate the error to expose the issue immediately rather than silently
+                // continuing with inconsistent health state.
                 state
                     .selector()
                     .health_checker()
@@ -295,9 +395,9 @@ pub async fn handler(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     unknown_name = %name,
-                                    selected_tier = ?target,
+                                    selected_tier = ?decision.target(),
                                     attempt = attempt,
-                                    "INVARIANT VIOLATION: mark_success called with unknown endpoint name. \
+                                    "DEFENSIVE ERROR: mark_success called with unknown endpoint name. \
                                     Endpoint names come from ModelSelector which only returns valid endpoints. \
                                     This indicates a serious bug (race condition, naming mismatch, or config \
                                     reload during request). Failing request to expose issue."
@@ -308,7 +408,7 @@ pub async fn handler(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     error = %msg,
-                                    selected_tier = ?target,
+                                    selected_tier = ?decision.target(),
                                     attempt = attempt,
                                     "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
                                     This indicates a systemic issue (TLS configuration, resource exhaustion) \
@@ -327,12 +427,17 @@ pub async fn handler(
                     request_id = %request_id,
                     endpoint_name = %endpoint.name(),
                     response_length = response_text.len(),
-                    model_tier = ?target,
+                    model_tier = ?decision.target(),
                     attempt = attempt,
                     "Request completed successfully"
                 );
 
-                let response = ChatResponse::new(response_text, &endpoint, target);
+                let response = ChatResponse::new(
+                    response_text,
+                    &endpoint,
+                    decision.target(),
+                    decision.strategy(),
+                );
 
                 return Ok(Json(response));
             }
@@ -353,10 +458,11 @@ pub async fn handler(
                 // After 3 consecutive failures (across all requests), endpoint becomes unhealthy
                 // and won't be selected by ANY request until it recovers.
                 //
-                // INVARIANT CHECK: mark_failure should never fail in normal operation (endpoint names come
-                // from ModelSelector which only returns valid endpoints). If it fails, this indicates
-                // a serious bug (race condition, typo, or config reload during request). Propagate the
-                // error to expose the bug immediately rather than silently continuing.
+                // DEFENSIVE CHECK: mark_failure should never fail in normal operation because endpoint
+                // names come from ModelSelector which only returns valid endpoints. However, we check
+                // explicitly to catch rare edge cases (race conditions, config reload mid-request, or bugs).
+                // If it fails, propagate the error to expose the issue immediately rather than silently
+                // continuing with inconsistent health state.
                 state
                     .selector()
                     .health_checker()
@@ -370,9 +476,9 @@ pub async fn handler(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     unknown_name = %name,
-                                    selected_tier = ?target,
+                                    selected_tier = ?decision.target(),
                                     attempt = attempt,
-                                    "INVARIANT VIOLATION: mark_failure called with unknown endpoint name. \
+                                    "DEFENSIVE ERROR: mark_failure called with unknown endpoint name. \
                                     Endpoint won't be marked unhealthy and will continue receiving traffic. \
                                     Endpoint names come from ModelSelector which only returns valid endpoints. \
                                     This indicates a serious bug (race condition or naming mismatch). \
@@ -384,7 +490,7 @@ pub async fn handler(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
                                     error = %msg,
-                                    selected_tier = ?target,
+                                    selected_tier = ?decision.target(),
                                     attempt = attempt,
                                     "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
                                     This indicates a systemic issue (TLS configuration, resource exhaustion) \
@@ -414,7 +520,7 @@ pub async fn handler(
     // All retries exhausted
     tracing::error!(
         request_id = %request_id,
-        tier = ?target,
+        tier = ?decision.target(),
         max_retries = MAX_RETRIES,
         "All retry attempts exhausted"
     );
@@ -467,9 +573,26 @@ async fn try_query_model(
         "Starting model query"
     );
 
-    // Enforce request timeout - wraps the ENTIRE operation: connection establishment,
-    // query initiation, and streaming all response chunks. If any part exceeds the timeout,
-    // the request fails and is eligible for retry with a different endpoint.
+    // **TIMEOUT IS PER-ATTEMPT**: Each retry gets its own independent timeout budget.
+    // The timeout applies to EACH attempt, not cumulative across retries.
+    //
+    // **TOTAL WORST-CASE LATENCY**: With MAX_RETRIES=3 and 30s timeout:
+    // - Attempt 1: up to 30s → retry
+    // - Attempt 2: up to 30s more (60s total elapsed) → retry
+    // - Attempt 3: up to 30s more (90s total elapsed) → final failure
+    // - **Maximum total latency: 90 seconds** (3 attempts × 30s timeout per attempt)
+    //
+    // The timeout wraps the ENTIRE operation per attempt: connection establishment,
+    // query initiation, and streaming all response chunks.
+    //
+    // **BILLING IMPACT**: When timeout triggers, Tokio cancels the Future, which drops the HTTP
+    // stream and closes the connection to the endpoint. However, the endpoint may continue processing
+    // the request (we don't send HTTP cancellation signals), so timeouts are billed as full requests
+    // by most LLM APIs.
+    //
+    // Users pay for 90 seconds of API time in worst-case (3 timeouts × 30s), even though each attempt
+    // only consumed ~5 seconds before timing out. If you're seeing frequent timeouts, consider
+    // increasing timeout_seconds in the configuration rather than accepting higher retry costs.
     let timeout_duration = Duration::from_secs(timeout_seconds);
 
     use futures::StreamExt;
@@ -510,7 +633,7 @@ async fn try_query_model(
                                     endpoint_name = %endpoint.name(),
                                     block_type = ?other_block,
                                     block_number = block_count,
-                                    "Received non-text content block, skipping (not yet supported through Phase 2c)"
+                                    "Received non-text content block, skipping (not supported - text blocks only)"
                                 );
                             }
                         }
@@ -742,14 +865,226 @@ mod tests {
 
     #[test]
     fn test_chat_response_serializes() {
-        let resp = ChatResponse {
-            content: "4".to_string(),
-            model_tier: ModelTier::Fast,
-            model_name: "fast-1".to_string(),
-        };
+        // Use constructor instead of struct literal (fields are now private)
+        let toml = r#"
+name = "fast-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+"#;
+        let endpoint: ModelEndpoint = toml::from_str(toml).expect("should parse endpoint");
+
+        let resp = ChatResponse::new(
+            "4".to_string(),
+            &endpoint,
+            TargetModel::Fast,
+            RoutingStrategy::Rule,
+        );
 
         let json = serde_json::to_string(&resp).expect("should serialize");
         assert!(json.contains("\"content\":\"4\""));
         assert!(json.contains("\"model_tier\":\"fast\""));
+        assert!(json.contains("\"routing_strategy\":\"rule\""));
+    }
+
+    #[test]
+    fn test_chat_response_constructor_and_accessors() {
+        // Create a mock endpoint using TOML deserialization
+        let toml = r#"
+name = "test-model"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+"#;
+        let endpoint: ModelEndpoint = toml::from_str(toml).expect("should parse endpoint");
+
+        // Create ChatResponse using constructor
+        let response = ChatResponse::new(
+            "Test response".to_string(),
+            &endpoint,
+            TargetModel::Fast,
+            RoutingStrategy::Rule,
+        );
+
+        // Verify accessors work
+        assert_eq!(response.content(), "Test response");
+        assert_eq!(response.model_tier(), ModelTier::Fast);
+        assert_eq!(response.model_name(), "test-model");
+        assert_eq!(response.routing_strategy(), RoutingStrategy::Rule);
+    }
+
+    #[test]
+    fn test_chat_response_serde_with_constructor() {
+        // Create a mock endpoint
+        let toml = r#"
+name = "test-balanced"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+"#;
+        let endpoint: ModelEndpoint = toml::from_str(toml).expect("should parse endpoint");
+
+        let response = ChatResponse::new(
+            "Serialization test".to_string(),
+            &endpoint,
+            TargetModel::Balanced,
+            RoutingStrategy::Llm,
+        );
+
+        // Verify serialization works (will work even with private fields)
+        let json = serde_json::to_string(&response).expect("should serialize");
+        assert!(json.contains("Serialization test"));
+        assert!(json.contains("balanced"));
+        assert!(json.contains("test-balanced"));
+        assert!(json.contains("llm"));
+
+        // Verify deserialization works (serde works with private fields)
+        let deserialized: ChatResponse = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(deserialized.content(), "Serialization test");
+        assert_eq!(deserialized.model_tier(), ModelTier::Balanced);
+        assert_eq!(deserialized.model_name(), "test-balanced");
+        assert_eq!(deserialized.routing_strategy(), RoutingStrategy::Llm);
+    }
+
+    #[test]
+    fn test_chatresponse_deserialize_rejects_empty_content() {
+        // GAP #7: ChatResponse custom Deserialize validation
+        //
+        // ChatResponse has a custom Deserialize implementation that validates
+        // content and model_name are non-empty (lines 181-211).
+        //
+        // This is defense-in-depth: ChatResponse is never actually deserialized
+        // from user input (only serialized for output), but the validation
+        // prevents future footguns if code changes.
+        //
+        // Verifies: Empty content is rejected during deserialization
+
+        let json = r#"{
+            "content": "",
+            "model_tier": "balanced",
+            "model_name": "test-model",
+            "routing_strategy": "rule"
+        }"#;
+
+        let result = serde_json::from_str::<ChatResponse>(json);
+        assert!(
+            result.is_err(),
+            "ChatResponse with empty content should fail deserialization"
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("content") && err_msg.contains("empty"),
+            "Error should mention 'content' and 'empty', got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_chatresponse_deserialize_rejects_whitespace_only_content() {
+        // Verify that whitespace-only content is also rejected (trim() check)
+
+        let json = r#"{
+            "content": "   \n\t  ",
+            "model_tier": "balanced",
+            "model_name": "test-model",
+            "routing_strategy": "rule"
+        }"#;
+
+        let result = serde_json::from_str::<ChatResponse>(json);
+        assert!(
+            result.is_err(),
+            "ChatResponse with whitespace-only content should fail deserialization"
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("content") && err_msg.contains("empty"),
+            "Error should mention 'content' and 'empty', got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_chatresponse_deserialize_rejects_empty_model_name() {
+        // GAP #8: ChatResponse model_name validation
+        //
+        // Verifies: Empty model_name is rejected during deserialization
+
+        let json = r#"{
+            "content": "Some response",
+            "model_tier": "balanced",
+            "model_name": "",
+            "routing_strategy": "rule"
+        }"#;
+
+        let result = serde_json::from_str::<ChatResponse>(json);
+        assert!(
+            result.is_err(),
+            "ChatResponse with empty model_name should fail deserialization"
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("model_name") && err_msg.contains("empty"),
+            "Error should mention 'model_name' and 'empty', got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_chatresponse_deserialize_rejects_whitespace_only_model_name() {
+        // Verify that whitespace-only model_name is also rejected
+
+        let json = r#"{
+            "content": "Some response",
+            "model_tier": "balanced",
+            "model_name": "  \t\n  ",
+            "routing_strategy": "rule"
+        }"#;
+
+        let result = serde_json::from_str::<ChatResponse>(json);
+        assert!(
+            result.is_err(),
+            "ChatResponse with whitespace-only model_name should fail deserialization"
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("model_name") && err_msg.contains("empty"),
+            "Error should mention 'model_name' and 'empty', got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_chatresponse_deserialize_accepts_valid_response() {
+        // Verify that valid responses are accepted
+
+        let json = r#"{
+            "content": "Valid response content",
+            "model_tier": "deep",
+            "model_name": "gpt-oss-120b",
+            "routing_strategy": "llm"
+        }"#;
+
+        let result = serde_json::from_str::<ChatResponse>(json);
+        assert!(
+            result.is_ok(),
+            "ChatResponse with valid fields should deserialize successfully. Error: {:?}",
+            result.err()
+        );
+
+        let response = result.unwrap();
+        assert_eq!(response.content(), "Valid response content");
+        assert_eq!(response.model_tier(), ModelTier::Deep);
+        assert_eq!(response.model_name(), "gpt-oss-120b");
+        assert_eq!(response.routing_strategy(), RoutingStrategy::Llm);
     }
 }

@@ -55,7 +55,7 @@ metrics_port = 9090
 async fn test_concurrent_failures_maintain_correct_count() {
     // Create app state with health checker
     let config = Arc::new(create_test_config());
-    let state = Arc::new(AppState::new(config.clone()));
+    let state = Arc::new(AppState::new(config.clone()).expect("AppState::new should succeed"));
 
     let endpoint_name = "concurrent-test";
 
@@ -102,7 +102,7 @@ async fn test_concurrent_failures_maintain_correct_count() {
 async fn test_concurrent_success_during_failures_resets_count() {
     // Create app state with health checker
     let config = Arc::new(create_test_config());
-    let state = Arc::new(AppState::new(config.clone()));
+    let state = Arc::new(AppState::new(config.clone()).expect("AppState::new should succeed"));
 
     let endpoint_name = "concurrent-test";
 
@@ -178,7 +178,7 @@ async fn test_concurrent_success_during_failures_resets_count() {
 async fn test_interleaved_success_and_failure_updates() {
     // Create app state with health checker
     let config = Arc::new(create_test_config());
-    let state = Arc::new(AppState::new(config.clone()));
+    let state = Arc::new(AppState::new(config.clone()).expect("AppState::new should succeed"));
 
     let endpoint_name = "concurrent-test";
 

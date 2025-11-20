@@ -2,10 +2,15 @@
 //!
 //! Provides different routing strategies to select the optimal model for a request.
 
+pub mod hybrid;
+pub mod llm_based;
 pub mod rule_based;
 
+pub use hybrid::HybridRouter;
+pub use llm_based::LlmBasedRouter;
 pub use rule_based::RuleBasedRouter;
 
+use crate::error::AppResult;
 use serde::{Deserialize, Serialize};
 
 /// Target model selection (generic tiers)
@@ -18,6 +23,63 @@ pub enum TargetModel {
     Fast,
     Balanced,
     Deep,
+}
+
+/// Routing strategy used to make a routing decision
+///
+/// Provides compile-time type safety for routing strategy tracking
+/// instead of using raw strings which are error-prone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RoutingStrategy {
+    /// Rule-based routing (fast path, deterministic)
+    Rule,
+    /// LLM-based routing (intelligent fallback for ambiguous cases)
+    Llm,
+}
+
+impl RoutingStrategy {
+    /// Convert to string representation for logging and serialization
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Rule => "rule",
+            Self::Llm => "llm",
+        }
+    }
+}
+
+/// Result of a routing decision
+///
+/// Combines the target model tier with the strategy that was used
+/// to make the decision. Provides better type safety and clarity
+/// than returning a tuple.
+///
+/// Fields are private to enable future validation logic and maintain
+/// encapsulation. Use accessor methods `target()` and `strategy()` to
+/// read the values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoutingDecision {
+    /// Which model tier to use
+    target: TargetModel,
+    /// Which routing strategy made the decision
+    strategy: RoutingStrategy,
+}
+
+impl RoutingDecision {
+    /// Create a new routing decision
+    pub fn new(target: TargetModel, strategy: RoutingStrategy) -> Self {
+        Self { target, strategy }
+    }
+
+    /// Get the target model tier for this routing decision
+    pub fn target(&self) -> TargetModel {
+        self.target
+    }
+
+    /// Get the routing strategy that made this decision
+    pub fn strategy(&self) -> RoutingStrategy {
+        self.strategy
+    }
 }
 
 /// Request importance level
@@ -44,7 +106,7 @@ pub enum TaskType {
 }
 
 /// Metadata extracted from a request to inform routing decisions
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct RouteMetadata {
     /// Estimated token count for the request
     pub token_estimate: usize,
@@ -79,6 +141,95 @@ impl RouteMetadata {
     /// Estimate token count from a prompt string (simple heuristic: chars / 4)
     pub fn estimate_tokens(prompt: &str) -> usize {
         prompt.chars().count() / 4
+    }
+}
+
+/// Router type enum supporting different routing strategies
+///
+/// Enables clean separation of router types and allows conditional construction
+/// based on configuration. Each variant wraps its corresponding router implementation.
+///
+/// # Configuration-Driven Construction
+/// The router type is determined by `config.routing.strategy`:
+/// - `Rule`: Only rule-based routing (no LLM routing, no balanced tier required)
+/// - `Llm`: Only LLM-based routing (requires balanced tier configured)
+/// - `Hybrid`: Rule-based with LLM fallback (requires balanced tier configured)
+///
+/// This design allows deployments to opt-out of LLM routing (and its balanced tier requirement)
+/// by setting `strategy = "rule"` in configuration.
+pub enum Router {
+    /// Rule-based router (deterministic, fast, no LLM required)
+    Rule(RuleBasedRouter),
+    /// LLM-based router (intelligent, requires balanced tier)
+    Llm(LlmBasedRouter),
+    /// Hybrid router (rule-based with LLM fallback, requires balanced tier)
+    Hybrid(HybridRouter),
+}
+
+impl Router {
+    /// Route a request using the configured strategy
+    ///
+    /// Delegates to the appropriate router implementation based on the variant.
+    /// All routers return a RoutingDecision containing the target tier and
+    /// the strategy that made the decision.
+    ///
+    /// # Arguments
+    /// * `user_prompt` - The user's prompt/message
+    /// * `meta` - Request metadata (token estimate, importance, task type)
+    /// * `selector` - Model selector (needed for rule-based default tier fallback)
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - LLM routing fails (network error, no healthy balanced endpoints, etc.)
+    /// - Rule routing with no match and no default tier available
+    pub async fn route(
+        &self,
+        user_prompt: &str,
+        meta: &RouteMetadata,
+        selector: &crate::models::ModelSelector,
+    ) -> AppResult<RoutingDecision> {
+        match self {
+            Router::Rule(r) => {
+                // Rule router returns Option - if None, use default tier fallback
+                match r.route(user_prompt, meta, selector).await? {
+                    Some(decision) => Ok(decision),
+                    None => {
+                        // No rule matched - use default tier for rule-only mode
+                        let default_target = selector.default_tier().ok_or_else(|| {
+                            crate::error::AppError::Config(
+                                "No routing rule matched and no endpoints configured for default fallback"
+                                    .to_string(),
+                            )
+                        })?;
+
+                        // Verify default tier has healthy endpoints
+                        let exclusion_set = crate::models::ExclusionSet::new();
+                        if selector
+                            .select(default_target, &exclusion_set)
+                            .await
+                            .is_none()
+                        {
+                            return Err(crate::error::AppError::RoutingFailed(format!(
+                                "No rule matched and default tier {:?} has no healthy endpoints available",
+                                default_target
+                            )));
+                        }
+
+                        tracing::info!(
+                            default_tier = ?default_target,
+                            token_estimate = meta.token_estimate,
+                            importance = ?meta.importance,
+                            task_type = ?meta.task_type,
+                            "No rule matched, using default tier (rule-only mode)"
+                        );
+
+                        Ok(RoutingDecision::new(default_target, RoutingStrategy::Rule))
+                    }
+                }
+            }
+            Router::Llm(r) => r.route(user_prompt, meta).await,
+            Router::Hybrid(r) => r.route(user_prompt, meta).await,
+        }
     }
 }
 
@@ -168,5 +319,97 @@ mod tests {
             serde_json::from_str::<TaskType>(r#""creative_writing""#).unwrap(),
             TaskType::CreativeWriting
         );
+    }
+
+    #[test]
+    fn test_routing_strategy_as_str() {
+        assert_eq!(RoutingStrategy::Rule.as_str(), "rule");
+        assert_eq!(RoutingStrategy::Llm.as_str(), "llm");
+    }
+
+    #[test]
+    fn test_routing_strategy_serde() {
+        // Test deserialization
+        assert_eq!(
+            serde_json::from_str::<RoutingStrategy>(r#""rule""#).unwrap(),
+            RoutingStrategy::Rule
+        );
+        assert_eq!(
+            serde_json::from_str::<RoutingStrategy>(r#""llm""#).unwrap(),
+            RoutingStrategy::Llm
+        );
+
+        // Test serialization
+        assert_eq!(
+            serde_json::to_string(&RoutingStrategy::Rule).unwrap(),
+            r#""rule""#
+        );
+        assert_eq!(
+            serde_json::to_string(&RoutingStrategy::Llm).unwrap(),
+            r#""llm""#
+        );
+    }
+
+    #[test]
+    fn test_routing_decision_new() {
+        let decision = RoutingDecision::new(TargetModel::Fast, RoutingStrategy::Rule);
+        assert_eq!(decision.target(), TargetModel::Fast);
+        assert_eq!(decision.strategy(), RoutingStrategy::Rule);
+    }
+
+    #[test]
+    fn test_routing_decision_accessors() {
+        // ISSUE #1a: Test accessor methods (to support private fields)
+        //
+        // This test verifies that RoutingDecision provides proper accessor methods
+        // for its fields, enabling encapsulation and future validation logic.
+
+        let decision = RoutingDecision::new(TargetModel::Balanced, RoutingStrategy::Llm);
+
+        // Test target() accessor
+        assert_eq!(
+            decision.target(),
+            TargetModel::Balanced,
+            "target() should return the target model"
+        );
+
+        // Test strategy() accessor
+        assert_eq!(
+            decision.strategy(),
+            RoutingStrategy::Llm,
+            "strategy() should return the routing strategy"
+        );
+    }
+
+    #[test]
+    fn test_routing_decision_accessors_all_variants() {
+        // ISSUE #1a: Verify accessors work for all enum variants
+        //
+        // Ensures accessor methods correctly return all possible values
+
+        let test_cases = vec![
+            (TargetModel::Fast, RoutingStrategy::Rule),
+            (TargetModel::Balanced, RoutingStrategy::Rule),
+            (TargetModel::Deep, RoutingStrategy::Rule),
+            (TargetModel::Fast, RoutingStrategy::Llm),
+            (TargetModel::Balanced, RoutingStrategy::Llm),
+            (TargetModel::Deep, RoutingStrategy::Llm),
+        ];
+
+        for (target, strategy) in test_cases {
+            let decision = RoutingDecision::new(target, strategy);
+            assert_eq!(decision.target(), target);
+            assert_eq!(decision.strategy(), strategy);
+        }
+    }
+
+    #[test]
+    fn test_routing_decision_equality() {
+        let decision1 = RoutingDecision::new(TargetModel::Balanced, RoutingStrategy::Llm);
+        let decision2 = RoutingDecision::new(TargetModel::Balanced, RoutingStrategy::Llm);
+        let decision3 = RoutingDecision::new(TargetModel::Fast, RoutingStrategy::Rule);
+
+        assert_eq!(decision1, decision2);
+        assert_ne!(decision1, decision3);
     }
 }

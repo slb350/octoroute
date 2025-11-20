@@ -33,28 +33,32 @@ async fn mock_chat_handler(
     let metadata = request.to_metadata();
 
     // Use real router to test routing decisions
-    let target = state.router().route(&metadata).unwrap_or_else(|| {
-        use octoroute::router::TargetModel;
-        TargetModel::Balanced
-    });
+    let decision = state
+        .router()
+        .route(request.message(), &metadata, state.selector())
+        .await?;
 
     // Use real selector to test endpoint selection (with health filtering)
     let no_exclude = octoroute::models::ExclusionSet::new();
     let endpoint = state
         .selector()
-        .select(target, &no_exclude)
+        .select(decision.target(), &no_exclude)
         .await
         .ok_or_else(|| {
-            AppError::RoutingFailed(format!("No available endpoints for tier {:?}", target))
+            AppError::RoutingFailed(format!(
+                "No available endpoints for tier {:?}",
+                decision.target()
+            ))
         })?;
 
     // Return mock response without calling real model
     // This tests validation, routing, selection, and response serialization
-    let response = ChatResponse {
-        content: "Mock response for testing".to_string(),
-        model_tier: target.into(),
-        model_name: endpoint.name().to_string(),
-    };
+    let response = ChatResponse::new(
+        "Mock response for testing".to_string(),
+        endpoint,
+        decision.target(),
+        decision.strategy(),
+    );
 
     Ok(Json(response))
 }
@@ -103,7 +107,7 @@ router_model = "balanced"
 /// Helper to create test app with mock handler
 fn create_test_app() -> Router {
     let config = Arc::new(create_test_config());
-    let state = AppState::new(config);
+    let state = AppState::new(config).expect("AppState::new should succeed");
 
     Router::new()
         .route("/chat", post(mock_chat_handler))
@@ -114,11 +118,15 @@ fn create_test_app() -> Router {
 async fn test_chat_endpoint_with_valid_request() {
     let app = create_test_app();
 
+    // Use a request that matches rule-based routing (casual chat with low importance)
+    // to avoid LLM fallback which would try to connect to non-existent test endpoints
     let request = Request::builder()
         .method("POST")
         .uri("/chat")
         .header("content-type", "application/json")
-        .body(Body::from(r#"{"message": "Hello, world!"}"#))
+        .body(Body::from(
+            r#"{"message": "Hello!", "task_type": "casual_chat", "importance": "low"}"#,
+        ))
         .unwrap();
 
     let response = app.oneshot(request).await.unwrap();
@@ -136,22 +144,23 @@ async fn test_chat_endpoint_with_valid_request() {
 
     // Verify response fields (mock handler returns mock data)
     assert_eq!(
-        chat_response.content, "Mock response for testing",
+        chat_response.content(),
+        "Mock response for testing",
         "content should be mock response"
     );
     use octoroute::handlers::chat::ModelTier;
     assert!(
         matches!(
-            chat_response.model_tier,
+            chat_response.model_tier(),
             ModelTier::Fast | ModelTier::Balanced | ModelTier::Deep
         ),
         "model_tier should be one of Fast/Balanced/Deep, got {:?}",
-        chat_response.model_tier
+        chat_response.model_tier()
     );
     assert!(
-        chat_response.model_name.starts_with("test-"),
+        chat_response.model_name().starts_with("test-"),
         "model_name should be test endpoint, got {}",
-        chat_response.model_name
+        chat_response.model_name()
     );
 }
 
@@ -230,13 +239,22 @@ async fn test_chat_endpoint_with_invalid_json() {
 
 #[tokio::test]
 async fn test_chat_endpoint_with_no_available_endpoints() {
-    // Create config with all empty tiers to trigger "no available endpoints" error
-    let mut config = create_test_config();
-    config.models.fast.clear();
-    config.models.balanced.clear();
-    config.models.deep.clear();
+    // Create normal config but mark all endpoints as unhealthy
+    // This triggers "no available endpoints" error
+    let config = create_test_config();
+    let state = AppState::new(Arc::new(config)).expect("AppState::new should succeed");
 
-    let state = AppState::new(Arc::new(config));
+    // Mark all endpoints as unhealthy (3 consecutive failures)
+    let health_checker = state.selector().health_checker();
+    for endpoint in ["test-fast-1", "test-balanced-1", "test-deep-1"] {
+        for _ in 0..3 {
+            health_checker
+                .mark_failure(endpoint)
+                .await
+                .expect("mark_failure should succeed");
+        }
+    }
+
     let app = Router::new()
         .route("/chat", post(mock_chat_handler))
         .with_state(state);
@@ -250,7 +268,7 @@ async fn test_chat_endpoint_with_no_available_endpoints() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Should return 500 Internal Server Error when no endpoints available
+    // Should return 500 Internal Server Error when no healthy endpoints available
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -259,8 +277,11 @@ async fn test_chat_endpoint_with_no_available_endpoints() {
     let body_str = String::from_utf8_lossy(&body);
 
     assert!(
-        body_str.contains("No available endpoints") || body_str.contains("RoutingFailed"),
-        "error message should mention no available endpoints, got: {}",
+        body_str.contains("No available endpoints")
+            || body_str.contains("RoutingFailed")
+            || body_str.contains("no healthy endpoints")
+            || body_str.contains("routing"),
+        "error message should mention no available endpoints or routing failure, got: {}",
         body_str
     );
 }

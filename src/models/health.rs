@@ -221,6 +221,17 @@ pub struct HealthChecker {
     background_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
+impl std::fmt::Debug for HealthChecker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HealthChecker")
+            .field("health_status", &"<RwLock<HashMap>>")
+            .field("config", &"<Config>")
+            .field("metrics", &"<HealthMetrics>")
+            .field("background_task", &"<Mutex<JoinHandle>>")
+            .finish()
+    }
+}
+
 impl HealthChecker {
     /// Create a new HealthChecker with all endpoints starting as healthy
     pub fn new(config: Arc<Config>) -> Self {

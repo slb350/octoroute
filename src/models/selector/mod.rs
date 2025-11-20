@@ -1,12 +1,16 @@
 //! Model selection logic for choosing from multiple endpoints
 //!
-//! Phase 2c: Priority + weighted selection with health checking
+//! Implements priority-based selection with weighted distribution and health checking.
 //!
 //! Production code is in this file, tests are organized in sibling modules:
 //! - tests_basic: Basic selection, endpoint counting, empty tiers
 //! - tests_priority: Priority-based filtering
 //! - tests_weighted: Weighted random distribution
 //! - tests_exclusion: Exclusion set handling for retry logic
+
+mod balanced;
+
+pub use balanced::BalancedSelector;
 
 use crate::config::{Config, ModelEndpoint};
 use crate::models::endpoint_name::{EndpointName, ExclusionSet};
@@ -18,10 +22,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Selects appropriate model endpoint from multi-model configuration
 ///
-/// Phase 2c: Priority-based selection with health filtering and weighted distribution.
+/// Implements priority-based selection with health filtering and weighted distribution:
 /// - Filters out unhealthy endpoints
 /// - Selects from highest available priority tier
 /// - Uses weighted random selection within priority tier
+#[derive(Debug)]
 pub struct ModelSelector {
     config: Arc<Config>,
     health_checker: Arc<HealthChecker>,
@@ -57,7 +62,7 @@ impl ModelSelector {
 
     /// Select an endpoint for the given target model tier using priority + weighted random selection
     ///
-    /// Phase 2c: Priority-based selection with health filtering, exclusion, and weighted distribution.
+    /// Implements priority-based selection with health filtering, exclusion, and weighted distribution:
     /// - Filters out unhealthy endpoints first
     /// - Filters out endpoints in the exclusion set (for retry logic)
     /// - Filters to only the highest available priority tier
@@ -94,7 +99,7 @@ impl ModelSelector {
             return None;
         }
 
-        // Phase 2c: Filter to only healthy and non-excluded endpoints
+        // Filter to only healthy and non-excluded endpoints
         let mut available_endpoints = Vec::new();
         for endpoint in endpoints.iter() {
             // Skip unhealthy endpoints
@@ -133,7 +138,7 @@ impl ModelSelector {
             "Filtered to healthy and non-excluded endpoints"
         );
 
-        // Phase 2c: Find highest priority among available endpoints and filter to only that tier
+        // Find highest priority among available endpoints and filter to only that tier
         let max_priority = available_endpoints
             .iter()
             .map(|e| e.priority())
@@ -221,6 +226,76 @@ impl ModelSelector {
             TargetModel::Balanced => self.config.models.balanced.len(),
             TargetModel::Deep => self.config.models.deep.len(),
         }
+    }
+
+    /// Get the default tier when no routing rule matches
+    ///
+    /// Selects the tier with the highest priority endpoint across ALL tiers
+    /// (fast, balanced, deep). This is used as a fallback when rule-based routing
+    /// returns None and LLM routing is not available.
+    ///
+    /// # Selection Logic
+    /// 1. Find the maximum priority value across all configured endpoints in all tiers
+    /// 2. Return the first tier (in order: Fast, Balanced, Deep) that has an endpoint with that priority
+    ///
+    /// # Returns
+    /// Returns `Some(TargetModel)` with the tier of the highest-priority endpoint,
+    /// or `None` if no endpoints are configured at all.
+    ///
+    /// # Example
+    /// ```text
+    /// Config:
+    ///   Fast tier: priority 2
+    ///   Balanced tier: (empty)
+    ///   Deep tier: priority 3
+    ///
+    /// default_tier() returns Deep (priority 3 is highest)
+    /// ```
+    pub fn default_tier(&self) -> Option<TargetModel> {
+        // Find max priority across all tiers
+        let all_endpoints = self
+            .config
+            .models
+            .fast
+            .iter()
+            .chain(self.config.models.balanced.iter())
+            .chain(self.config.models.deep.iter());
+
+        let max_priority = all_endpoints.map(|e| e.priority()).max()?;
+
+        // Return first tier with that priority (check in order: Fast, Balanced, Deep)
+        if self
+            .config
+            .models
+            .fast
+            .iter()
+            .any(|e| e.priority() == max_priority)
+        {
+            return Some(TargetModel::Fast);
+        }
+
+        if self
+            .config
+            .models
+            .balanced
+            .iter()
+            .any(|e| e.priority() == max_priority)
+        {
+            return Some(TargetModel::Balanced);
+        }
+
+        if self
+            .config
+            .models
+            .deep
+            .iter()
+            .any(|e| e.priority() == max_priority)
+        {
+            return Some(TargetModel::Deep);
+        }
+
+        // Should never reach here if max_priority exists
+        None
     }
 }
 

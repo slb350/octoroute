@@ -8,7 +8,9 @@
 //! - Token count estimates
 //! - User-specified importance level
 
-use super::{Importance, RouteMetadata, TargetModel, TaskType};
+use super::{Importance, RouteMetadata, RoutingDecision, RoutingStrategy, TargetModel, TaskType};
+use crate::error::AppResult;
+use crate::models::ModelSelector;
 
 /// Rule-based router that uses fast pattern matching
 #[derive(Debug, Clone, Default)]
@@ -20,11 +22,51 @@ impl RuleBasedRouter {
         Self
     }
 
-    /// Route a request based on metadata
+    /// Route a request based on metadata using rule-based logic
     ///
-    /// Returns `Some(TargetModel)` if a rule matches, `None` if the request
-    /// should be delegated to a more intelligent router.
-    pub fn route(&self, meta: &RouteMetadata) -> Option<TargetModel> {
+    /// # Routing Logic
+    /// 1. Tries to match request metadata against predefined rules
+    /// 2. If a rule matches, returns `Ok(Some(decision))` with RoutingStrategy::Rule
+    /// 3. If no rule matches, returns `Ok(None)` to signal the caller should use fallback logic
+    ///
+    /// # Return Value
+    /// - `Ok(Some(decision))` - A rule matched, use this routing decision
+    /// - `Ok(None)` - No rule matched, caller should decide (e.g., use default tier or try LLM routing)
+    /// - `Err(e)` - Catastrophic failure (should not happen in rule-based routing)
+    ///
+    /// # Arguments
+    /// * `_user_prompt` - The user's prompt (unused in rule-based routing, but required for Router trait compatibility)
+    /// * `meta` - Request metadata (token estimate, importance, task type)
+    /// * `_selector` - Model selector (unused in current implementation, reserved for future use)
+    pub async fn route(
+        &self,
+        _user_prompt: &str,
+        meta: &RouteMetadata,
+        _selector: &ModelSelector,
+    ) -> AppResult<Option<RoutingDecision>> {
+        // Try rule-based matching
+        if let Some(target) = self.evaluate_rules(meta) {
+            return Ok(Some(RoutingDecision::new(target, RoutingStrategy::Rule)));
+        }
+
+        // No rule matched - return None to signal "I don't know, caller should decide"
+        // This allows hybrid routers to use LLM fallback, and rule-only routers
+        // to use default_tier fallback at a higher level
+        tracing::debug!(
+            token_estimate = meta.token_estimate,
+            importance = ?meta.importance,
+            task_type = ?meta.task_type,
+            "No rule matched, returning None for caller to handle"
+        );
+
+        Ok(None)
+    }
+
+    /// Evaluate rules against metadata
+    ///
+    /// Returns `Some(TargetModel)` if a rule matches, `None` otherwise.
+    /// This is the internal rule evaluation logic, separated for testing.
+    fn evaluate_rules(&self, meta: &RouteMetadata) -> Option<TargetModel> {
         use Importance::*;
         use TaskType::*;
 
@@ -72,11 +114,67 @@ impl RuleBasedRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use std::sync::Arc;
 
-    #[test]
-    fn test_router_creates() {
+    /// Helper to create test config for rule router tests
+    fn test_config() -> Arc<Config> {
+        let toml = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "test-fast"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "test-balanced"
+base_url = "http://localhost:1235/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "test-deep"
+base_url = "http://localhost:1236/v1"
+max_tokens = 8192
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+default_importance = "normal"
+router_model = "balanced"
+
+[observability]
+log_level = "info"
+"#;
+        Arc::new(toml::from_str(toml).expect("should parse config"))
+    }
+
+    #[tokio::test]
+    async fn test_router_creates() {
         let router = RuleBasedRouter::new();
-        assert!(router.route(&RouteMetadata::new(100)).is_none());
+        let config = test_config();
+        let selector = ModelSelector::new(config);
+
+        // Request with no rule match should return None (not default tier)
+        let result = router
+            .route("test", &RouteMetadata::new(100), &selector)
+            .await;
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap().is_none(),
+            "No rule match should return None"
+        );
     }
 
     // Rule 1: Trivial/casual tasks → Fast tier
@@ -87,7 +185,7 @@ mod tests {
             .with_task_type(TaskType::CasualChat)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(target, Some(TargetModel::Fast));
     }
 
@@ -98,8 +196,8 @@ mod tests {
             .with_task_type(TaskType::CasualChat)
             .with_importance(Importance::High);
 
-        let target = router.route(&meta);
-        assert_eq!(target, None); // Delegates to LLM router
+        let target = router.evaluate_rules(&meta);
+        assert_eq!(target, None); // Delegates to default tier
     }
 
     #[test]
@@ -109,7 +207,7 @@ mod tests {
             .with_task_type(TaskType::CasualChat)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(target, None);
     }
 
@@ -121,7 +219,7 @@ mod tests {
             .with_task_type(TaskType::DocumentSummary)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(target, Some(TargetModel::Balanced));
     }
 
@@ -132,7 +230,7 @@ mod tests {
             .with_task_type(TaskType::QuestionAnswer)
             .with_importance(Importance::Low);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(target, Some(TargetModel::Balanced));
     }
 
@@ -143,7 +241,7 @@ mod tests {
             .with_task_type(TaskType::QuestionAnswer)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(target, None);
     }
 
@@ -155,7 +253,7 @@ mod tests {
             .with_task_type(TaskType::QuestionAnswer)
             .with_importance(Importance::High);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(target, Some(TargetModel::Deep));
     }
 
@@ -166,7 +264,7 @@ mod tests {
             .with_task_type(TaskType::DeepAnalysis)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(target, Some(TargetModel::Deep));
     }
 
@@ -177,7 +275,7 @@ mod tests {
             .with_task_type(TaskType::CreativeWriting)
             .with_importance(Importance::Low);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(target, Some(TargetModel::Deep));
     }
 
@@ -189,7 +287,7 @@ mod tests {
             .with_task_type(TaskType::Code)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(target, Some(TargetModel::Balanced));
     }
 
@@ -200,7 +298,7 @@ mod tests {
             .with_task_type(TaskType::Code)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(target, Some(TargetModel::Deep));
     }
 
@@ -221,7 +319,7 @@ mod tests {
                 .with_importance(importance)
                 .with_task_type(task_type);
 
-            let result = router.route(&meta);
+            let result = router.evaluate_rules(&meta);
             // Should be either Some(valid model) or None
             if let Some(model) = result {
                 assert!(matches!(
@@ -240,7 +338,7 @@ mod tests {
             .with_task_type(TaskType::CasualChat)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(
             target,
             Some(TargetModel::Fast),
@@ -255,7 +353,7 @@ mod tests {
             .with_task_type(TaskType::CasualChat)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(
             target, None,
             "256 tokens should NOT match Rule 1 (requires < 256)"
@@ -269,7 +367,7 @@ mod tests {
             .with_task_type(TaskType::Code)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(
             target,
             Some(TargetModel::Balanced),
@@ -284,7 +382,7 @@ mod tests {
             .with_task_type(TaskType::Code)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(
             target,
             Some(TargetModel::Deep),
@@ -299,7 +397,7 @@ mod tests {
             .with_task_type(TaskType::QuestionAnswer)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(
             target, None,
             "199 tokens should NOT match Rule 4 (requires >= 200)"
@@ -313,7 +411,7 @@ mod tests {
             .with_task_type(TaskType::QuestionAnswer)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(
             target,
             Some(TargetModel::Balanced),
@@ -328,7 +426,7 @@ mod tests {
             .with_task_type(TaskType::QuestionAnswer)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(
             target,
             Some(TargetModel::Balanced),
@@ -343,10 +441,65 @@ mod tests {
             .with_task_type(TaskType::QuestionAnswer)
             .with_importance(Importance::Normal);
 
-        let target = router.route(&meta);
+        let target = router.evaluate_rules(&meta);
         assert_eq!(
             target, None,
             "2048 tokens should NOT match Rule 4 (requires < 2048)"
         );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TDD: Tests for Option 1 - route() returns Ok(None) when no rule matches
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[tokio::test]
+    async fn test_route_returns_none_when_no_rule_matches() {
+        // RED: This test will fail until we update the signature
+        let router = RuleBasedRouter::new();
+        let config = test_config();
+        let selector = ModelSelector::new(config);
+
+        // CasualChat + High importance has no rule match (see line 103)
+        let meta = RouteMetadata::new(100)
+            .with_task_type(TaskType::CasualChat)
+            .with_importance(Importance::High);
+
+        let result = router.route("test prompt", &meta, &selector).await;
+
+        // Should return Ok(None) to signal "no rule matched, caller should decide"
+        assert!(
+            result.is_ok(),
+            "route() should succeed even when no rule matches"
+        );
+        assert!(
+            result.unwrap().is_none(),
+            "route() should return None when no rule matches (not default tier)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_route_returns_some_when_rule_matches() {
+        // Verify that rule matches still return Some(decision)
+        let router = RuleBasedRouter::new();
+        let config = test_config();
+        let selector = ModelSelector::new(config);
+
+        // CasualChat + Normal + <256 tokens matches Rule 1 → Fast
+        let meta = RouteMetadata::new(100)
+            .with_task_type(TaskType::CasualChat)
+            .with_importance(Importance::Normal);
+
+        let result = router.route("test prompt", &meta, &selector).await;
+
+        assert!(result.is_ok(), "route() should succeed when rule matches");
+        let decision = result.unwrap();
+        assert!(
+            decision.is_some(),
+            "route() should return Some when rule matches"
+        );
+
+        let decision = decision.unwrap();
+        assert_eq!(decision.target(), TargetModel::Fast);
+        assert_eq!(decision.strategy(), RoutingStrategy::Rule);
     }
 }

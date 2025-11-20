@@ -9,6 +9,8 @@ use axum::{
 };
 use thiserror::Error;
 
+use crate::router::llm_based::LlmRouterError;
+
 /// Main error type for the application
 #[derive(Error, Debug)]
 pub enum AppError {
@@ -42,6 +44,9 @@ pub enum AppError {
     #[error("Failed to query model at {endpoint}: {reason}")]
     ModelQueryFailed { endpoint: String, reason: String },
 
+    #[error(transparent)]
+    LlmRouting(#[from] LlmRouterError),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -56,6 +61,7 @@ impl IntoResponse for AppError {
             Self::EndpointTimeout { .. } => (StatusCode::GATEWAY_TIMEOUT, self.to_string()),
             Self::HealthCheckFailed { .. } => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::ModelQueryFailed { .. } => (StatusCode::BAD_GATEWAY, self.to_string()),
+            Self::LlmRouting(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
 

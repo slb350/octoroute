@@ -32,8 +32,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // This avoids unnecessary cloning - AppState accepts Arc<Config>
     let config = std::sync::Arc::new(config);
 
-    // Create application state
-    let state = AppState::new(config.clone());
+    // Create application state (fails if router construction fails)
+    let state = AppState::new(config.clone())?;
 
     // Clone state for shutdown handler (state is moved to router)
     let shutdown_state = state.clone();
