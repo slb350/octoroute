@@ -38,6 +38,14 @@ reqwest = { version = "0.12", features = ["json"] }
 # UUID generation (for request tracing)
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# Metrics (optional, behind feature flag)
+prometheus = { version = "0.14", optional = true }
+lazy_static = { version = "1.5", optional = true }
+
+[features]
+default = []
+metrics = ["prometheus", "lazy_static"]
+
 [dev-dependencies]
 proptest = "1.4"
 tokio-test = "0.4"
