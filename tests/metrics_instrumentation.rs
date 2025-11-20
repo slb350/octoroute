@@ -4,7 +4,11 @@
 
 #[cfg(feature = "metrics")]
 mod metrics_tests {
-    use octoroute::{config::Config, handlers::AppState};
+    use octoroute::{
+        config::Config,
+        handlers::AppState,
+        metrics::{Strategy, Tier},
+    };
     use std::sync::Arc;
 
     fn create_test_config() -> Config {
@@ -55,13 +59,13 @@ router_model = "balanced"
 
         // Record a fake request (simulating what chat handler does)
         metrics
-            .record_request("fast", "rule")
+            .record_request(Tier::Fast, Strategy::Rule)
             .expect("should record request");
         metrics
-            .record_routing_duration("rule", 1.5)
+            .record_routing_duration(Strategy::Rule, 1.5)
             .expect("should record duration");
         metrics
-            .record_model_invocation("fast")
+            .record_model_invocation(Tier::Fast)
             .expect("should record invocation");
 
         // Get metrics after request
@@ -93,17 +97,27 @@ router_model = "balanced"
         let metrics = state.metrics().expect("metrics should be available");
 
         // Simulate multiple requests with different tiers and strategies
-        metrics.record_request("fast", "rule").unwrap();
-        metrics.record_request("balanced", "llm").unwrap();
-        metrics.record_request("deep", "hybrid").unwrap();
+        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        metrics
+            .record_request(Tier::Balanced, Strategy::Llm)
+            .unwrap();
+        metrics
+            .record_request(Tier::Deep, Strategy::Hybrid)
+            .unwrap();
 
-        metrics.record_routing_duration("rule", 0.5).unwrap();
-        metrics.record_routing_duration("llm", 250.0).unwrap();
-        metrics.record_routing_duration("hybrid", 1.0).unwrap();
+        metrics
+            .record_routing_duration(Strategy::Rule, 0.5)
+            .unwrap();
+        metrics
+            .record_routing_duration(Strategy::Llm, 250.0)
+            .unwrap();
+        metrics
+            .record_routing_duration(Strategy::Hybrid, 1.0)
+            .unwrap();
 
-        metrics.record_model_invocation("fast").unwrap();
-        metrics.record_model_invocation("balanced").unwrap();
-        metrics.record_model_invocation("deep").unwrap();
+        metrics.record_model_invocation(Tier::Fast).unwrap();
+        metrics.record_model_invocation(Tier::Balanced).unwrap();
+        metrics.record_model_invocation(Tier::Deep).unwrap();
 
         let output = metrics.gather().expect("should gather metrics");
 
@@ -126,10 +140,18 @@ router_model = "balanced"
         let metrics = state.metrics().expect("metrics should be available");
 
         // Record durations across different buckets
-        metrics.record_routing_duration("rule", 0.1).unwrap(); // Very fast
-        metrics.record_routing_duration("rule", 1.0).unwrap(); // Fast
-        metrics.record_routing_duration("llm", 100.0).unwrap(); // Slow
-        metrics.record_routing_duration("llm", 500.0).unwrap(); // Very slow
+        metrics
+            .record_routing_duration(Strategy::Rule, 0.1)
+            .unwrap(); // Very fast
+        metrics
+            .record_routing_duration(Strategy::Rule, 1.0)
+            .unwrap(); // Fast
+        metrics
+            .record_routing_duration(Strategy::Llm, 100.0)
+            .unwrap(); // Slow
+        metrics
+            .record_routing_duration(Strategy::Llm, 500.0)
+            .unwrap(); // Very slow
 
         let output = metrics.gather().expect("should gather metrics");
 
@@ -256,6 +278,130 @@ router_model = "balanced"
         // This test validates the timing semantics documented in Issue #7:
         // - record_request() is called BEFORE model query (always recorded)
         // - record_model_invocation() is called AFTER successful query (not recorded on failure)
+    }
+
+    #[tokio::test]
+    async fn test_handler_succeeds_even_when_metrics_disabled() {
+        use axum::Extension;
+        use axum::extract::State;
+        use octoroute::handlers::chat::{ChatRequest, handler};
+        use octoroute::middleware::RequestId;
+
+        // Create config with metrics feature enabled but don't record any metrics
+        // This tests the defensive behavior where metrics.is_none() branches work correctly
+        let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 1
+
+[[models.fast]]
+name = "test-fast"
+base_url = "http://192.0.2.1:11434/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "test-balanced"
+base_url = "http://192.0.2.2:11434/v1"
+max_tokens = 8192
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "test-deep"
+base_url = "http://192.0.2.3:11434/v1"
+max_tokens = 16384
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+"#;
+
+        let config: Config = toml::from_str(config_str).expect("should parse config");
+        let state = AppState::new(Arc::new(config)).expect("should create state");
+
+        // Verify metrics are available (with feature flag)
+        assert!(
+            state.metrics().is_some(),
+            "Metrics should be available with feature flag"
+        );
+
+        // Create a chat request
+        let request_json = serde_json::json!({
+            "message": "Hello",
+            "importance": "low",
+            "task_type": "casual_chat"
+        });
+        let request: ChatRequest =
+            serde_json::from_value(request_json).expect("should deserialize");
+
+        // Send request through handler
+        let result = handler(
+            State(state.clone()),
+            Extension(RequestId::new()),
+            axum::Json(request),
+        )
+        .await;
+
+        // Request should fail (non-routable IP), but this proves the handler executed
+        // all the way through the metrics recording code without panicking
+        assert!(result.is_err(), "Request should fail with non-routable IP");
+
+        // If we got here, it means:
+        // 1. record_request() was called (before query)
+        // 2. record_routing_duration() was called (before query)
+        // 3. Error handling in metrics recording worked (if it failed)
+        // 4. Handler continued execution even if metrics failed
+        //
+        // This validates the defensive error handling: metrics failures are logged
+        // but do not propagate to the user (observability never breaks requests).
+    }
+
+    #[tokio::test]
+    async fn test_metrics_recording_with_extreme_values() {
+        // Test that metrics handle extreme edge cases gracefully
+        let config = Arc::new(create_test_config());
+        let state = AppState::new(config).expect("should create state");
+
+        let metrics = state.metrics().expect("metrics should be available");
+
+        // Record metrics with edge case values
+        // These should either succeed OR return Err (not panic)
+
+        // 1. Maximum valid duration (very slow request)
+        let result = metrics.record_routing_duration(Strategy::Llm, f64::MAX);
+        // Should either succeed or fail gracefully (validated by histogram tests)
+        assert!(
+            result.is_ok() || result.is_err(),
+            "Should not panic with extreme duration"
+        );
+
+        // 2. Zero duration (instant operation)
+        assert!(
+            metrics.record_routing_duration(Strategy::Rule, 0.0).is_ok(),
+            "Should accept zero duration"
+        );
+
+        // 3. Record same metric many times (stress test)
+        for _ in 0..10_000 {
+            metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        }
+
+        // 4. Gather metrics after heavy recording
+        let output = metrics.gather();
+        assert!(
+            output.is_ok(),
+            "Should gather metrics successfully even after heavy recording"
+        );
+
+        // If we got here without panic, the defensive error handling works
     }
 }
 

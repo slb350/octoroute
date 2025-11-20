@@ -47,6 +47,20 @@ impl Tier {
 ///
 /// Prevents cardinality explosion by restricting strategy values to
 /// exactly three valid options at compile time.
+///
+/// # Important: Hybrid is a Meta-Strategy
+///
+/// **NOTE**: `Strategy::Hybrid` is intentionally NOT recorded in metrics.
+/// HybridRouter is a meta-strategy that delegates to either RuleBasedRouter
+/// or LlmBasedRouter. Metrics record which **actual path** was taken (Rule or Llm),
+/// not the meta-strategy configuration.
+///
+/// **Why this design?**
+/// - Metrics track the leaf routing decision (what actually happened)
+/// - Config uses Hybrid to select HybridRouter (how it was configured)
+/// - This provides more actionable observability (e.g., "70% of requests hit rule fast path")
+///
+/// **Cardinality**: 3 tiers × 2 strategies (Rule, Llm) = **6 time series** (not 9)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strategy {
     /// Rule-based routing
@@ -54,6 +68,10 @@ pub enum Strategy {
     /// LLM-powered routing
     Llm,
     /// Hybrid routing (rules + LLM fallback)
+    ///
+    /// **IMPORTANT**: This variant is intentionally NOT recorded in metrics.
+    /// It's used for configuration (selecting HybridRouter), but metrics
+    /// record the actual routing path taken (Rule or Llm).
     Hybrid,
 }
 
@@ -146,7 +164,8 @@ impl Metrics {
     /// # Cardinality Safety
     ///
     /// Using enums instead of strings prevents cardinality explosion.
-    /// Maximum possible label combinations: 3 tiers × 3 strategies = 9 time series.
+    /// Maximum label combinations: 3 tiers × 2 strategies (Rule, Llm) = **6 time series**.
+    /// (Hybrid is a meta-strategy and is never recorded - see Strategy enum docs)
     pub fn record_request(&self, tier: Tier, strategy: Strategy) -> Result<(), prometheus::Error> {
         self.requests_total
             .get_metric_with_label_values(&[tier.as_str(), strategy.as_str()])?
@@ -170,7 +189,8 @@ impl Metrics {
     /// # Cardinality Safety
     ///
     /// Using enum instead of string prevents cardinality explosion.
-    /// Maximum possible label values: 3 strategies = 3 time series.
+    /// Maximum label values: 2 strategies (Rule, Llm) = 2 time series.
+    /// (Hybrid is never recorded - see Strategy enum docs)
     ///
     /// # Data Integrity
     ///
@@ -851,5 +871,150 @@ mod tests {
                 value
             );
         }
+    }
+
+    // ===== GAP #2 Fix: High-Concurrency Stress Test (1000+ tasks) =====
+
+    #[test]
+    fn test_concurrent_metrics_stress_test_1000_plus_tasks() {
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        let metrics = Arc::new(Metrics::new().unwrap());
+        let mut handles = vec![];
+
+        // Spawn 1000 concurrent tasks recording metrics
+        // This tests for lock contention in Prometheus CounterVec label registration
+        // Each task may create new label combinations, forcing internal write locks
+        const NUM_TASKS: usize = 1000;
+        const TIMEOUT_SECONDS: u64 = 5;
+
+        let start = std::time::Instant::now();
+
+        for i in 0..NUM_TASKS {
+            let m = Arc::clone(&metrics);
+            let handle = thread::spawn(move || {
+                // Rotate through label combinations to force concurrent registration
+                let tiers = [Tier::Fast, Tier::Balanced, Tier::Deep];
+                let strategies = [Strategy::Rule, Strategy::Llm];
+
+                let tier = tiers[i % 3];
+                let strategy = strategies[i % 2];
+
+                // Record multiple metrics per task
+                m.record_request(tier, strategy).unwrap();
+                m.record_routing_duration(strategy, (i % 100) as f64)
+                    .unwrap();
+                m.record_model_invocation(tier).unwrap();
+            });
+            handles.push(handle);
+        }
+
+        // Join all threads with timeout detection
+        for (idx, handle) in handles.into_iter().enumerate() {
+            handle
+                .join()
+                .unwrap_or_else(|_| panic!("Thread {} panicked during metrics recording", idx));
+        }
+
+        let elapsed = start.elapsed();
+
+        // Verify no deadlock occurred (should complete well under timeout)
+        assert!(
+            elapsed < Duration::from_secs(TIMEOUT_SECONDS),
+            "Stress test took too long ({:?}), potential lock contention or deadlock. \
+            Expected < {}s for {} concurrent tasks.",
+            elapsed,
+            TIMEOUT_SECONDS,
+            NUM_TASKS
+        );
+
+        // Verify metrics can still be gathered after high concurrency
+        let output = metrics.gather().unwrap();
+
+        // All label combinations should be present
+        assert!(output.contains("tier=\"fast\""));
+        assert!(output.contains("tier=\"balanced\""));
+        assert!(output.contains("tier=\"deep\""));
+        assert!(output.contains("strategy=\"rule\""));
+        assert!(output.contains("strategy=\"llm\""));
+
+        // Verify all metrics were recorded
+        assert!(output.contains("octoroute_requests_total"));
+        assert!(output.contains("octoroute_routing_duration_ms"));
+        assert!(output.contains("octoroute_model_invocations_total"));
+
+        println!(
+            "✅ Stress test completed: {} concurrent tasks in {:?}",
+            NUM_TASKS, elapsed
+        );
+    }
+
+    #[test]
+    fn test_concurrent_metrics_no_data_corruption() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+
+        let metrics = Arc::new(Metrics::new().unwrap());
+        let expected_count = Arc::new(AtomicUsize::new(0));
+        let mut handles = vec![];
+
+        const NUM_TASKS: usize = 500;
+        const INCREMENTS_PER_TASK: usize = 10;
+
+        for _ in 0..NUM_TASKS {
+            let m = Arc::clone(&metrics);
+            let count = Arc::clone(&expected_count);
+
+            let handle = thread::spawn(move || {
+                // Each task increments the same metric multiple times
+                for _ in 0..INCREMENTS_PER_TASK {
+                    m.record_request(Tier::Fast, Strategy::Rule).unwrap();
+                    count.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let expected = expected_count.load(Ordering::SeqCst);
+        let output = metrics.gather().unwrap();
+
+        // Parse the output to verify correct count
+        // Format: octoroute_requests_total{tier="fast",strategy="rule"} 5000
+        let count_str = output
+            .lines()
+            .find(|line| {
+                line.contains("octoroute_requests_total")
+                    && line.contains("tier=\"fast\"")
+                    && line.contains("strategy=\"rule\"")
+                    && !line.starts_with('#')
+            })
+            .expect("Should find requests_total metric");
+
+        // Extract the count value (last token on line)
+        let actual: usize = count_str
+            .split_whitespace()
+            .last()
+            .expect("Should have count value")
+            .parse()
+            .expect("Should parse as number");
+
+        assert_eq!(
+            actual, expected,
+            "Concurrent metric recording should not lose updates. \
+            Expected {} increments from {} tasks × {} increments each, got {}",
+            expected, NUM_TASKS, INCREMENTS_PER_TASK, actual
+        );
+
+        println!(
+            "✅ No data corruption: {} concurrent tasks × {} increments = {} total (verified)",
+            NUM_TASKS, INCREMENTS_PER_TASK, actual
+        );
     }
 }

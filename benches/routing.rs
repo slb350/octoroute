@@ -2,11 +2,14 @@
 //!
 //! Measures performance of non-I/O routing logic components (excludes network calls).
 //!
-//! ## Current Benchmark Results
+//! ## Expected Performance Characteristics
 //!
-//! - Metadata creation: ~940ns (approximately 1 microsecond, builder pattern)
-//! - Config parsing: ~9.4μs (one-time startup cost)
-//! - Token estimation: ~5-8ns (simple character counting)
+//! - Metadata creation: Sub-microsecond (typically 0.5-1.5μs, builder pattern overhead)
+//! - Config parsing: Single-digit microseconds (one-time startup cost, acceptable up to 100μs)
+//! - Token estimation: Single-digit nanoseconds (simple character counting, highly optimized)
+//!
+//! **Note**: Actual measurements vary with compiler version, CPU architecture, and system load.
+//! Run `cargo bench --features metrics` or `just bench` to measure on your system.
 //!
 //! Run with: `cargo bench --features metrics` or `just bench`
 
@@ -61,7 +64,8 @@ fn bench_metadata_creation(c: &mut Criterion) {
 /// Benchmark configuration parsing and validation
 ///
 /// Measures the cost of loading and validating configuration.
-/// This is a one-time startup cost, so even 10ms is acceptable.
+/// This operation is called ONCE during server startup, so even 10ms is acceptable.
+/// Typical range: 5-20μs depending on config size and validation complexity.
 fn bench_config_parsing(c: &mut Criterion) {
     let toml_str = r#"
 [server]
