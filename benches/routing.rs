@@ -4,7 +4,7 @@
 //!
 //! ## Current Benchmark Results
 //!
-//! - Metadata creation: ~940ps (sub-nanosecond, builder pattern)
+//! - Metadata creation: ~940ns (approximately 1 microsecond, builder pattern)
 //! - Config parsing: ~9.4μs (one-time startup cost)
 //! - Token estimation: ~5-8ns (simple character counting)
 //!

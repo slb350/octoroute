@@ -29,15 +29,30 @@ pub async fn handler(State(state): State<AppState>) -> (StatusCode, String) {
     match state.metrics() {
         Some(metrics) => match metrics.gather() {
             Ok(output) => (StatusCode::OK, output),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to gather metrics: {}", e),
-            ),
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "Failed to gather metrics for Prometheus scraping. \
+                    This indicates a metrics encoding issue (invalid UTF-8, \
+                    corrupted labels, or encoder failure). Error: {}",
+                    e
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to gather metrics: {}", e),
+                )
+            }
         },
-        None => (
-            StatusCode::NOT_FOUND,
-            "Metrics not enabled. Build with --features metrics".to_string(),
-        ),
+        None => {
+            tracing::warn!(
+                "Metrics endpoint accessed but metrics feature not enabled. \
+                Returning 404. Build with --features metrics to enable."
+            );
+            (
+                StatusCode::NOT_FOUND,
+                "Metrics not enabled. Build with --features metrics".to_string(),
+            )
+        }
     }
 }
 

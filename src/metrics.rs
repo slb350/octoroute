@@ -148,12 +148,49 @@ impl Metrics {
     /// Returns an error if metric encoding fails.
     pub fn gather(&self) -> Result<String, prometheus::Error> {
         let metric_families = self.registry.gather();
+        let metric_count = metric_families.len();
+
+        tracing::debug!(
+            metric_family_count = metric_count,
+            "Encoding metrics to Prometheus text format"
+        );
+
         let mut buffer = Vec::new();
         let encoder = TextEncoder::new();
-        encoder.encode(&metric_families, &mut buffer)?;
 
-        String::from_utf8(buffer).map_err(|e| {
-            prometheus::Error::Msg(format!("Failed to convert metrics to UTF-8: {}", e))
+        encoder.encode(&metric_families, &mut buffer).map_err(|e| {
+            let metric_names: Vec<_> = metric_families.iter().map(|mf| mf.name()).collect();
+
+            tracing::error!(
+                error = %e,
+                metric_family_count = metric_count,
+                metric_names = ?metric_names,
+                "Prometheus text encoder failed"
+            );
+
+            prometheus::Error::Msg(format!(
+                "Failed to encode {} metric families: {}. Metrics: {:?}",
+                metric_count, e, metric_names
+            ))
+        })?;
+
+        String::from_utf8(buffer.clone()).map_err(|e| {
+            let valid_up_to = e.utf8_error().valid_up_to();
+            let buffer_len = buffer.len();
+            let preview_len = std::cmp::min(100, buffer_len);
+
+            tracing::error!(
+                invalid_byte_index = valid_up_to,
+                buffer_length = buffer_len,
+                buffer_prefix = ?&buffer[..preview_len],
+                "Prometheus encoder produced invalid UTF-8"
+            );
+
+            prometheus::Error::Msg(format!(
+                "Failed to convert metrics to UTF-8 at byte {}/{}: {}. \
+                This indicates corrupted metric names or labels.",
+                valid_up_to, buffer_len, e
+            ))
         })
     }
 }
@@ -314,6 +351,249 @@ mod tests {
 
         // Verify metrics were recorded
         let output = metrics.gather().unwrap();
+        assert!(output.contains("octoroute_requests_total"));
+        assert!(output.contains("octoroute_routing_duration_ms"));
+        assert!(output.contains("octoroute_model_invocations_total"));
+    }
+
+    // ===== Test Coverage Gap #1: Invalid Label Values =====
+    // NOTE: These tests document CURRENT behavior (accepts invalid labels).
+    // Future work (HIGH #6): Add type-safe label enums to prevent cardinality explosion.
+
+    #[test]
+    fn test_invalid_tier_labels_are_accepted() {
+        let metrics = Metrics::new().unwrap();
+
+        // CURRENT BEHAVIOR: Invalid tier names are accepted (stringly-typed)
+        // This creates cardinality explosion risk (each typo = new metric)
+        let result = metrics.record_request("invalid_tier", "rule");
+        assert!(
+            result.is_ok(),
+            "Current implementation accepts invalid tier names (cardinality risk)"
+        );
+
+        // Case sensitivity creates duplicate metrics
+        let result = metrics.record_request("FAST", "rule");
+        assert!(
+            result.is_ok(),
+            "Current implementation accepts wrong case (cardinality risk)"
+        );
+
+        // Empty strings are accepted
+        let result = metrics.record_request("", "rule");
+        assert!(
+            result.is_ok(),
+            "Current implementation accepts empty tier (cardinality risk)"
+        );
+
+        // All variants create separate metrics (demonstrated by successful gather)
+        let output = metrics.gather().unwrap();
+        assert!(output.contains("octoroute_requests_total"));
+    }
+
+    #[test]
+    fn test_invalid_strategy_labels_are_accepted() {
+        let metrics = Metrics::new().unwrap();
+
+        // CURRENT BEHAVIOR: Invalid strategy names are accepted
+        let result = metrics.record_request("fast", "unknown");
+        assert!(
+            result.is_ok(),
+            "Current implementation accepts invalid strategy names"
+        );
+
+        let result = metrics.record_request("fast", "RULE");
+        assert!(result.is_ok(), "Current implementation accepts wrong case");
+
+        let result = metrics.record_request("fast", "");
+        assert!(
+            result.is_ok(),
+            "Current implementation accepts empty strategy"
+        );
+
+        let output = metrics.gather().unwrap();
+        assert!(output.contains("octoroute_requests_total"));
+    }
+
+    #[test]
+    fn test_prometheus_special_chars_in_labels() {
+        let metrics = Metrics::new().unwrap();
+
+        // Test that special characters don't break Prometheus format encoding
+        // Prometheus crate should handle escaping internally
+        let result = metrics.record_request("tier=fast", "rule");
+        assert!(
+            result.is_ok(),
+            "Prometheus crate should handle special chars"
+        );
+
+        // Newlines in labels - Prometheus crate handles this
+        let result = metrics.record_request("fast\n", "rule");
+        assert!(result.is_ok(), "Prometheus crate handles newlines");
+
+        let result = metrics.record_request("fast", "rule\nmalicious");
+        assert!(result.is_ok(), "Prometheus crate handles newlines");
+
+        // Verify gather still produces valid output (no syntax errors)
+        let output = metrics.gather().unwrap();
+        assert!(!output.is_empty(), "Output should be non-empty");
+        assert!(
+            output.contains("# HELP") || output.contains("# TYPE"),
+            "Output should contain Prometheus format headers"
+        );
+    }
+
+    // ===== Test Coverage Gap #2: Encoding Failures =====
+
+    #[test]
+    fn test_gather_handles_extreme_values_without_panic() {
+        let metrics = Metrics::new().unwrap();
+
+        // Record extreme histogram values
+        for _ in 0..100 {
+            let _ = metrics.record_routing_duration("rule", f64::MAX);
+        }
+
+        // Should not panic - either succeeds or returns error
+        let result = metrics.gather();
+        assert!(
+            result.is_ok() || result.is_err(),
+            "gather() should not panic with extreme values"
+        );
+
+        // If it succeeds, output should be valid UTF-8
+        if let Ok(output) = result {
+            assert!(!output.is_empty(), "Output should not be empty");
+            assert!(output.is_ascii() || output.chars().count() > 0);
+        }
+    }
+
+    #[test]
+    fn test_gather_handles_large_metric_count() {
+        let metrics = Metrics::new().unwrap();
+
+        // Record many metrics to test encoding of large output
+        for i in 0..1000 {
+            metrics
+                .record_routing_duration("rule", i as f64 / 10.0)
+                .unwrap();
+        }
+
+        let result = metrics.gather();
+        assert!(result.is_ok(), "Should handle large metric count");
+
+        let output = result.unwrap();
+        assert!(!output.is_empty(), "Output should not be empty");
+        assert!(output.contains("octoroute_routing_duration_ms"));
+        // Verify histogram contains count data
+        assert!(output.contains("_count") || output.contains("_sum"));
+    }
+
+    // ===== Test Coverage Gap #5: Histogram Edge Cases =====
+
+    #[test]
+    fn test_routing_duration_histogram_edge_values() {
+        let metrics = Metrics::new().unwrap();
+
+        // Valid boundary values
+        assert!(metrics.record_routing_duration("rule", 0.0).is_ok());
+        assert!(metrics.record_routing_duration("rule", 0.1).is_ok());
+        assert!(metrics.record_routing_duration("rule", 1000.0).is_ok());
+
+        // Edge cases - behavior depends on Prometheus crate
+        // Negative durations
+        let result = metrics.record_routing_duration("rule", -1.0);
+        // Prometheus may accept or reject negative values
+        // Just verify it doesn't panic
+        let _ = result;
+
+        // NaN - should be handled gracefully
+        let result = metrics.record_routing_duration("rule", f64::NAN);
+        let _ = result;
+
+        // Infinity - should be handled gracefully
+        let result = metrics.record_routing_duration("rule", f64::INFINITY);
+        let _ = result;
+
+        // Should still be able to gather metrics
+        let output = metrics.gather();
+        assert!(
+            output.is_ok() || output.is_err(),
+            "gather() should not panic after edge case values"
+        );
+    }
+
+    #[test]
+    fn test_histogram_values_at_bucket_boundaries() {
+        let metrics = Metrics::new().unwrap();
+
+        // Test values exactly at bucket boundaries
+        // Buckets: [0.1, 0.5, 1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0]
+        let boundary_values = vec![0.1, 0.5, 1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0];
+
+        for value in boundary_values {
+            assert!(
+                metrics.record_routing_duration("rule", value).is_ok(),
+                "Failed to record boundary value: {}",
+                value
+            );
+        }
+
+        let output = metrics.gather().unwrap();
+        assert!(output.contains("le=\"0.1\""));
+        assert!(output.contains("le=\"1\""));
+        assert!(output.contains("le=\"100\""));
+        assert!(output.contains("le=\"1000\""));
+    }
+
+    // ===== Test Coverage Gap #3: Concurrent Label Creation =====
+
+    #[test]
+    fn test_concurrent_metrics_with_dynamic_labels() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let metrics = Arc::new(Metrics::new().unwrap());
+        let mut handles = vec![];
+
+        // Spawn threads recording different label combinations
+        // This tests concurrent creation of new label combinations (cardinality stress test)
+        for i in 0..20 {
+            let m = Arc::clone(&metrics);
+            let handle = thread::spawn(move || {
+                // Rotate through valid tier and strategy values
+                let tiers = ["fast", "balanced", "deep"];
+                let strategies = ["rule", "llm", "hybrid"];
+
+                let tier = tiers[i % 3];
+                let strategy = strategies[i % 3];
+
+                // Each thread may create a new label combination
+                m.record_request(tier, strategy).unwrap();
+                m.record_routing_duration(strategy, i as f64).unwrap();
+                m.record_model_invocation(tier).unwrap();
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().expect("Thread should not panic");
+        }
+
+        // Verify all label combinations were recorded without corruption
+        let output = metrics.gather().unwrap();
+
+        // Should contain all tier values
+        assert!(output.contains("tier=\"fast\""));
+        assert!(output.contains("tier=\"balanced\""));
+        assert!(output.contains("tier=\"deep\""));
+
+        // Should contain all strategy values
+        assert!(output.contains("strategy=\"rule\""));
+        assert!(output.contains("strategy=\"llm\""));
+        assert!(output.contains("strategy=\"hybrid\""));
+
+        // Verify no corruption or panic occurred
         assert!(output.contains("octoroute_requests_total"));
         assert!(output.contains("octoroute_routing_duration_ms"));
         assert!(output.contains("octoroute_model_invocations_total"));

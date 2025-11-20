@@ -162,33 +162,98 @@ fn default_metrics_port() -> u16 {
 pub struct TimeoutsConfig {
     /// Timeout for fast tier (8B models) in seconds
     #[serde(default)]
-    pub fast: Option<u64>,
+    fast: Option<u64>,
     /// Timeout for balanced tier (30B models) in seconds
     #[serde(default)]
-    pub balanced: Option<u64>,
+    balanced: Option<u64>,
     /// Timeout for deep tier (120B models) in seconds
     #[serde(default)]
-    pub deep: Option<u64>,
+    deep: Option<u64>,
+}
+
+impl TimeoutsConfig {
+    /// Create a new TimeoutsConfig with validated timeout values
+    ///
+    /// # Arguments
+    ///
+    /// * `fast` - Optional timeout for fast tier in seconds
+    /// * `balanced` - Optional timeout for balanced tier in seconds
+    /// * `deep` - Optional timeout for deep tier in seconds
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any timeout is zero or exceeds 300 seconds.
+    pub fn new(
+        fast: Option<u64>,
+        balanced: Option<u64>,
+        deep: Option<u64>,
+    ) -> crate::error::AppResult<Self> {
+        // Validate each timeout
+        for (tier_name, timeout_opt) in [("fast", fast), ("balanced", balanced), ("deep", deep)] {
+            if let Some(timeout) = timeout_opt {
+                if timeout == 0 {
+                    return Err(crate::error::AppError::Config(format!(
+                        "timeouts.{} must be greater than 0, got {}",
+                        tier_name, timeout
+                    )));
+                }
+                if timeout > 300 {
+                    return Err(crate::error::AppError::Config(format!(
+                        "timeouts.{} cannot exceed 300 seconds, got {}",
+                        tier_name, timeout
+                    )));
+                }
+            }
+        }
+        Ok(Self {
+            fast,
+            balanced,
+            deep,
+        })
+    }
+
+    /// Get the fast tier timeout (if configured)
+    pub fn fast(&self) -> Option<u64> {
+        self.fast
+    }
+
+    /// Get the balanced tier timeout (if configured)
+    pub fn balanced(&self) -> Option<u64> {
+        self.balanced
+    }
+
+    /// Get the deep tier timeout (if configured)
+    pub fn deep(&self) -> Option<u64> {
+        self.deep
+    }
 }
 
 impl Config {
     /// Load configuration from a TOML file
     pub fn from_file<P: AsRef<Path>>(path: P) -> crate::error::AppResult<Self> {
+        let path_display = path.as_ref().display().to_string();
+
         let content = std::fs::read_to_string(path.as_ref()).map_err(|e| {
             crate::error::AppError::Config(format!(
-                "Failed to read config file {}: {}",
-                path.as_ref().display(),
-                e
+                "Failed to read config file '{}': {}",
+                path_display, e
             ))
         })?;
+
         let config = Self::from_str(&content).map_err(|e| {
             crate::error::AppError::Config(format!(
-                "Failed to parse config file {}: {}",
-                path.as_ref().display(),
-                e
+                "Failed to parse config file '{}': {}",
+                path_display, e
             ))
         })?;
-        config.validate()?;
+
+        config.validate().map_err(|e| {
+            crate::error::AppError::Config(format!(
+                "Config file '{}' validation failed: {}",
+                path_display, e
+            ))
+        })?;
+
         Ok(config)
     }
 
@@ -198,11 +263,29 @@ impl Config {
     /// the global `server.request_timeout_seconds`.
     pub fn timeout_for_tier(&self, tier: crate::router::TargetModel) -> u64 {
         let tier_timeout = match tier {
-            crate::router::TargetModel::Fast => self.timeouts.fast,
-            crate::router::TargetModel::Balanced => self.timeouts.balanced,
-            crate::router::TargetModel::Deep => self.timeouts.deep,
+            crate::router::TargetModel::Fast => self.timeouts.fast(),
+            crate::router::TargetModel::Balanced => self.timeouts.balanced(),
+            crate::router::TargetModel::Deep => self.timeouts.deep(),
         };
-        tier_timeout.unwrap_or(self.server.request_timeout_seconds)
+
+        match tier_timeout {
+            Some(timeout) => {
+                tracing::debug!(
+                    tier = ?tier,
+                    timeout_seconds = timeout,
+                    "Using tier-specific timeout override"
+                );
+                timeout
+            }
+            None => {
+                tracing::debug!(
+                    tier = ?tier,
+                    timeout_seconds = self.server.request_timeout_seconds,
+                    "No tier-specific timeout configured, using global default"
+                );
+                self.server.request_timeout_seconds
+            }
+        }
     }
 
     /// Validate configuration after parsing
@@ -337,10 +420,12 @@ impl Config {
         }
 
         // Validate per-tier timeout overrides
+        // Note: TimeoutsConfig also validates in its constructor, but this provides
+        // additional validation when configs are parsed from TOML (which bypasses the constructor)
         for (tier_name, timeout_opt) in [
-            ("fast", self.timeouts.fast),
-            ("balanced", self.timeouts.balanced),
-            ("deep", self.timeouts.deep),
+            ("fast", self.timeouts.fast()),
+            ("balanced", self.timeouts.balanced()),
+            ("deep", self.timeouts.deep()),
         ] {
             if let Some(timeout) = timeout_opt {
                 if timeout == 0 {

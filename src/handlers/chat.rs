@@ -283,35 +283,36 @@ pub async fn handler(
         };
         let strategy_str = decision.strategy().as_str();
 
-        // Fail-fast on metrics recording errors - these indicate programming bugs
-        // (invalid labels, cardinality mismatches) that should be caught in development
-        metrics
-            .record_request(tier_str, strategy_str)
-            .map_err(|e| {
-                tracing::error!(
-                    request_id = %request_id,
-                    error = %e,
-                    tier = tier_str,
-                    strategy = strategy_str,
-                    "CRITICAL: Metrics recording failed. This indicates a programming bug \
-                    (invalid labels, cardinality mismatch). Failing request to expose issue."
-                );
-                AppError::Internal(format!("Metrics recording failed: {}", e))
-            })?;
+        // Log-and-continue on metrics recording errors (observability should never break requests)
+        // Metrics failures indicate programming bugs (invalid labels, cardinality mismatch)
+        // but should NOT cause production request failures.
+        if let Err(e) = metrics.record_request(tier_str, strategy_str) {
+            tracing::error!(
+                request_id = %request_id,
+                error = %e,
+                tier = tier_str,
+                strategy = strategy_str,
+                "Metrics recording failed (non-fatal): {}. Request will continue. \
+                This indicates a programming bug (invalid labels, cardinality mismatch). \
+                Monitor this error - frequent occurrence requires investigation.",
+                e
+            );
+            // DO NOT return error - metrics are non-critical
+        }
 
-        metrics
-            .record_routing_duration(strategy_str, routing_duration_ms)
-            .map_err(|e| {
-                tracing::error!(
-                    request_id = %request_id,
-                    error = %e,
-                    strategy = strategy_str,
-                    duration_ms = routing_duration_ms,
-                    "CRITICAL: Metrics recording failed. This indicates a programming bug \
-                    (invalid labels, cardinality mismatch). Failing request to expose issue."
-                );
-                AppError::Internal(format!("Metrics recording failed: {}", e))
-            })?;
+        if let Err(e) = metrics.record_routing_duration(strategy_str, routing_duration_ms) {
+            tracing::error!(
+                request_id = %request_id,
+                error = %e,
+                strategy = strategy_str,
+                duration_ms = routing_duration_ms,
+                "Metrics recording failed (non-fatal): {}. Request will continue. \
+                This indicates a programming bug (invalid labels, cardinality mismatch). \
+                Monitor this error - frequent occurrence requires investigation.",
+                e
+            );
+            // DO NOT return error - metrics are non-critical
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -500,17 +501,19 @@ pub async fn handler(
                         TargetModel::Deep => "deep",
                     };
 
-                    // Fail-fast on metrics recording errors - these indicate programming bugs
-                    metrics.record_model_invocation(tier_str).map_err(|e| {
+                    // Log-and-continue on metrics recording errors (observability should never break requests)
+                    if let Err(e) = metrics.record_model_invocation(tier_str) {
                         tracing::error!(
                             request_id = %request_id,
                             error = %e,
                             tier = tier_str,
-                            "CRITICAL: Metrics recording failed. This indicates a programming bug \
-                            (invalid labels, cardinality mismatch). Failing request to expose issue."
+                            "Metrics recording failed (non-fatal): {}. Request will continue. \
+                            This indicates a programming bug (invalid labels, cardinality mismatch). \
+                            Monitor this error - frequent occurrence requires investigation.",
+                            e
                         );
-                        AppError::Internal(format!("Metrics recording failed: {}", e))
-                    })?;
+                        // DO NOT return error - metrics are non-critical
+                    }
                 }
 
                 return Ok(Json(response));

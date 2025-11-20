@@ -40,11 +40,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 # Metrics (optional, behind feature flag)
 prometheus = { version = "0.14", optional = true }
-lazy_static = { version = "1.5", optional = true }
 
 [features]
 default = []
-metrics = ["prometheus", "lazy_static"]
+metrics = ["prometheus"]
 
 [dev-dependencies]
 proptest = "1.4"
