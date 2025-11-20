@@ -136,6 +136,68 @@ Try rules first (fast path), fall back to LLM for ambiguous cases.
 
 ---
 
+## Observability
+
+Octoroute provides three levels of observability to help you understand routing decisions and system performance:
+
+### Level 1: Structured Logs (Always Available)
+
+Built-in structured logging via `tracing`:
+
+```bash
+# Set log level via environment variable
+RUST_LOG=info cargo run
+
+# Available levels: trace, debug, info, warn, error
+RUST_LOG=octoroute=debug cargo run
+```
+
+**What you get:**
+- Request metadata (prompt length, importance, task type)
+- Routing decisions (which strategy was used, which model was selected)
+- Health check status updates
+- Error traces with full context
+
+### Level 2: Metrics (Optional - Prometheus Export)
+
+Enable with the `metrics` feature flag for time-series metrics:
+
+```bash
+# Build with metrics support
+cargo build --release --features metrics
+
+# Run and expose /metrics endpoint
+./target/release/octoroute
+```
+
+**Available metrics:**
+- `octoroute_requests_total` - Request counts by tier and routing strategy
+- `octoroute_routing_duration_ms` - Routing decision latency histogram
+- `octoroute_model_invocations_total` - Model invocations by tier
+
+**Prometheus scraping config:**
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: 'octoroute'
+    static_configs:
+      - targets: ['localhost:3000']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+```
+
+**Why OpenTelemetry?** We use OpenTelemetry with Prometheus export to keep your options open:
+- Works with existing Prometheus/Grafana homelab setups
+- Vendor-neutral (can switch to other backends later)
+- Future-proof for adding distributed traces
+
+### Level 3: Distributed Traces (Future)
+
+Coming in a future release: Full request tracing showing routing flow, retries, and model execution timing.
+
+---
+
 ## Architecture
 
 ```
@@ -259,6 +321,9 @@ cargo build
 
 # Release build (optimized)
 cargo build --release
+
+# Build with metrics support (OpenTelemetry + Prometheus export)
+cargo build --release --features metrics
 ```
 
 ### Test
@@ -427,6 +492,24 @@ Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guideli
 ### Q: How does LLM-based routing work?
 
 **A**: A 30B model analyzes your prompt + metadata and outputs one of: `FAST_8B`, `BALANCED_30B`, `DEEP_120B`. This decision is then used to route the actual request.
+
+### Q: How do I monitor Octoroute in production?
+
+**A**: Octoroute provides three observability levels:
+1. **Structured logs** (always enabled): Use `RUST_LOG=info` to see routing decisions and health status
+2. **Metrics** (optional): Build with `--features metrics` to expose Prometheus metrics at `/metrics`
+3. **Traces** (future): Distributed tracing showing full request flow (coming soon)
+
+For homelab deployments, we recommend Prometheus + Grafana for metrics visualization.
+
+### Q: Why OpenTelemetry instead of direct Prometheus?
+
+**A**: OpenTelemetry is vendor-neutral and future-proof. You get:
+- Prometheus export for existing homelab setups (no changes needed)
+- Ability to switch to other backends (Grafana Cloud, Jaeger, etc.) without code changes
+- Built-in support for traces when we add that feature
+
+The `/metrics` endpoint works with your existing Prometheus scraper - no OTEL collector required.
 
 ---
 

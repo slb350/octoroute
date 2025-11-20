@@ -101,6 +101,7 @@ Octoroute is an intelligent HTTP API router that sits between client application
 | Configuration | TOML + serde | Human-readable, type-safe parsing |
 | Error Handling | thiserror | Rich error context, `IntoResponse` integration |
 | Logging | tracing + tracing-subscriber | Structured logging with spans |
+| Metrics | OpenTelemetry + Prometheus | Vendor-neutral, homelab-friendly, future-proof |
 | Testing | proptest + criterion | Property tests + benchmarks |
 
 ### Module Hierarchy
@@ -772,35 +773,160 @@ pub async fn chat_handler(
 
 ### 7.2 Metrics (Optional)
 
-Using Prometheus metrics via `tower-http`:
+Using OpenTelemetry with Prometheus export for vendor-neutral observability:
+
+**Why OpenTelemetry?**
+- Unified metrics + traces + logs (three pillars of observability)
+- Vendor-neutral: Export to Prometheus, Grafana, Jaeger, or other backends
+- Integrates with existing `tracing` infrastructure via `tracing-opentelemetry`
+- Future-proof: Industry standard backed by CNCF
+- Homelab-friendly: Can export to Prometheus format for existing Prometheus/Grafana stacks
+
+**Dependencies (behind `metrics` feature flag):**
+
+```toml
+[dependencies]
+# Core OTEL
+opentelemetry = "0.24"
+opentelemetry-prometheus = "0.17"     # Prometheus exporter
+opentelemetry-otlp = "0.17"           # OTLP exporter (optional)
+tracing-opentelemetry = "0.25"        # Bridge tracing to OTEL traces
+
+[features]
+default = []
+metrics = [
+    "opentelemetry",
+    "opentelemetry-prometheus",
+    "tracing-opentelemetry"
+]
+```
+
+**Implementation:**
 
 ```rust
-use prometheus::{IntCounter, Histogram, Registry};
+use opentelemetry::metrics::{Counter, Histogram, Meter};
+use opentelemetry_prometheus::PrometheusExporter;
+use opentelemetry::KeyValue;
 
 pub struct Metrics {
-    pub requests_total: IntCounter,
-    pub routing_duration: Histogram,
-    pub model_invocations: IntCounter,
+    pub requests_total: Counter<u64>,
+    pub routing_duration: Histogram<f64>,
+    pub model_invocations: Counter<u64>,
+    exporter: PrometheusExporter,
 }
 
 impl Metrics {
-    pub fn new(registry: &Registry) -> Self {
-        let requests_total = IntCounter::new(
-            "octoroute_requests_total",
-            "Total number of chat requests"
-        ).unwrap();
-        registry.register(Box::new(requests_total.clone())).unwrap();
+    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        // Create Prometheus exporter
+        let exporter = opentelemetry_prometheus::exporter()
+            .with_registry(prometheus::default_registry().clone())
+            .build()?;
 
-        // ... register other metrics
+        // Get meter for creating instruments
+        let meter = exporter
+            .meter_provider()
+            .meter("octoroute");
 
-        Self {
+        // Create metrics
+        let requests_total = meter
+            .u64_counter("octoroute_requests_total")
+            .with_description("Total number of chat requests")
+            .init();
+
+        let routing_duration = meter
+            .f64_histogram("octoroute_routing_duration_ms")
+            .with_description("Routing decision latency in milliseconds")
+            .init();
+
+        let model_invocations = meter
+            .u64_counter("octoroute_model_invocations_total")
+            .with_description("Total model invocations by tier")
+            .init();
+
+        Ok(Self {
             requests_total,
             routing_duration,
             model_invocations,
-        }
+            exporter,
+        })
+    }
+
+    /// Export metrics in Prometheus text format
+    pub fn export(&self) -> String {
+        // Prometheus exporter handles formatting
+        // This would be called by GET /metrics handler
+        self.exporter.export()
+    }
+
+    /// Record a request with labels
+    pub fn record_request(&self, tier: &str, strategy: &str) {
+        self.requests_total.add(1, &[
+            KeyValue::new("tier", tier.to_string()),
+            KeyValue::new("strategy", strategy.to_string()),
+        ]);
+    }
+
+    /// Record routing decision latency
+    pub fn record_routing_duration(&self, duration_ms: f64, strategy: &str) {
+        self.routing_duration.record(duration_ms, &[
+            KeyValue::new("strategy", strategy.to_string()),
+        ]);
     }
 }
 ```
+
+**Axum Handler:**
+
+```rust
+// Expose /metrics endpoint for Prometheus scraping
+pub async fn metrics_handler(
+    State(metrics): State<Arc<Metrics>>,
+) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        metrics.export(),
+    )
+}
+```
+
+**Optional: Add Tracing Bridge for Traces:**
+
+```rust
+use tracing_opentelemetry::OpenTelemetryLayer;
+
+pub fn init_telemetry_with_traces() {
+    // Create OTLP exporter for traces (sends to OTEL collector)
+    let tracer = opentelemetry_otlp::new_pipeline()
+        .tracing()
+        .with_exporter(opentelemetry_otlp::new_exporter().tonic())
+        .install_batch(opentelemetry_sdk::runtime::Tokio)
+        .expect("Failed to initialize tracer");
+
+    // Bridge tracing spans to OTEL traces
+    tracing_subscriber::registry()
+        .with(EnvFilter::from_default_env())
+        .with(tracing_subscriber::fmt::layer())
+        .with(OpenTelemetryLayer::new(tracer))
+        .init();
+}
+```
+
+**Usage in Homelab:**
+
+Homelab users can scrape `/metrics` with their existing Prometheus setup:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: 'octoroute'
+    static_configs:
+      - targets: ['localhost:3000']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+```
+
+Or send to OTEL collector for multi-backend export (Grafana, Jaeger, etc.).
 
 ### 7.3 Tracing Setup
 
@@ -1020,19 +1146,48 @@ proptest! {
 
 **Deliverable**: Tool-based router as alternative strategy
 
-### Phase 5: Polish & Observability (Week 5)
+### Phase 5: Polish & Observability (Production-Ready)
 
-**Goals**: Production-ready features
+**Goals**: Production-ready features and operational tooling
 
 - [ ] Add `/models` endpoint with health checks
-- [ ] Implement Prometheus metrics (optional)
+  - List all models by tier with health status
+  - Show active/inactive endpoints
+  - Provide endpoint metadata (URL, model name, priority, weight)
+- [ ] Implement OpenTelemetry metrics (optional, behind `metrics` feature flag)
+  - Metrics: Request counts by tier, routing strategy distribution, latency histograms
+  - Export to Prometheus format via `/metrics` endpoint
+  - Optional: OTLP export for traces (bridge `tracing` spans to OTEL)
+  - Document Prometheus scraping config for homelab users
 - [ ] Add request timeout handling
+  - Configurable global timeout
+  - Per-tier timeout overrides
+  - Proper timeout error responses
 - [ ] Create `justfile` with dev tasks
+  - `just test` - run all tests
+  - `just bench` - run benchmarks
+  - `just run` - start dev server
+  - `just check` - clippy + fmt check
+  - `just build-release` - optimized build
 - [ ] Write comprehensive README
+  - Quick start guide with examples
+  - Configuration reference
+  - API documentation with curl examples
+  - Architecture overview with diagrams
+  - Observability setup (logs, metrics, traces)
+  - FAQ section
 - [ ] Add benchmarks for routing performance
+  - Rule-based routing latency (<1ms target)
+  - LLM routing latency (100-500ms baseline)
+  - End-to-end request throughput
+  - Compare strategies (rule vs LLM vs hybrid)
 - [ ] Set up CI/CD (GitHub Actions)
+  - Test suite on push/PR (all 234 tests)
+  - Clippy and rustfmt checks (zero warnings policy)
+  - Benchmark regression detection
+  - Optional: Benchmark comparison comments on PRs
 
-**Deliverable**: Production-ready router service
+**Deliverable**: Production-ready router service ready for homelab deployment with full observability
 
 ---
 
@@ -1099,9 +1254,13 @@ router_model = "balanced"
 # Log level: "trace", "debug", "info", "warn", "error"
 log_level = "info"
 
-# Enable Prometheus metrics endpoint
+# Metrics configuration (requires --features metrics)
+# Exposes /metrics endpoint in Prometheus format via OpenTelemetry
 metrics_enabled = false
-metrics_port = 9090
+
+# Optional: OTLP exporter for sending traces to OTEL collector
+# If not set, only Prometheus export is available
+# otlp_endpoint = "http://localhost:4317"
 ```
 
 ---
