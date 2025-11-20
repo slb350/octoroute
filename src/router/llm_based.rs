@@ -28,6 +28,119 @@ use crate::models::{BalancedSelector, ModelSelector};
 use crate::router::{RouteMetadata, TargetModel};
 use std::sync::Arc;
 
+/// Errors specific to LLM-based routing decisions
+///
+/// Categorizes errors into systemic (LLM malfunction) vs transient (network/endpoint issues).
+/// This allows the retry logic to distinguish between errors that should fail fast vs errors
+/// that can be resolved by trying a different endpoint.
+#[derive(Debug, thiserror::Error)]
+pub enum LlmRouterError {
+    /// Router LLM returned empty response (no content blocks)
+    ///
+    /// Systemic error - indicates LLM malfunction or misconfiguration.
+    /// Retrying with a different endpoint won't help.
+    #[error("Router LLM returned empty response")]
+    EmptyResponse { endpoint: String },
+
+    /// Router LLM returned unparseable response (no valid routing keyword found)
+    ///
+    /// Systemic error - indicates LLM not following instructions, safety filter activation,
+    /// or misconfiguration. Retrying won't help.
+    #[error("Router LLM returned unparseable response: {response}")]
+    UnparseableResponse { endpoint: String, response: String },
+
+    /// Router LLM returned refusal or error message
+    ///
+    /// Systemic error - indicates safety filter activation or LLM refusing the request.
+    /// Retrying won't help.
+    #[error("Router LLM refused or returned error: {message}")]
+    Refusal { endpoint: String, message: String },
+
+    /// Router response exceeded size limit ({size} bytes > {max_size} bytes)
+    ///
+    /// Systemic error - indicates LLM generating essays instead of classifications,
+    /// infinite generation loops, or prompt injection. Retrying won't help.
+    #[error(
+        "Router response exceeded {max_size} bytes (got {size} bytes). LLM not following instructions."
+    )]
+    SizeExceeded {
+        endpoint: String,
+        size: usize,
+        max_size: usize,
+    },
+
+    /// Failed to configure AgentOptions for router query
+    ///
+    /// Systemic error - indicates configuration problem (invalid model name, base_url, etc.).
+    /// Retrying won't help.
+    #[error("Failed to configure AgentOptions for router: {details}")]
+    AgentOptionsConfigError { endpoint: String, details: String },
+
+    /// Stream error while receiving router response
+    ///
+    /// Transient error - network interruption, timeout, or connection loss mid-stream.
+    /// Retrying with a different endpoint may succeed.
+    #[error("Stream error after {bytes_received} bytes received: {error_message}")]
+    StreamError {
+        endpoint: String,
+        bytes_received: usize,
+        error_message: String,
+    },
+
+    /// Query timeout waiting for router response
+    ///
+    /// Transient error - endpoint may be overloaded or unreachable.
+    /// Retrying with a different endpoint may succeed.
+    #[error("Router query timed out after {timeout_seconds}s (attempt {attempt}/{max_attempts})")]
+    Timeout {
+        endpoint: String,
+        timeout_seconds: u64,
+        attempt: usize,
+        max_attempts: usize,
+    },
+}
+
+impl LlmRouterError {
+    /// Returns true if this error is retryable (transient network/endpoint issue)
+    ///
+    /// Retryable errors:
+    /// - StreamError: Network interruption, may succeed with different endpoint
+    /// - Timeout: Endpoint overloaded, may succeed with different endpoint
+    ///
+    /// Non-retryable (systemic) errors:
+    /// - EmptyResponse: LLM malfunction
+    /// - UnparseableResponse: LLM not following instructions
+    /// - Refusal: Safety filter or LLM refusing request
+    /// - SizeExceeded: LLM generating invalid output
+    /// - AgentOptionsConfigError: Configuration problem
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            LlmRouterError::StreamError { .. } | LlmRouterError::Timeout { .. }
+        )
+    }
+}
+
+/// Convert LlmRouterError to AppError
+///
+/// Maps router-specific errors to the application's general error type.
+impl From<LlmRouterError> for AppError {
+    fn from(error: LlmRouterError) -> Self {
+        AppError::ModelQueryFailed {
+            endpoint: match &error {
+                LlmRouterError::EmptyResponse { endpoint }
+                | LlmRouterError::UnparseableResponse { endpoint, .. }
+                | LlmRouterError::Refusal { endpoint, .. }
+                | LlmRouterError::SizeExceeded { endpoint, .. }
+                | LlmRouterError::AgentOptionsConfigError { endpoint, .. }
+                | LlmRouterError::StreamError { endpoint, .. }
+                | LlmRouterError::Timeout { endpoint, .. } => endpoint.clone(),
+            },
+            reason: error.to_string(),
+        }
+    }
+}
+
 /// Maximum size for router LLM response (bytes)
 ///
 /// 1KB limit prevents unbounded memory growth from runaway LLM output.
@@ -1759,5 +1872,225 @@ router_model = "balanced"
 
         // Note: The limit is also small enough to prevent OOM attacks (1KB < 1MB)
         // This is verified by the assert_eq! above confirming MAX_ROUTER_RESPONSE == 1024
+    }
+
+    #[test]
+    fn test_stream_error_with_partial_response_is_retryable() {
+        // GAP #6: Stream Timeout/Error After Partial Response
+        //
+        // Scenario: Stream yields partial data (e.g., "BA" from "BALANCED") then
+        // encounters an error (timeout, connection lost, etc.).
+        //
+        // The error message format is "Stream error after X bytes received: <error>"
+        // (see try_router_query lines 468-487).
+        //
+        // This should be classified as RETRYABLE (transient network/endpoint issue),
+        // NOT systemic (LLM malfunction). The LLM was working correctly - the
+        // network/endpoint failed mid-stream.
+        //
+        // Verifies:
+        // 1. Stream errors are not in systemic patterns
+        // 2. Classification is correct regardless of partial data amount
+        // 3. Underlying error details don't affect retryability
+
+        // Simulate stream error after receiving partial response
+        let stream_error_partial = AppError::ModelQueryFailed {
+            endpoint: "http://localhost:1234/v1".to_string(),
+            reason: "Stream error after 2 bytes received: connection timeout".to_string(),
+        };
+
+        assert!(
+            LlmBasedRouter::is_retryable_error(&stream_error_partial),
+            "Stream errors should be retryable (transient network issue), even with partial data"
+        );
+
+        // Also test with zero bytes received
+        let stream_error_immediate = AppError::ModelQueryFailed {
+            endpoint: "http://localhost:1234/v1".to_string(),
+            reason: "Stream error after 0 bytes received: connection refused".to_string(),
+        };
+
+        assert!(
+            LlmBasedRouter::is_retryable_error(&stream_error_immediate),
+            "Stream errors should be retryable even if no data was received"
+        );
+
+        // Test with various underlying error messages
+        let stream_error_timeout = AppError::ModelQueryFailed {
+            endpoint: "http://localhost:1234/v1".to_string(),
+            reason: "Stream error after 15 bytes received: timed out".to_string(),
+        };
+
+        assert!(
+            LlmBasedRouter::is_retryable_error(&stream_error_timeout),
+            "Stream timeout errors should be retryable regardless of timeout wording"
+        );
+    }
+
+    // ========================================================================
+    // LlmRouterError Tests
+    // ========================================================================
+
+    #[test]
+    fn test_llmroutererror_systemic_errors_not_retryable() {
+        // Verify all systemic error variants return false for is_retryable()
+
+        let empty = LlmRouterError::EmptyResponse {
+            endpoint: "http://test:1234/v1".to_string(),
+        };
+        assert!(
+            !empty.is_retryable(),
+            "EmptyResponse should not be retryable (systemic)"
+        );
+
+        let unparseable = LlmRouterError::UnparseableResponse {
+            endpoint: "http://test:1234/v1".to_string(),
+            response: "BAD RESPONSE".to_string(),
+        };
+        assert!(
+            !unparseable.is_retryable(),
+            "UnparseableResponse should not be retryable (systemic)"
+        );
+
+        let refusal = LlmRouterError::Refusal {
+            endpoint: "http://test:1234/v1".to_string(),
+            message: "Cannot process this request".to_string(),
+        };
+        assert!(
+            !refusal.is_retryable(),
+            "Refusal should not be retryable (systemic)"
+        );
+
+        let size_exceeded = LlmRouterError::SizeExceeded {
+            endpoint: "http://test:1234/v1".to_string(),
+            size: 2048,
+            max_size: 1024,
+        };
+        assert!(
+            !size_exceeded.is_retryable(),
+            "SizeExceeded should not be retryable (systemic)"
+        );
+
+        let config_error = LlmRouterError::AgentOptionsConfigError {
+            endpoint: "http://test:1234/v1".to_string(),
+            details: "Invalid base_url".to_string(),
+        };
+        assert!(
+            !config_error.is_retryable(),
+            "AgentOptionsConfigError should not be retryable (systemic)"
+        );
+    }
+
+    #[test]
+    fn test_llmroutererror_transient_errors_retryable() {
+        // Verify all transient error variants return true for is_retryable()
+
+        let stream_error = LlmRouterError::StreamError {
+            endpoint: "http://test:1234/v1".to_string(),
+            bytes_received: 42,
+            error_message: "connection reset".to_string(),
+        };
+        assert!(
+            stream_error.is_retryable(),
+            "StreamError should be retryable (transient)"
+        );
+
+        let timeout = LlmRouterError::Timeout {
+            endpoint: "http://test:1234/v1".to_string(),
+            timeout_seconds: 30,
+            attempt: 1,
+            max_attempts: 3,
+        };
+        assert!(
+            timeout.is_retryable(),
+            "Timeout should be retryable (transient)"
+        );
+    }
+
+    #[test]
+    fn test_llmroutererror_display_formatting() {
+        // Verify error messages are clear and actionable
+
+        let empty = LlmRouterError::EmptyResponse {
+            endpoint: "http://test:1234/v1".to_string(),
+        };
+        assert!(
+            empty.to_string().contains("empty response"),
+            "EmptyResponse message should mention 'empty response'"
+        );
+
+        let unparseable = LlmRouterError::UnparseableResponse {
+            endpoint: "http://test:1234/v1".to_string(),
+            response: "BREAKFAST".to_string(),
+        };
+        let msg = unparseable.to_string();
+        assert!(
+            msg.contains("unparseable") && msg.contains("BREAKFAST"),
+            "UnparseableResponse should include 'unparseable' and actual response"
+        );
+
+        let size_exceeded = LlmRouterError::SizeExceeded {
+            endpoint: "http://test:1234/v1".to_string(),
+            size: 2048,
+            max_size: 1024,
+        };
+        let msg = size_exceeded.to_string();
+        assert!(
+            msg.contains("2048") && msg.contains("1024"),
+            "SizeExceeded should include actual and max sizes"
+        );
+
+        let timeout = LlmRouterError::Timeout {
+            endpoint: "http://test:1234/v1".to_string(),
+            timeout_seconds: 30,
+            attempt: 2,
+            max_attempts: 3,
+        };
+        let msg = timeout.to_string();
+        assert!(
+            msg.contains("30s") && msg.contains("2") && msg.contains("3"),
+            "Timeout should include timeout duration and attempt numbers"
+        );
+    }
+
+    #[test]
+    fn test_llmroutererror_converts_to_apperror() {
+        // Verify LlmRouterError converts to AppError correctly
+
+        let router_error = LlmRouterError::UnparseableResponse {
+            endpoint: "http://test:1234/v1".to_string(),
+            response: "BAD".to_string(),
+        };
+
+        let app_error: AppError = router_error.into();
+
+        match app_error {
+            AppError::ModelQueryFailed { endpoint, reason } => {
+                assert_eq!(endpoint, "http://test:1234/v1");
+                assert!(
+                    reason.contains("unparseable") && reason.contains("BAD"),
+                    "Converted AppError should preserve error details"
+                );
+            }
+            _ => panic!("Expected ModelQueryFailed variant"),
+        }
+    }
+
+    #[test]
+    fn test_llmroutererror_stream_error_includes_bytes_received() {
+        // Verify StreamError tracks partial response size for debugging
+
+        let stream_error = LlmRouterError::StreamError {
+            endpoint: "http://test:1234/v1".to_string(),
+            bytes_received: 512,
+            error_message: "timeout".to_string(),
+        };
+
+        let msg = stream_error.to_string();
+        assert!(
+            msg.contains("512") && msg.contains("bytes received"),
+            "StreamError should include bytes received for diagnostics: {}",
+            msg
+        );
     }
 }

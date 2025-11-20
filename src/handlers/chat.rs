@@ -544,20 +544,23 @@ async fn try_query_model(
     );
 
     // Enforce PER-ATTEMPT timeout - each retry gets a fresh timeout budget.
-    // With MAX_RETRIES=3, total worst-case latency = 3 * timeout_seconds.
     //
-    // Example with 30s timeout:
+    // **TOTAL WORST-CASE LATENCY**: With MAX_RETRIES=3, total latency = 3 × timeout_seconds
+    // Example with 30s timeout: 3 retries × 30s = 90s maximum total latency
+    //
+    // Example timing breakdown (30s timeout):
     // - Attempt 1 times out at 30s → retry
     // - Attempt 2 times out at 60s total (30s + 30s) → retry
-    // - Attempt 3 times out at 90s total → final failure
+    // - Attempt 3 times out at 90s total (30s + 30s + 30s) → final failure
     //
     // The timeout wraps the ENTIRE operation: connection establishment,
     // query initiation, and streaming all response chunks.
     //
-    // IMPORTANT: When timeout triggers, Tokio cancels the Future, which drops the HTTP
-    // stream and closes the connection to the endpoint. The endpoint may continue processing
-    // the request (we don't send HTTP cancellation), so timeouts are billed as full requests
-    // by most LLM APIs. This is why timeout is per-request configurable.
+    // **BILLING IMPACT**: When timeout triggers, Tokio cancels the Future, which drops the HTTP
+    // stream and closes the connection to the endpoint. However, the endpoint may continue processing
+    // the request (we don't send HTTP cancellation signals), so timeouts are billed as full requests
+    // by most LLM APIs. If you're seeing frequent timeouts, consider increasing timeout_seconds in
+    // the configuration rather than accepting higher retry costs.
     let timeout_duration = Duration::from_secs(timeout_seconds);
 
     use futures::StreamExt;
@@ -915,5 +918,141 @@ priority = 1
         assert_eq!(deserialized.model_tier(), ModelTier::Balanced);
         assert_eq!(deserialized.model_name(), "test-balanced");
         assert_eq!(deserialized.routing_strategy(), RoutingStrategy::Llm);
+    }
+
+    #[test]
+    fn test_chatresponse_deserialize_rejects_empty_content() {
+        // GAP #7: ChatResponse custom Deserialize validation
+        //
+        // ChatResponse has a custom Deserialize implementation that validates
+        // content and model_name are non-empty (lines 181-211).
+        //
+        // This is defense-in-depth: ChatResponse is never actually deserialized
+        // from user input (only serialized for output), but the validation
+        // prevents future footguns if code changes.
+        //
+        // Verifies: Empty content is rejected during deserialization
+
+        let json = r#"{
+            "content": "",
+            "model_tier": "balanced",
+            "model_name": "test-model",
+            "routing_strategy": "rule"
+        }"#;
+
+        let result = serde_json::from_str::<ChatResponse>(json);
+        assert!(
+            result.is_err(),
+            "ChatResponse with empty content should fail deserialization"
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("content") && err_msg.contains("empty"),
+            "Error should mention 'content' and 'empty', got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_chatresponse_deserialize_rejects_whitespace_only_content() {
+        // Verify that whitespace-only content is also rejected (trim() check)
+
+        let json = r#"{
+            "content": "   \n\t  ",
+            "model_tier": "balanced",
+            "model_name": "test-model",
+            "routing_strategy": "rule"
+        }"#;
+
+        let result = serde_json::from_str::<ChatResponse>(json);
+        assert!(
+            result.is_err(),
+            "ChatResponse with whitespace-only content should fail deserialization"
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("content") && err_msg.contains("empty"),
+            "Error should mention 'content' and 'empty', got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_chatresponse_deserialize_rejects_empty_model_name() {
+        // GAP #8: ChatResponse model_name validation
+        //
+        // Verifies: Empty model_name is rejected during deserialization
+
+        let json = r#"{
+            "content": "Some response",
+            "model_tier": "balanced",
+            "model_name": "",
+            "routing_strategy": "rule"
+        }"#;
+
+        let result = serde_json::from_str::<ChatResponse>(json);
+        assert!(
+            result.is_err(),
+            "ChatResponse with empty model_name should fail deserialization"
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("model_name") && err_msg.contains("empty"),
+            "Error should mention 'model_name' and 'empty', got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_chatresponse_deserialize_rejects_whitespace_only_model_name() {
+        // Verify that whitespace-only model_name is also rejected
+
+        let json = r#"{
+            "content": "Some response",
+            "model_tier": "balanced",
+            "model_name": "  \t\n  ",
+            "routing_strategy": "rule"
+        }"#;
+
+        let result = serde_json::from_str::<ChatResponse>(json);
+        assert!(
+            result.is_err(),
+            "ChatResponse with whitespace-only model_name should fail deserialization"
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("model_name") && err_msg.contains("empty"),
+            "Error should mention 'model_name' and 'empty', got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_chatresponse_deserialize_accepts_valid_response() {
+        // Verify that valid responses are accepted
+
+        let json = r#"{
+            "content": "Valid response content",
+            "model_tier": "deep",
+            "model_name": "gpt-oss-120b",
+            "routing_strategy": "llm"
+        }"#;
+
+        let result = serde_json::from_str::<ChatResponse>(json);
+        assert!(
+            result.is_ok(),
+            "ChatResponse with valid fields should deserialize successfully. Error: {:?}",
+            result.err()
+        );
+
+        let response = result.unwrap();
+        assert_eq!(response.content(), "Valid response content");
+        assert_eq!(response.model_tier(), ModelTier::Deep);
+        assert_eq!(response.model_name(), "gpt-oss-120b");
+        assert_eq!(response.routing_strategy(), RoutingStrategy::Llm);
     }
 }
