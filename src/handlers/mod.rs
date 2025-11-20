@@ -6,6 +6,11 @@ use crate::models::ModelSelector;
 use crate::router::{HybridRouter, LlmBasedRouter, Router, RuleBasedRouter};
 use std::sync::Arc;
 
+#[cfg(feature = "metrics")]
+type MetricsHandle = Arc<crate::metrics::Metrics>;
+#[cfg(not(feature = "metrics"))]
+type MetricsHandle = ();
+
 pub mod chat;
 pub mod health;
 pub mod models;
@@ -132,7 +137,7 @@ impl AppState {
     /// Returns `Some(Arc<Metrics>)` when compiled with `--features metrics`,
     /// otherwise returns `None`.
     #[cfg(feature = "metrics")]
-    pub fn metrics(&self) -> Option<Arc<crate::metrics::Metrics>> {
+    pub fn metrics(&self) -> Option<MetricsHandle> {
         Some(self.metrics.clone())
     }
 
@@ -140,7 +145,7 @@ impl AppState {
     ///
     /// Returns `None` when compiled without the `metrics` feature.
     #[cfg(not(feature = "metrics"))]
-    pub fn metrics(&self) -> Option<Arc<crate::metrics::Metrics>> {
+    pub fn metrics(&self) -> Option<MetricsHandle> {
         None
     }
 }

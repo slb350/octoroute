@@ -61,6 +61,11 @@ impl Tier {
 /// - This provides more actionable observability (e.g., "70% of requests hit rule fast path")
 ///
 /// **Cardinality**: 3 tiers × 2 strategies (Rule, Llm) = **6 time series** (not 9)
+///
+/// Note: While `Strategy::Hybrid` exists in the enum (for configuration), it returns
+/// `None` from `metric_label()` and is not recorded in metrics. Tests may call
+/// `record_request(_, Strategy::Hybrid)` to verify suppression behavior, but this
+/// does not create additional time series.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strategy {
     /// Rule-based routing
@@ -82,6 +87,19 @@ impl Strategy {
             Strategy::Rule => "rule",
             Strategy::Llm => "llm",
             Strategy::Hybrid => "hybrid",
+        }
+    }
+
+    /// Returns the Prometheus label value for this strategy, or None for Hybrid.
+    ///
+    /// Hybrid is a meta-strategy and is intentionally NOT recorded to avoid
+    /// inflating label cardinality. Metrics capture the concrete path taken
+    /// (Rule or Llm) instead.
+    pub fn metric_label(&self) -> Option<&'static str> {
+        match self {
+            Strategy::Rule => Some("rule"),
+            Strategy::Llm => Some("llm"),
+            Strategy::Hybrid => None,
         }
     }
 }
@@ -167,8 +185,17 @@ impl Metrics {
     /// Maximum label combinations: 3 tiers × 2 strategies (Rule, Llm) = **6 time series**.
     /// (Hybrid is a meta-strategy and is never recorded - see Strategy enum docs)
     pub fn record_request(&self, tier: Tier, strategy: Strategy) -> Result<(), prometheus::Error> {
+        let Some(strategy_label) = strategy.metric_label() else {
+            tracing::debug!(
+                tier = %tier.as_str(),
+                strategy = %strategy.as_str(),
+                "Skipping metrics for hybrid meta-strategy"
+            );
+            return Ok(());
+        };
+
         self.requests_total
-            .get_metric_with_label_values(&[tier.as_str(), strategy.as_str()])?
+            .get_metric_with_label_values(&[tier.as_str(), strategy_label])?
             .inc();
         Ok(())
     }
@@ -219,8 +246,17 @@ impl Metrics {
             )));
         }
 
+        let Some(strategy_label) = strategy.metric_label() else {
+            tracing::debug!(
+                strategy = %strategy.as_str(),
+                duration_ms,
+                "Skipping routing duration metrics for hybrid meta-strategy"
+            );
+            return Ok(());
+        };
+
         self.routing_duration
-            .get_metric_with_label_values(&[strategy.as_str()])?
+            .get_metric_with_label_values(&[strategy_label])?
             .observe(duration_ms);
         Ok(())
     }
@@ -388,9 +424,7 @@ mod tests {
     fn test_gather_produces_prometheus_text_format() {
         let metrics = Metrics::new().unwrap();
 
-        metrics
-            .record_request(Tier::Deep, Strategy::Hybrid)
-            .unwrap();
+        metrics.record_request(Tier::Deep, Strategy::Rule).unwrap();
         let output = metrics.gather().unwrap();
 
         // Verify Prometheus text format structure
@@ -438,26 +472,24 @@ mod tests {
         // Record different combinations
         metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
         metrics
-            .record_request(Tier::Fast, Strategy::Hybrid)
-            .unwrap();
-        metrics
             .record_request(Tier::Balanced, Strategy::Rule)
             .unwrap();
         metrics
             .record_request(Tier::Balanced, Strategy::Llm)
             .unwrap();
-        metrics
-            .record_request(Tier::Deep, Strategy::Hybrid)
-            .unwrap();
+        metrics.record_request(Tier::Deep, Strategy::Rule).unwrap();
 
         let output = metrics.gather().unwrap();
 
         // All combinations should be present (Prometheus may format with spaces)
         assert!(output.contains("tier=\"fast\"") && output.contains("strategy=\"rule\""));
-        assert!(output.contains("tier=\"fast\"") && output.contains("strategy=\"hybrid\""));
         assert!(output.contains("tier=\"balanced\"") && output.contains("strategy=\"rule\""));
         assert!(output.contains("tier=\"balanced\"") && output.contains("strategy=\"llm\""));
-        assert!(output.contains("tier=\"deep\"") && output.contains("strategy=\"hybrid\""));
+        assert!(output.contains("tier=\"deep\"") && output.contains("strategy=\"rule\""));
+        assert!(
+            !output.contains("strategy=\"hybrid\""),
+            "Hybrid meta-strategy should not be recorded"
+        );
     }
 
     #[test]
@@ -616,16 +648,16 @@ mod tests {
 
         // Spawn threads recording different label combinations
         // This tests concurrent creation of new label combinations
-        // Now with bounded cardinality (max 9 combinations for 3x3 enums)
+        // Now with bounded cardinality (max 6 combinations for 3 tiers × 2 strategies)
         for i in 0..20 {
             let m = Arc::clone(&metrics);
             let handle = thread::spawn(move || {
                 // Rotate through valid tier and strategy values using enums
                 let tiers = [Tier::Fast, Tier::Balanced, Tier::Deep];
-                let strategies = [Strategy::Rule, Strategy::Llm, Strategy::Hybrid];
+                let strategies = [Strategy::Rule, Strategy::Llm];
 
                 let tier = tiers[i % 3];
-                let strategy = strategies[i % 3];
+                let strategy = strategies[i % 2];
 
                 // Each thread may create a new label combination
                 m.record_request(tier, strategy).unwrap();
@@ -650,7 +682,10 @@ mod tests {
         // Should contain all strategy values
         assert!(output.contains("strategy=\"rule\""));
         assert!(output.contains("strategy=\"llm\""));
-        assert!(output.contains("strategy=\"hybrid\""));
+        assert!(
+            !output.contains("strategy=\"hybrid\""),
+            "Hybrid meta-strategy should be suppressed in metrics"
+        );
 
         // Verify no corruption or panic occurred
         assert!(output.contains("octoroute_requests_total"));
@@ -677,6 +712,15 @@ mod tests {
         assert_eq!(Strategy::Rule.as_str(), "rule");
         assert_eq!(Strategy::Llm.as_str(), "llm");
         assert_eq!(Strategy::Hybrid.as_str(), "hybrid");
+    }
+
+    #[test]
+    fn test_strategy_metric_label_skips_hybrid() {
+        use super::Strategy;
+
+        assert_eq!(Strategy::Rule.metric_label(), Some("rule"));
+        assert_eq!(Strategy::Llm.metric_label(), Some("llm"));
+        assert_eq!(Strategy::Hybrid.metric_label(), None);
     }
 
     #[test]
@@ -725,9 +769,13 @@ mod tests {
         metrics
             .record_request(Tier::Balanced, Strategy::Llm)
             .unwrap();
+
+        // Test Hybrid suppression behavior: Calling record_request with Strategy::Hybrid
+        // succeeds (returns Ok) but does NOT create a metric (see metric_label() returning None).
+        // This test verifies that Hybrid can be safely passed without inflating cardinality.
         metrics
             .record_request(Tier::Deep, Strategy::Hybrid)
-            .unwrap();
+            .unwrap(); // Succeeds but suppressed - no metric created
 
         metrics
             .record_routing_duration(Strategy::Rule, 1.0)
@@ -735,9 +783,14 @@ mod tests {
         metrics
             .record_routing_duration(Strategy::Llm, 250.0)
             .unwrap();
+        // Verify Hybrid suppression also works for histogram metrics
+        metrics
+            .record_routing_duration(Strategy::Hybrid, 10.0)
+            .unwrap(); // Succeeds but suppressed - no histogram observation created
 
         metrics.record_model_invocation(Tier::Fast).unwrap();
         metrics.record_model_invocation(Tier::Balanced).unwrap();
+        metrics.record_model_invocation(Tier::Deep).unwrap();
 
         let output = metrics.gather().unwrap();
 
@@ -747,7 +800,10 @@ mod tests {
         assert!(output.contains("tier=\"deep\""));
         assert!(output.contains("strategy=\"rule\""));
         assert!(output.contains("strategy=\"llm\""));
-        assert!(output.contains("strategy=\"hybrid\""));
+        assert!(
+            !output.contains("strategy=\"hybrid\""),
+            "Hybrid meta-strategy should be suppressed in metrics"
+        );
     }
 
     #[test]
@@ -769,8 +825,13 @@ mod tests {
         metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
 
         // Result: All three calls increment the SAME metric
-        // Maximum possible cardinality: 3 tiers × 3 strategies = 9 combinations
+        // Maximum possible cardinality: 3 tiers × 2 strategies = 6 combinations
         // vs unbounded with strings
+
+        // Verify Hybrid meta-strategy suppression prevents cardinality inflation
+        metrics
+            .record_request(Tier::Deep, Strategy::Hybrid)
+            .unwrap(); // Succeeds but does not create new time series
 
         let output = metrics.gather().unwrap();
 
@@ -781,6 +842,10 @@ mod tests {
         // NO "FAST", "Fast", "fasst", etc.
         assert!(!output.contains("tier=\"FAST\""));
         assert!(!output.contains("tier=\"Fast\""));
+        assert!(
+            !output.contains("strategy=\"hybrid\""),
+            "Hybrid meta-strategy should not appear in metrics output"
+        );
     }
 
     // ===== Issue #5 Fix: Histogram Value Validation =====

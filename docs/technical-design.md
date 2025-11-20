@@ -1169,9 +1169,9 @@ proptest! {
 **Deliverable**: ✅ Production-ready router service ready for homelab deployment with full observability
 
 **Final Stats**:
-- Comprehensive test suite (221+ lib tests + integration tests as of Phase 5)
-  - Run `cargo test --all --features metrics` for current count
-  - Test count will grow as new features are added
+- Comprehensive test suite (unit tests + integration tests)
+  - Run `cargo test --all --features metrics` to verify current count
+  - Test suite grows as new features are added
 - Zero clippy warnings
 - Zero tech debt
 - 7 commits for Phase 5 (ae9fe21 → 84b3c6d)

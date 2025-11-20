@@ -101,18 +101,13 @@ router_model = "balanced"
         metrics
             .record_request(Tier::Balanced, Strategy::Llm)
             .unwrap();
-        metrics
-            .record_request(Tier::Deep, Strategy::Hybrid)
-            .unwrap();
+        metrics.record_request(Tier::Deep, Strategy::Rule).unwrap();
 
         metrics
             .record_routing_duration(Strategy::Rule, 0.5)
             .unwrap();
         metrics
             .record_routing_duration(Strategy::Llm, 250.0)
-            .unwrap();
-        metrics
-            .record_routing_duration(Strategy::Hybrid, 1.0)
             .unwrap();
 
         metrics.record_model_invocation(Tier::Fast).unwrap();
@@ -129,7 +124,10 @@ router_model = "balanced"
         // All strategies should be present
         assert!(output.contains("strategy=\"rule\""));
         assert!(output.contains("strategy=\"llm\""));
-        assert!(output.contains("strategy=\"hybrid\""));
+        assert!(
+            !output.contains("strategy=\"hybrid\""),
+            "Hybrid meta-strategy should be suppressed in metrics output"
+        );
     }
 
     #[tokio::test]
@@ -281,90 +279,6 @@ router_model = "balanced"
     }
 
     #[tokio::test]
-    async fn test_handler_succeeds_even_when_metrics_disabled() {
-        use axum::Extension;
-        use axum::extract::State;
-        use octoroute::handlers::chat::{ChatRequest, handler};
-        use octoroute::middleware::RequestId;
-
-        // Create config with metrics feature enabled but don't record any metrics
-        // This tests the defensive behavior where metrics.is_none() branches work correctly
-        let config_str = r#"
-[server]
-host = "127.0.0.1"
-port = 3000
-request_timeout_seconds = 1
-
-[[models.fast]]
-name = "test-fast"
-base_url = "http://192.0.2.1:11434/v1"
-max_tokens = 4096
-temperature = 0.7
-weight = 1.0
-priority = 1
-
-[[models.balanced]]
-name = "test-balanced"
-base_url = "http://192.0.2.2:11434/v1"
-max_tokens = 8192
-temperature = 0.7
-weight = 1.0
-priority = 1
-
-[[models.deep]]
-name = "test-deep"
-base_url = "http://192.0.2.3:11434/v1"
-max_tokens = 16384
-temperature = 0.7
-weight = 1.0
-priority = 1
-
-[routing]
-strategy = "rule"
-router_model = "balanced"
-"#;
-
-        let config: Config = toml::from_str(config_str).expect("should parse config");
-        let state = AppState::new(Arc::new(config)).expect("should create state");
-
-        // Verify metrics are available (with feature flag)
-        assert!(
-            state.metrics().is_some(),
-            "Metrics should be available with feature flag"
-        );
-
-        // Create a chat request
-        let request_json = serde_json::json!({
-            "message": "Hello",
-            "importance": "low",
-            "task_type": "casual_chat"
-        });
-        let request: ChatRequest =
-            serde_json::from_value(request_json).expect("should deserialize");
-
-        // Send request through handler
-        let result = handler(
-            State(state.clone()),
-            Extension(RequestId::new()),
-            axum::Json(request),
-        )
-        .await;
-
-        // Request should fail (non-routable IP), but this proves the handler executed
-        // all the way through the metrics recording code without panicking
-        assert!(result.is_err(), "Request should fail with non-routable IP");
-
-        // If we got here, it means:
-        // 1. record_request() was called (before query)
-        // 2. record_routing_duration() was called (before query)
-        // 3. Error handling in metrics recording worked (if it failed)
-        // 4. Handler continued execution even if metrics failed
-        //
-        // This validates the defensive error handling: metrics failures are logged
-        // but do not propagate to the user (observability never breaks requests).
-    }
-
-    #[tokio::test]
     async fn test_metrics_recording_with_extreme_values() {
         // Test that metrics handle extreme edge cases gracefully
         let config = Arc::new(create_test_config());
@@ -441,6 +355,63 @@ router_model = "balanced"
         assert!(
             state.metrics().is_none(),
             "Metrics should be None without feature flag"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chat_handler_runs_without_metrics_feature() {
+        use axum::Extension;
+        use axum::extract::State;
+        use octoroute::handlers::chat::{ChatRequest, handler};
+        use octoroute::middleware::RequestId;
+
+        // Config intentionally uses TEST-NET addresses to avoid real network calls
+        let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 1
+
+[[models.fast]]
+name = "test-fast"
+base_url = "http://192.0.2.10:11434/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+router_model = "balanced"
+"#;
+
+        let config: Config = toml::from_str(config_str).expect("should parse config");
+        let state = AppState::new(Arc::new(config)).expect("should create state without metrics");
+
+        // Metrics are not compiled into this binary
+        assert!(state.metrics().is_none());
+
+        // Create a chat request
+        let request_json = serde_json::json!({
+            "message": "Hello without metrics",
+            "importance": "low",
+            "task_type": "casual_chat"
+        });
+        let request: ChatRequest =
+            serde_json::from_value(request_json).expect("should deserialize");
+
+        // Send request through handler; expect an error because the endpoint is non-routable,
+        // but the handler must still execute without metrics
+        let result = handler(
+            State(state.clone()),
+            Extension(RequestId::new()),
+            axum::Json(request),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "Handler should execute without metrics feature even when downstream request fails"
         );
     }
 }
