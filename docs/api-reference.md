@@ -165,6 +165,10 @@ List all configured model endpoints with health status.
 - `last_check_seconds_ago` (integer): Seconds since last health check
 - `consecutive_failures` (integer): Number of consecutive health check failures
 
+**Note on Health Reporting**:
+
+On server startup, all endpoints initialize as `healthy: true` with `last_check_seconds_ago` reflecting time since process start. This optimistic health status remains until the first background health check runs (~30 seconds after boot) or a user request updates the status. For the first 30 seconds of operation, health data should be considered provisional until actual endpoint probes complete.
+
 #### Status Codes
 
 - `200 OK`: Models list retrieved successfully
