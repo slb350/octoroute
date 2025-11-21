@@ -453,22 +453,32 @@ impl Config {
             }
         }
 
-        // Validate router_model is valid
+        // Validate router_model format (ALWAYS, regardless of strategy)
         if !["fast", "balanced", "deep"].contains(&self.routing.router_model.as_str()) {
             return Err(crate::error::AppError::Config(format!(
-                "Configuration error: routing.router_model must be 'fast', 'balanced', or 'deep', got '{}'",
+                "Configuration error: routing.router_model must be 'fast', 'balanced', or 'deep', got '{}'. \
+                Valid values are case-sensitive (lowercase only). \
+                Common mistakes: capitalization (e.g., 'FAST'), typos (e.g., 'balance'). \
+                Note: router_model is only used by LLM/Hybrid strategies, but must always be valid.",
                 self.routing.router_model
             )));
         }
 
-        // Validate that router_model tier has endpoints (for LLM/Hybrid strategies)
+        // Validate that router_model tier has endpoints (ONLY for strategies that use it)
         match self.routing.strategy {
             RoutingStrategy::Llm | RoutingStrategy::Hybrid => {
                 let router_tier_endpoints = match self.routing.router_model.as_str() {
                     "fast" => &self.models.fast,
                     "balanced" => &self.models.balanced,
                     "deep" => &self.models.deep,
-                    _ => unreachable!("Already validated above"),
+                    _ => {
+                        // DEFENSIVE: This shouldn't happen due to validation above, but handle gracefully
+                        return Err(crate::error::AppError::Config(format!(
+                            "DEFENSIVE ERROR: router_model '{}' passed format validation but has no tier mapping. \
+                             This indicates a bug in the validation logic. Please report this.",
+                            self.routing.router_model
+                        )));
+                    }
                 };
 
                 if router_tier_endpoints.is_empty() {
@@ -479,7 +489,15 @@ impl Config {
                     )));
                 }
             }
-            _ => {} // Rule-only routing doesn't need router_model validation
+            RoutingStrategy::Rule | RoutingStrategy::Tool => {
+                // Rule/Tool routing validates router_model format (above) but doesn't require endpoints
+                tracing::debug!(
+                    router_model = %self.routing.router_model,
+                    strategy = ?self.routing.strategy,
+                    "router_model format is valid but not used by {:?} strategy",
+                    self.routing.strategy
+                );
+            }
         }
 
         // Validate request timeout
@@ -772,6 +790,49 @@ router_model = "invalid"
             let err_msg = result.unwrap_err().to_string();
             assert!(err_msg.contains("router_model"));
         }
+    }
+
+    #[test]
+    fn test_config_validation_always_validates_router_model_format() {
+        // Verify that router_model format is validated even for Rule strategy
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+
+        // Set to Rule strategy (doesn't USE router_model but should validate format)
+        config.routing.strategy = RoutingStrategy::Rule;
+        config.routing.router_model = "INVALID".to_string();
+
+        let result = config.validate();
+        assert!(
+            result.is_err(),
+            "Should reject invalid router_model even for Rule strategy"
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("router_model") && err_msg.contains("INVALID"),
+            "Error should mention router_model validation, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_config_validation_rule_strategy_allows_empty_router_tier() {
+        // Verify that Rule strategy allows empty router_model tier
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+
+        // Set to Rule strategy
+        config.routing.strategy = RoutingStrategy::Rule;
+        config.routing.router_model = "deep".to_string();
+
+        // Clear deep tier (this is OK for Rule strategy which doesn't use router_model)
+        config.models.deep.clear();
+
+        let result = config.validate();
+        assert!(
+            result.is_ok(),
+            "Rule strategy should allow empty router_model tier since it doesn't use it, got: {:?}",
+            result.err()
+        );
     }
 
     #[test]
