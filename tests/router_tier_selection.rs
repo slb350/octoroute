@@ -571,3 +571,113 @@ router_tier = "{}"
         );
     }
 }
+
+#[tokio::test]
+async fn test_llm_router_exhausted_tier_fails_gracefully() {
+    // Critical production scenario: ALL endpoints of the router tier become unhealthy
+    //
+    // This tests what happens when the Fast tier (used for routing decisions) goes completely down:
+    // - Host reboots
+    // - OOM kills
+    // - Network partitions
+    //
+    // Expected behavior: Clear error, no cascading failures, no hangs
+
+    let config_toml = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://192.0.2.1:11434/v1"  # Non-routable IP
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.fast]]
+name = "fast-2"
+base_url = "http://192.0.2.2:11434/v1"  # Non-routable IP
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"  # Not used by router (different tier)
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"  # Not used by router (different tier)
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "llm"
+router_tier = "fast"  # Router uses Fast tier, which will be exhausted
+"#;
+
+    let config = validated_config_from_toml(config_toml);
+    let config = Arc::new(config);
+    let selector = Arc::new(ModelSelector::new(config.clone()));
+
+    // Create LLM router with Fast tier
+    let router = LlmBasedRouter::new(selector.clone(), octoroute::router::TargetModel::Fast)
+        .expect("should construct router");
+
+    // Mark ALL Fast tier endpoints as unhealthy (simulating complete tier failure)
+    for endpoint_name in ["fast-1", "fast-2"] {
+        selector
+            .health_checker()
+            .mark_failure(endpoint_name)
+            .await
+            .expect("should mark endpoint unhealthy");
+    }
+
+    // Attempt routing with exhausted router tier
+    let metadata = RouteMetadata {
+        token_estimate: 100,
+        importance: Importance::Normal,
+        task_type: TaskType::QuestionAnswer,
+    };
+
+    let result = router.route("test routing request", &metadata).await;
+
+    // Should fail gracefully
+    assert!(
+        result.is_err(),
+        "Routing should fail when all router tier endpoints are unhealthy"
+    );
+
+    let error_msg = result.unwrap_err().to_string();
+
+    // Verify error message references Fast tier endpoints (proves correct tier was used)
+    //
+    // Note: Current implementation doesn't explicitly say "Fast tier exhausted" but does
+    // reference the Fast tier endpoint IPs, which proves the router attempted the correct tier.
+    // Future improvement: More explicit "router tier exhausted" error messages.
+    assert!(
+        error_msg.contains("192.0.2.1") || error_msg.contains("192.0.2.2"),
+        "Error should reference Fast tier endpoint IPs to prove Fast tier was attempted, got: {}",
+        error_msg
+    );
+
+    assert!(
+        error_msg.contains("timeout")
+            || error_msg.contains("unreachable")
+            || error_msg.contains("fail")
+            || error_msg.contains("endpoint"),
+        "Error should explain what went wrong, got: {}",
+        error_msg
+    );
+
+    println!("✅ Router tier exhaustion handled gracefully");
+    println!("   - All Fast tier endpoints marked unhealthy");
+    println!("   - Routing failed with clear error");
+    println!("   - Error message: {}", error_msg);
+}
