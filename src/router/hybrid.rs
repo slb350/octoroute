@@ -6,7 +6,7 @@
 use crate::config::Config;
 use crate::error::AppResult;
 use crate::models::selector::ModelSelector;
-use crate::router::{LlmBasedRouter, RouteMetadata, RoutingDecision, RuleBasedRouter};
+use crate::router::{LlmBasedRouter, LlmRouter, RouteMetadata, RoutingDecision, RuleBasedRouter};
 use std::sync::Arc;
 
 /// Hybrid router combining rule-based and LLM-based strategies
@@ -15,21 +15,38 @@ use std::sync::Arc;
 /// with intelligent LLM fallback for ambiguous cases.
 pub struct HybridRouter {
     rule_router: RuleBasedRouter,
-    llm_router: LlmBasedRouter,
+    llm_router: Arc<dyn LlmRouter>,
     selector: Arc<ModelSelector>,
 }
 
 impl HybridRouter {
-    /// Create a new hybrid router
+    /// Create a new hybrid router with default LLM-based router
     ///
     /// Returns an error if LLM router construction fails
     /// (e.g., no balanced tier endpoints configured).
     pub fn new(_config: Arc<Config>, selector: Arc<ModelSelector>) -> AppResult<Self> {
+        let llm_router = LlmBasedRouter::new(selector.clone())?;
         Ok(Self {
             rule_router: RuleBasedRouter::new(),
-            llm_router: LlmBasedRouter::new(selector.clone())?,
+            llm_router: Arc::new(llm_router),
             selector,
         })
+    }
+
+    /// Create a new hybrid router with a custom LLM router implementation
+    ///
+    /// This constructor allows dependency injection for testing purposes.
+    /// In production, use `new()` which creates a standard LlmBasedRouter.
+    #[cfg(test)]
+    pub fn new_with_llm_router(
+        llm_router: Arc<dyn LlmRouter>,
+        selector: Arc<ModelSelector>,
+    ) -> Self {
+        Self {
+            rule_router: RuleBasedRouter::new(),
+            llm_router,
+            selector,
+        }
     }
 
     /// Route using hybrid strategy
@@ -120,7 +137,41 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::models::selector::ModelSelector;
-    use crate::router::{Importance, RoutingStrategy, TargetModel, TaskType};
+    use crate::router::{
+        Importance, RouteMetadata, RoutingDecision, RoutingStrategy, TargetModel, TaskType,
+    };
+    use async_trait::async_trait;
+
+    /// Mock LLM router for testing
+    ///
+    /// Returns a fixed routing decision without making any network calls.
+    /// This allows testing the hybrid router fallback logic without dependencies
+    /// on external services.
+    struct MockLlmRouter {
+        /// The target model to return for all routing requests
+        fixed_target: TargetModel,
+    }
+
+    impl MockLlmRouter {
+        fn new(fixed_target: TargetModel) -> Self {
+            Self { fixed_target }
+        }
+    }
+
+    #[async_trait]
+    impl LlmRouter for MockLlmRouter {
+        async fn route(
+            &self,
+            _user_prompt: &str,
+            _meta: &RouteMetadata,
+        ) -> AppResult<RoutingDecision> {
+            // Always return the fixed target tier with LLM strategy
+            Ok(RoutingDecision::new(
+                self.fixed_target,
+                RoutingStrategy::Llm,
+            ))
+        }
+    }
 
     /// Helper to create test config
     fn test_config() -> Arc<Config> {
@@ -323,11 +374,17 @@ mod tests {
         //
         // Bug: Previously, rule router used default_tier() when no match, so hybrid
         //      router never called LLM. This test ensures LLM fallback works.
+        //
+        // FIX: Use MockLlmRouter to avoid network calls and panics during testing.
 
         let config = test_config();
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router =
-            HybridRouter::new(config, selector.clone()).expect("HybridRouter::new should succeed");
+
+        // Create mock LLM router that returns Balanced tier
+        let mock_llm_router = Arc::new(MockLlmRouter::new(TargetModel::Balanced));
+
+        // Create hybrid router with mock LLM router (no network calls)
+        let router = HybridRouter::new_with_llm_router(mock_llm_router, selector.clone());
 
         // CasualChat + High importance has NO rule match (see rule_based.rs line 103)
         // This is the "ambiguous case" that should trigger LLM routing
@@ -340,36 +397,32 @@ mod tests {
         // Attempt routing
         // Expected behavior:
         // 1. Rule router returns None (no match)
-        // 2. Hybrid router sees None, calls LLM router
-        // 3. LLM router tries to query balanced tier endpoint
-        // 4. Since endpoint doesn't exist (localhost:1235), it will fail with network error
-        //
-        // The failure proves LLM router was called! If it wasn't called, we'd get
-        // success with default tier.
+        // 2. Hybrid router sees None, calls mock LLM router
+        // 3. Mock LLM router returns Balanced tier (no network call)
         let result = router.route("Am I allowed to do this?", &meta).await;
 
-        // Result should be an error (endpoint doesn't exist)
-        // But the ERROR TYPE tells us which router was used:
-        // - If LLM router called: error about balanced tier or connection failed
-        // - If default tier used: might succeed or different error
+        // Result should succeed (mock router doesn't make network calls)
         assert!(
-            result.is_err(),
-            "Should fail because balanced tier endpoint doesn't exist (proves LLM was called)"
+            result.is_ok(),
+            "Should succeed with mock LLM router: {:?}",
+            result
         );
 
-        let err = result.unwrap_err();
-        let err_msg = format!("{}", err);
+        let decision = result.unwrap();
 
-        // Error should mention balanced tier or routing, indicating LLM router was used
-        // (Not a generic "no healthy endpoints" which could be from default tier logic)
-        println!(
-            "Error message (indicates LLM router was called): {}",
-            err_msg
+        // Verify LLM router was called (strategy should be Llm, not Rule)
+        assert_eq!(
+            decision.strategy(),
+            RoutingStrategy::Llm,
+            "Strategy should be Llm (proves LLM router was called)"
         );
 
-        // The error being present proves LLM router was attempted!
-        // If rule router had used default_tier, the error would be different
-        // or might not occur at all.
+        // Verify the mock router's decision was used
+        assert_eq!(
+            decision.target(),
+            TargetModel::Balanced,
+            "Target should be Balanced (from mock LLM router)"
+        );
     }
 
     #[tokio::test]

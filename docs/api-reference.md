@@ -50,10 +50,10 @@ Default: `"question_answer"`
 
 #### ModelTier
 
-Represents which model tier to use.
+Represents which model tier was selected (appears in responses).
 
 ```json
-"tier": "fast" | "balanced" | "deep"
+"model_tier": "fast" | "balanced" | "deep"
 ```
 
 - `fast`: 8B models for quick tasks
@@ -72,19 +72,19 @@ Submit a chat request and get a routed response.
 
 ```json
 {
-  "prompt": "string (required)",
+  "message": "string (required)",
   "importance": "low | normal | high (optional, default: normal)",
-  "task_type": "casual_chat | code | creative_writing | deep_analysis | document_summary | question_answer (optional, default: question_answer)",
-  "tier": "fast | balanced | deep (optional, overrides routing)"
+  "task_type": "casual_chat | code | creative_writing | deep_analysis | document_summary | question_answer (optional, default: question_answer)"
 }
 ```
 
 **Fields**:
 
-- `prompt` (string, required): The user's message or question
+- `message` (string, required): The user's message or question
 - `importance` (enum, optional): Importance level for routing decisions
 - `task_type` (enum, optional): Task type hint for routing decisions
-- `tier` (enum, optional): Explicit tier override (skips routing logic)
+
+Routing tier is chosen automatically based on routing logic; manual tier overrides are not supported.
 
 #### Response Body
 
@@ -93,7 +93,7 @@ Submit a chat request and get a routed response.
   "content": "string",
   "model_tier": "fast | balanced | deep",
   "model_name": "string",
-  "routing_strategy": "rule | llm | override"
+  "routing_strategy": "rule | llm"
 }
 ```
 
@@ -105,12 +105,11 @@ Submit a chat request and get a routed response.
 - `routing_strategy` (string): How the routing decision was made
   - `"rule"`: Rule-based router matched a pattern
   - `"llm"`: LLM router made the decision (ambiguous case)
-  - `"override"`: User specified explicit tier
 
 #### Status Codes
 
 - `200 OK`: Request successful
-- `400 Bad Request`: Invalid request (empty prompt, invalid enum values)
+- `400 Bad Request`: Invalid request (empty message, invalid enum values)
 - `500 Internal Server Error`: Configuration or routing error
 - `502 Bad Gateway`: Model invocation failed
 - `503 Service Unavailable`: All endpoints for selected tier are unhealthy
@@ -234,7 +233,7 @@ All errors return JSON with an `error` field:
 **Cause**: Invalid request (validation failed)
 
 **Examples**:
-- Empty prompt: `{"error": "prompt cannot be empty"}`
+- Empty message: `{"error": "message cannot be empty or contain only whitespace"}`
 - Invalid importance: `{"error": "unknown variant 'urgent', expected 'low', 'normal', or 'high'"}`
 
 #### 500 Internal Server Error
@@ -277,7 +276,7 @@ All errors return JSON with an `error` field:
 curl -X POST http://localhost:3000/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "prompt": "What is the capital of France?"
+    "message": "What is the capital of France?"
   }'
 ```
 
@@ -302,7 +301,7 @@ curl -X POST http://localhost:3000/chat \
 curl -X POST http://localhost:3000/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "prompt": "Analyze the implications of quantum computing on cryptography.",
+    "message": "Analyze the implications of quantum computing on cryptography.",
     "importance": "high",
     "task_type": "deep_analysis"
   }'
@@ -329,7 +328,7 @@ curl -X POST http://localhost:3000/chat \
 curl -X POST http://localhost:3000/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "prompt": "Write a function to parse JSON in Rust with error handling.",
+    "message": "Write a function to parse JSON in Rust with error handling.",
     "task_type": "code"
   }'
 ```
@@ -355,7 +354,7 @@ curl -X POST http://localhost:3000/chat \
 curl -X POST http://localhost:3000/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "prompt": "Tell me about Rust",
+    "message": "Tell me about Rust",
     "importance": "high",
     "task_type": "casual_chat"
   }'
@@ -375,32 +374,6 @@ curl -X POST http://localhost:3000/chat \
 **Routing Decision**: Ambiguous (casual chat but high importance) → no rule match → LLM router decides → balanced tier
 
 **Routing Latency**: +100-500ms for LLM routing decision
-
----
-
-### Explicit Tier Override
-
-```bash
-curl -X POST http://localhost:3000/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "Quick test",
-    "tier": "deep"
-  }'
-```
-
-**Response**:
-
-```json
-{
-  "content": "Hello! How can I help you?",
-  "model_tier": "deep",
-  "model_name": "gpt-oss-120b",
-  "routing_strategy": "override"
-}
-```
-
-**Routing Decision**: User specified deep tier → skip routing logic → deep tier (120B model)
 
 ---
 

@@ -26,7 +26,28 @@ use crate::error::{AppError, AppResult};
 use crate::models::endpoint_name::ExclusionSet;
 use crate::models::{BalancedSelector, ModelSelector};
 use crate::router::{RouteMetadata, RoutingDecision, RoutingStrategy, TargetModel};
+use async_trait::async_trait;
 use std::sync::Arc;
+
+/// Trait for LLM-based routing
+///
+/// Allows dependency injection of different LLM router implementations,
+/// enabling testing with mock routers that don't make real network calls.
+#[async_trait]
+pub trait LlmRouter: Send + Sync {
+    /// Route a request based on LLM analysis
+    ///
+    /// # Arguments
+    ///
+    /// * `user_prompt` - The user's original prompt
+    /// * `meta` - Request metadata (token estimate, importance, task type)
+    ///
+    /// # Returns
+    ///
+    /// Returns a routing decision indicating which tier to use, or an error
+    /// if routing fails (no healthy endpoints, LLM malfunction, etc.)
+    async fn route(&self, user_prompt: &str, meta: &RouteMetadata) -> AppResult<RoutingDecision>;
+}
 
 /// Errors specific to LLM-based routing decisions
 ///
@@ -830,6 +851,17 @@ impl LlmBasedRouter {
                 }
             ),
         })
+    }
+}
+
+/// Implementation of LlmRouter trait for LlmBasedRouter
+///
+/// This allows LlmBasedRouter to be used as a trait object for dependency injection in tests.
+#[async_trait]
+impl LlmRouter for LlmBasedRouter {
+    async fn route(&self, user_prompt: &str, meta: &RouteMetadata) -> AppResult<RoutingDecision> {
+        // Delegate to the existing route method
+        self.route(user_prompt, meta).await
     }
 }
 

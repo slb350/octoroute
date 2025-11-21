@@ -28,6 +28,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Async utilities
 futures = "0.3"
+async-trait = "0.1"
 
 # Random number generation (for weighted load balancing)
 rand = "0.8"
