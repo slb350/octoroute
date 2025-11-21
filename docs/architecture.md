@@ -374,7 +374,8 @@ impl LlmBasedRouter {
 ```rust
 pub struct HybridRouter {
     rule_router: RuleBasedRouter,
-    llm_router: LlmBasedRouter,
+    llm_router: Arc<dyn LlmRouter>,
+    selector: Arc<ModelSelector>,
 }
 
 impl HybridRouter {
