@@ -253,8 +253,9 @@ All errors return JSON with an `error` field:
 **Cause**: Model invocation failed
 
 **Examples**:
-- `{"error": "Model error: connection refused"}`
-- `{"error": "Model error: unexpected response format"}`
+- `{"error": "Failed to query model at http://localhost:1234/v1: connection refused"}`
+- `{"error": "Stream interrupted from http://localhost:1234/v1 after receiving 1024 bytes (5 blocks)"}`
+- `{"error": "Router LLM returned unparseable response: The answer is maybe"}`
 
 #### 504 Gateway Timeout
 
