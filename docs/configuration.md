@@ -584,7 +584,7 @@ Configuration error: Endpoint 'qwen3-8b-instruct' in tier 'fast' has invalid wei
 
 **Invalid timeout**:
 ```
-Configuration error: Invalid timeout configuration: timeouts.deep cannot exceed 300 seconds (5 minutes), got 500. This limit prevents connection pool exhaustion and arithmetic overflow.
+Configuration error: timeouts.deep cannot exceed 300 seconds (5 minutes), got 500. This limit prevents connection pool exhaustion and arithmetic overflow.
 ```
 
 **Missing tier**:
