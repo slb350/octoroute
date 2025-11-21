@@ -574,12 +574,12 @@ All configuration is validated at startup with clear error messages:
 
 **Invalid base_url**:
 ```
-Configuration error: endpoint 'http://localhost:11434' must end with '/v1'
+Configuration error: Endpoint 'qwen3-8b-instruct' in tier 'fast' has invalid base_url 'http://localhost:11434'. base_url must end with '/v1' (e.g., 'http://host:port/v1'). This is required for health checks to work correctly.
 ```
 
 **Invalid weight**:
 ```
-Configuration error: weight must be positive and finite, got -1.0
+Configuration error: Endpoint 'qwen3-8b-instruct' in tier 'fast' has invalid weight -1. Weight must be a positive finite number.
 ```
 
 **Invalid timeout**:
