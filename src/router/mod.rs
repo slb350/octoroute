@@ -25,6 +25,18 @@ pub enum TargetModel {
     Deep,
 }
 
+impl Default for TargetModel {
+    /// Returns Balanced as the sensible default for router tier selection
+    ///
+    /// Balanced provides the best trade-off between routing accuracy and latency:
+    /// - Fast (8B): May misroute complex requests, sacrificing accuracy for speed
+    /// - Balanced (30B): Good routing decisions with acceptable latency (~100-500ms)
+    /// - Deep (120B): Highest accuracy but excessive latency (~2-5s), rarely justified
+    fn default() -> Self {
+        TargetModel::Balanced
+    }
+}
+
 /// Routing strategy used to make a routing decision
 ///
 /// Provides compile-time type safety for routing strategy tracking

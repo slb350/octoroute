@@ -115,8 +115,11 @@ pub struct RoutingConfig {
     pub default_importance: crate::router::Importance,
     /// Which tier (Fast/Balanced/Deep) to use for LLM routing decisions
     ///
+    /// Defaults to Balanced if not specified (recommended for most use cases).
+    ///
     /// Serde deserializes from lowercase strings: "fast", "balanced", "deep"
     /// Invalid values are caught at deserialization time, not validation time.
+    #[serde(default)]
     pub router_tier: TargetModel,
 }
 
@@ -758,6 +761,45 @@ router_tier = "invalid"
     // enum deserializer, not by Config::validate(). This provides stronger type safety
     // - invalid configs can't even be deserialized, preventing the need for runtime
     // validation.
+
+    #[test]
+    fn test_config_router_tier_defaults_to_balanced() {
+        // Test that configs without router_tier field use Balanced as default
+        // This ensures backward compatibility with configs that don't specify router_tier
+        let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[[models.fast]]
+name = "test-fast"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+
+[[models.balanced]]
+name = "test-balanced"
+base_url = "http://localhost:1235/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "test-deep"
+base_url = "http://localhost:1236/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+# router_tier omitted - should default to balanced
+"#;
+
+        let config: Config =
+            toml::from_str(config_str).expect("should parse config without router_tier");
+
+        assert_eq!(
+            config.routing.router_tier,
+            TargetModel::Balanced,
+            "router_tier should default to Balanced when omitted"
+        );
+    }
 
     #[test]
     fn test_config_validation_rule_strategy_allows_empty_router_tier() {
