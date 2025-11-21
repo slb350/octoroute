@@ -306,28 +306,29 @@ impl LlmBasedRouter {
         let mut failed_endpoints = ExclusionSet::new();
 
         for attempt in 1..=MAX_ROUTER_RETRIES {
-            // Select endpoint from balanced tier (with health filtering + exclusions)
+            // Select endpoint from router tier (with health filtering + exclusions)
             let endpoint = match self.selector.select(&failed_endpoints).await {
                 Some(ep) => ep.clone(),
                 None => {
                     let total_configured = self.selector.endpoint_count();
                     let excluded_count = failed_endpoints.len();
+                    let router_tier = self.selector.tier();
 
                     tracing::error!(
-                        tier = "Balanced",
+                        tier = ?router_tier,
                         attempt = attempt,
                         max_retries = MAX_ROUTER_RETRIES,
                         total_configured_endpoints = total_configured,
                         failed_endpoints_count = excluded_count,
                         failed_endpoints = ?failed_endpoints,
-                        "No healthy balanced tier endpoints for routing decision. \
+                        "No healthy {:?} tier endpoints for routing decision. \
                         Configured: {}, Excluded: {}",
-                        total_configured, excluded_count
+                        router_tier, total_configured, excluded_count
                     );
                     last_error = Some(AppError::RoutingFailed(format!(
-                        "No healthy balanced tier endpoints for routing \
+                        "No healthy {:?} tier endpoints for routing \
                         (configured: {}, excluded: {}, attempt {}/{})",
-                        total_configured, excluded_count, attempt, MAX_ROUTER_RETRIES
+                        router_tier, total_configured, excluded_count, attempt, MAX_ROUTER_RETRIES
                     )));
                     continue;
                 }
@@ -336,9 +337,11 @@ impl LlmBasedRouter {
             tracing::debug!(
                 endpoint_name = %endpoint.name(),
                 endpoint_url = %endpoint.base_url(),
+                tier = ?self.selector.tier(),
                 attempt = attempt,
                 max_retries = MAX_ROUTER_RETRIES,
-                "Selected balanced tier endpoint for routing decision"
+                "Selected {:?} tier endpoint for routing decision",
+                self.selector.tier()
             );
 
             // Try to query this endpoint
