@@ -314,23 +314,74 @@ impl LlmBasedRouter {
                     let excluded_count = failed_endpoints.len();
                     let router_tier = self.selector.tier();
 
-                    tracing::error!(
-                        tier = ?router_tier,
-                        attempt = attempt,
-                        max_retries = MAX_ROUTER_RETRIES,
-                        total_configured_endpoints = total_configured,
-                        failed_endpoints_count = excluded_count,
-                        failed_endpoints = ?failed_endpoints,
-                        "No healthy {:?} tier endpoints for routing decision. \
-                        Configured: {}, Excluded: {}",
-                        router_tier, total_configured, excluded_count
-                    );
-                    last_error = Some(AppError::RoutingFailed(format!(
-                        "No healthy {:?} tier endpoints for routing \
-                        (configured: {}, excluded: {}, attempt {}/{})",
-                        router_tier, total_configured, excluded_count, attempt, MAX_ROUTER_RETRIES
-                    )));
-                    continue;
+                    // Categorize failure type for better diagnostics and actionable guidance
+                    if total_configured == 0 {
+                        // CONFIGURATION ERROR: No endpoints configured for this tier
+                        // This should have been caught by Config::validate() but check defensively
+                        tracing::error!(
+                            tier = ?router_tier,
+                            attempt = attempt,
+                            max_retries = MAX_ROUTER_RETRIES,
+                            "CONFIGURATION ERROR: No endpoints configured for {:?} tier. \
+                            Check config.toml: [[models.{:?}]] section must have at least one endpoint. \
+                            This should have been caught by validation.",
+                            router_tier, router_tier
+                        );
+                        last_error = Some(AppError::Config(format!(
+                            "No endpoints configured for {:?} tier (router_model setting). \
+                            Add at least one endpoint to [[models.{:?}]] in config.toml.",
+                            router_tier, router_tier
+                        )));
+                        continue;
+                    } else if excluded_count == total_configured {
+                        // COMPLETE EXHAUSTION: All configured endpoints tried and failed
+                        // This is an error condition - we tried everything and nothing worked
+                        tracing::error!(
+                            tier = ?router_tier,
+                            attempt = attempt,
+                            max_retries = MAX_ROUTER_RETRIES,
+                            total_configured_endpoints = total_configured,
+                            failed_endpoints = ?failed_endpoints,
+                            "COMPLETE EXHAUSTION: All {} {:?} tier endpoints failed for routing. \
+                            All endpoints tried in this request returned errors. Check endpoint health.",
+                            total_configured, router_tier
+                        );
+                        last_error = Some(AppError::RoutingFailed(format!(
+                            "All {} {:?} tier endpoints exhausted for routing (attempt {}/{}). \
+                            Check endpoint connectivity and health.",
+                            total_configured, router_tier, attempt, MAX_ROUTER_RETRIES
+                        )));
+                        continue;
+                    } else {
+                        // TRANSIENT FAILURE: Some endpoints exist but are unhealthy, waiting for recovery
+                        // This is a warning, not an error - endpoints may recover soon
+                        let healthy_count = total_configured - excluded_count;
+                        tracing::warn!(
+                            tier = ?router_tier,
+                            attempt = attempt,
+                            max_retries = MAX_ROUTER_RETRIES,
+                            total_configured_endpoints = total_configured,
+                            failed_endpoints_count = excluded_count,
+                            healthy_but_unavailable_count = healthy_count,
+                            failed_endpoints = ?failed_endpoints,
+                            "TRANSIENT: No available {:?} tier endpoints (configured: {}, failed: {}, \
+                            healthy but unavailable: {}). Endpoints may be recovering from failures. \
+                            Waiting for health checker recovery.",
+                            router_tier, total_configured, excluded_count, healthy_count
+                        );
+                        last_error = Some(AppError::RoutingFailed(format!(
+                            "No available {:?} tier endpoints (configured: {}, failed: {}, \
+                            healthy but temporarily unavailable: {}, attempt {}/{}). \
+                            Endpoints may recover shortly.",
+                            router_tier,
+                            total_configured,
+                            excluded_count,
+                            healthy_count,
+                            attempt,
+                            MAX_ROUTER_RETRIES
+                        )));
+                        continue;
+                    }
                 }
             };
 
