@@ -32,7 +32,13 @@ impl HybridRouter {
             "fast" => crate::router::TargetModel::Fast,
             "balanced" => crate::router::TargetModel::Balanced,
             "deep" => crate::router::TargetModel::Deep,
-            _ => unreachable!("Config validation ensures valid router_model"),
+            invalid => {
+                return Err(crate::error::AppError::Config(format!(
+                    "Invalid router_model '{}'. Expected 'fast', 'balanced', or 'deep'. \
+                     This indicates a bug - config validation should have caught this earlier.",
+                    invalid
+                )));
+            }
         };
 
         let llm_router = LlmBasedRouter::new(selector.clone(), router_tier)?;

@@ -1,7 +1,7 @@
-//! Type-safe wrapper for tier-specific endpoint selection
+//! Runtime-validated wrapper for tier-specific endpoint selection
 //!
 //! The TierSelector validates that at least one endpoint exists for the specified tier
-//! and provides type-safe selection from that tier only.
+//! and provides selection from that tier only.
 
 use crate::config::ModelEndpoint;
 use crate::error::{AppError, AppResult};
@@ -28,10 +28,11 @@ use std::sync::Arc;
 /// - **DEEP (120B)**: Highest accuracy but very slow (~2-5s). Router latency may
 ///   exceed the time to just run the user query on BALANCED. Rarely worth it.
 ///
-/// # Type Safety
+/// # Runtime Validation
 ///
-/// The tier is validated at construction and cannot be changed afterward, preventing
-/// accidental tier mismatches at runtime.
+/// The tier is validated at construction (checks that at least one endpoint exists)
+/// and stored immutably. The selector cannot switch tiers after construction, but
+/// tier selection itself is a runtime parameter, not a compile-time guarantee.
 #[derive(Debug)]
 pub struct TierSelector {
     inner: Arc<ModelSelector>,

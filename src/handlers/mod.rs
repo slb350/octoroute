@@ -64,7 +64,13 @@ impl AppState {
                     "fast" => TargetModel::Fast,
                     "balanced" => TargetModel::Balanced,
                     "deep" => TargetModel::Deep,
-                    _ => unreachable!("Config validation ensures valid router_model"),
+                    invalid => {
+                        return Err(AppError::Config(format!(
+                            "Invalid router_model '{}'. Expected 'fast', 'balanced', or 'deep'. \
+                             This indicates a bug - config validation should have caught this earlier.",
+                            invalid
+                        )));
+                    }
                 };
 
                 tracing::info!(
@@ -81,7 +87,13 @@ impl AppState {
                     "fast" => TargetModel::Fast,
                     "balanced" => TargetModel::Balanced,
                     "deep" => TargetModel::Deep,
-                    _ => unreachable!("Config validation ensures valid router_model"),
+                    invalid => {
+                        return Err(AppError::Config(format!(
+                            "Invalid router_model '{}'. Expected 'fast', 'balanced', or 'deep'. \
+                             This indicates a bug - config validation should have caught this earlier.",
+                            invalid
+                        )));
+                    }
                 };
 
                 tracing::info!(

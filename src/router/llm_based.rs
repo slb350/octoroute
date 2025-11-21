@@ -177,7 +177,7 @@ const MAX_ROUTER_RESPONSE: usize = 1024;
 /// Uses the configured tier to analyze requests and choose optimal target.
 /// Provides intelligent fallback when rule-based routing is ambiguous.
 ///
-/// # Type Safety
+/// # Runtime Validation
 ///
 /// Uses `TierSelector` to validate that the specified tier has available endpoints.
 /// The tier is chosen via `config.routing.router_model` at construction time.
@@ -200,10 +200,10 @@ impl LlmBasedRouter {
     /// - **Balanced**: Recommended default (~100-500ms) with good accuracy
     /// - **Deep**: Highest accuracy (~2-5s) but rarely worth the latency overhead
     ///
-    /// # Type Safety
+    /// # Runtime Validation
     ///
-    /// The `TierSelector` validates tier availability at construction and prevents
-    /// accidental tier mismatches at runtime.
+    /// The `TierSelector` validates tier availability at construction, ensuring
+    /// at least one endpoint exists for the specified tier.
     pub fn new(selector: Arc<ModelSelector>, tier: TargetModel) -> AppResult<Self> {
         // TierSelector validates that the tier exists
         let tier_selector = TierSelector::new(selector, tier)?;
@@ -483,7 +483,7 @@ impl LlmBasedRouter {
 
         // All retries exhausted
         tracing::error!(
-            tier = "Balanced",
+            tier = ?self.selector.tier(),
             max_retries = MAX_ROUTER_RETRIES,
             "All router retry attempts exhausted"
         );

@@ -478,6 +478,27 @@ impl Config {
             )));
         }
 
+        // Validate that router_model tier has endpoints (for LLM/Hybrid strategies)
+        match self.routing.strategy {
+            RoutingStrategy::Llm | RoutingStrategy::Hybrid => {
+                let router_tier_endpoints = match self.routing.router_model.as_str() {
+                    "fast" => &self.models.fast,
+                    "balanced" => &self.models.balanced,
+                    "deep" => &self.models.deep,
+                    _ => unreachable!("Already validated above"),
+                };
+
+                if router_tier_endpoints.is_empty() {
+                    return Err(crate::error::AppError::Config(format!(
+                        "Configuration error: routing.router_model is '{}' but models.{} has no endpoints. \
+                        LLM/Hybrid routing requires at least one endpoint for the router tier.",
+                        self.routing.router_model, self.routing.router_model
+                    )));
+                }
+            }
+            _ => {} // Rule-only routing doesn't need router_model validation
+        }
+
         // Validate request timeout
         if self.server.request_timeout_seconds == 0 {
             return Err(crate::error::AppError::Config(
@@ -713,6 +734,58 @@ router_model = "invalid"
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("router_model"));
         assert!(err_msg.contains("invalid"));
+    }
+
+    #[test]
+    fn test_config_validation_router_model_with_no_endpoints_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+
+        // Clear deep endpoints to test validation
+        config.models.deep.clear();
+
+        // Set router to use deep tier (which now has no endpoints)
+        config.routing.strategy = RoutingStrategy::Llm;
+        config.routing.router_model = "deep".to_string();
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("deep"));
+        assert!(err_msg.contains("endpoint"));
+    }
+
+    #[test]
+    fn test_config_validation_router_model_empty_string_fails() {
+        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+
+        // Set router_model to empty string
+        config.routing.router_model = "".to_string();
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("router_model"));
+    }
+
+    #[test]
+    fn test_config_validation_router_model_case_sensitive() {
+        let test_cases = vec!["FAST", "Fast", "Balanced", "DEEP", "Deep"];
+
+        for invalid_case in test_cases {
+            let mut config = Config::from_str(TEST_CONFIG).unwrap();
+
+            // Set router_model to invalid case
+            config.routing.router_model = invalid_case.to_string();
+
+            let result = config.validate();
+            assert!(
+                result.is_err(),
+                "Should reject router_model='{}'",
+                invalid_case
+            );
+            let err_msg = result.unwrap_err().to_string();
+            assert!(err_msg.contains("router_model"));
+        }
     }
 
     #[test]
