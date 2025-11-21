@@ -309,7 +309,7 @@ Located in `benches/routing.rs`:
 - **Metadata creation**: RouteMetadata construction performance
 - **Config parsing**: config.toml parsing latency
 - **Token estimation**: Token counting performance
-- **Rule routing**: Rule-based routing latency
+- **Metadata builder**: RouteMetadata builder pattern performance
 
 ### Example Benchmark
 
@@ -335,7 +335,7 @@ criterion_main!(benches);
 - Metadata creation: <1 microsecond
 - Config parsing: <10 microseconds
 - Token estimation: <100 nanoseconds
-- Rule routing: <1 millisecond
+- Metadata builder: <1 microsecond
 
 Run `cargo bench` to verify current performance metrics.
 
@@ -434,7 +434,7 @@ just ci
 1. **Fork the repository** on GitHub
 2. **Create a feature branch**: `git checkout -b feature/my-feature`
 3. **Make changes**: Write code, tests, and docs
-4. **Run checks**: `just ci` (clippy + format + tests only; use `just validate` for bench too)
+4. **Run checks**: `just ci` (clippy + format + tests; use `just validate` to include benchmarks)
 5. **Commit**: Use conventional commit messages
 6. **Push**: `git push origin feature/my-feature`
 7. **Create PR**: Open pull request on GitHub
