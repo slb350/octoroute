@@ -201,16 +201,20 @@ Located alongside code using `#[cfg(test)]` modules.
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_rule_router_casual_chat() {
+    #[tokio::test]
+    async fn test_rule_router_casual_chat() {
         let router = RuleBasedRouter::new();
         let meta = RouteMetadata::new(100)
             .with_importance(Importance::Normal)
             .with_task_type(TaskType::CasualChat);
 
-        // evaluate_rules is the internal rule matching logic
-        let decision = router.evaluate_rules(&meta);
-        assert_eq!(decision, Some(TargetModel::Fast));
+        // Create mock selector (router.route() requires it but doesn't use it for rule-only)
+        let config = Config::from_str(TEST_CONFIG).unwrap();
+        let selector = ModelSelector::new(Arc::new(config));
+
+        // route() is the public API that returns a routing decision
+        let decision = router.route("test message", &meta, &selector).await.unwrap();
+        assert_eq!(decision.unwrap().target(), TargetModel::Fast);
     }
 }
 ```
