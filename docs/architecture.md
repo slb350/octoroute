@@ -314,7 +314,12 @@ impl LlmBasedRouter {
             }
         }
 
-        Err(AppError::RoutingFailed("All 2 router retry attempts exhausted".to_string()))
+        Err(last_error.unwrap_or_else(|| {
+            AppError::RoutingFailed(format!(
+                "All {} router retry attempts exhausted",
+                MAX_ROUTER_RETRIES
+            ))
+        }))
     }
 
     fn build_router_prompt(user_prompt: &str, meta: &RouteMetadata) -> String {
