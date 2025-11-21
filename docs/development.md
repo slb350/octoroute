@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn test_rule_router_casual_chat() {
-        let router = RuleBasedRouter;
+        let router = RuleBasedRouter::new();
         let meta = RouteMetadata::new(100)
             .with_importance(Importance::Normal)
             .with_task_type(TaskType::CasualChat);
@@ -231,21 +231,30 @@ Located in `tests/` directory.
 ```rust
 #[tokio::test]
 async fn test_chat_endpoint_with_rule_routing() {
-    let config = Config::from_str(TEST_CONFIG).unwrap();
-    let app_state = AppState::new(config).await.unwrap();
+    // Build config from TOML string
+    let config = Arc::new(Config::from_str(TEST_CONFIG).unwrap());
+    let app_state = AppState::new(config).unwrap();
 
-    let request = ChatRequest::new(
-        "Hello!".to_string(),
-        Importance::Low,
-        TaskType::CasualChat,
-    );
+    // Create request via JSON deserialization (ChatRequest has private fields)
+    let request_json = r#"{
+        "message": "Hello!",
+        "importance": "low",
+        "task_type": "casual_chat"
+    }"#;
+    let request: ChatRequest = serde_json::from_str(request_json).unwrap();
 
-    let response = mock_chat_handler(State(app_state), Json(request))
-        .await
-        .unwrap();
+    // Call handler
+    let response = handlers::chat::handler(
+        State(app_state),
+        Json(request)
+    ).await.unwrap();
 
-    assert_eq!(response.model_tier(), ModelTier::Fast);
-    assert_eq!(response.routing_strategy(), RoutingStrategy::Rule);
+    let chat_response: ChatResponse = match response {
+        (_, Json(r)) => r,
+    };
+
+    assert_eq!(chat_response.model_tier(), ModelTier::Fast);
+    assert_eq!(chat_response.routing_strategy(), RoutingStrategy::Rule);
 }
 ```
 
