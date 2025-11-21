@@ -1,26 +1,13 @@
 //! LLM-based router that uses an LLM to make intelligent routing decisions
 //!
-//! Uses the balanced tier (30B model) to analyze requests and choose the optimal target model.
-//! Falls back when rule-based routing cannot determine the best model.
+//! Uses a configurable tier (Fast/Balanced/Deep) via config.routing.router_model to analyze
+//! requests and choose the optimal target model. Falls back when rule-based routing cannot
+//! determine the best model.
 //!
-//! ## Why BALANCED tier for routing?
+//! ## Tier Selection for Routing
 //!
-//! The routing decision uses the **balanced tier (30B model)** rather than fast or deep:
-//!
-//! - **FAST (8B)**: Too unreliable for routing decisions - could misroute expensive requests to
-//!   underpowered models or waste resources by routing simple tasks to deep models. The cost
-//!   of a bad routing decision far exceeds the savings of using a smaller router model.
-//!
-//! - **BALANCED (30B)**: Good reasoning for classification tasks with acceptable latency (~100-500ms).
-//!   Provides reliable routing decisions while maintaining reasonable performance. This is the
-//!   sweet spot for routing - smart enough to make good decisions, fast enough to not bottleneck.
-//!
-//! - **DEEP (120B)**: Overkill for routing - the latency overhead of using the largest model for
-//!   routing (~2-5s) would often be slower than just using BALANCED for the actual user query.
-//!   No benefit to using maximum reasoning power for a simple classification task.
-//!
-//! **Trade-off**: Every LLM-routed request pays ~100-500ms latency overhead to intelligently
-//! select the target model, but this prevents wasting compute on suboptimal model selection.
+//! See [`TierSelector`](crate::models::TierSelector) documentation for tier comparison,
+//! latency characteristics, and trade-offs when choosing a router tier.
 
 use crate::error::{AppError, AppResult};
 use crate::models::endpoint_name::ExclusionSet;
@@ -177,7 +164,7 @@ const MAX_ROUTER_RESPONSE: usize = 1024;
 /// Uses the configured tier to analyze requests and choose optimal target.
 /// Provides intelligent fallback when rule-based routing is ambiguous.
 ///
-/// # Runtime Validation
+/// # Construction-Time Validation
 ///
 /// Uses `TierSelector` to validate that the specified tier has available endpoints.
 /// The tier is chosen via `config.routing.router_model` at construction time.
@@ -200,7 +187,7 @@ impl LlmBasedRouter {
     /// - **Balanced**: Recommended default (~100-500ms) with good accuracy
     /// - **Deep**: Highest accuracy (~2-5s) but rarely worth the latency overhead
     ///
-    /// # Runtime Validation
+    /// # Construction-Time Validation
     ///
     /// The `TierSelector` validates tier availability at construction, ensuring
     /// at least one endpoint exists for the specified tier.

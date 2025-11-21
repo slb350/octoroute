@@ -28,7 +28,7 @@ use std::sync::Arc;
 /// - **DEEP (120B)**: Highest accuracy but very slow (~2-5s). Router latency may
 ///   exceed the time to just run the user query on BALANCED. Rarely worth it.
 ///
-/// # Runtime Validation
+/// # Construction-Time Validation
 ///
 /// The tier is validated at construction (checks that at least one endpoint exists)
 /// and stored immutably. The selector cannot switch tiers after construction, but
