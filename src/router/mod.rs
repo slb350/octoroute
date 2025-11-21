@@ -7,7 +7,7 @@ pub mod llm_based;
 pub mod rule_based;
 
 pub use hybrid::HybridRouter;
-pub use llm_based::LlmBasedRouter;
+pub use llm_based::{LlmBasedRouter, LlmRouter};
 pub use rule_based::RuleBasedRouter;
 
 use crate::error::AppResult;

@@ -97,10 +97,10 @@ Response:
 
 ```json
 {
-  "response": "Quantum computing is...",
-  "model_used": "balanced_30b",
-  "routing_strategy": "rule",
-  "processing_time_ms": 1234
+  "content": "Quantum computing is...",
+  "model_tier": "balanced",
+  "model_name": "qwen3-30b-instruct",
+  "routing_strategy": "rule"
 }
 ```
 
@@ -158,22 +158,22 @@ RUST_LOG=octoroute=debug cargo run
 - Health check status updates
 - Error traces with full context
 
-### Level 2: Metrics (Optional - Prometheus Export)
+### Level 2: Metrics (Prometheus Export)
 
-Enable with the `metrics` feature flag for time-series metrics:
+Metrics are always enabled and available at the `/metrics` endpoint:
 
 ```bash
-# Build with metrics support
-cargo build --release --features metrics
-
-# Run and expose /metrics endpoint
+# Build and run
+cargo build --release
 ./target/release/octoroute
+
+# Metrics endpoint available at http://localhost:3000/metrics
 ```
 
 **Available metrics:**
-- `octoroute_requests_total` - Request counts by tier and routing strategy
-- `octoroute_routing_duration_ms` - Routing decision latency histogram
-- `octoroute_model_invocations_total` - Model invocations by tier
+- `octoroute_requests_total{tier, strategy}` - Request counts by tier (fast/balanced/deep) and routing strategy (rule/llm)
+- `octoroute_routing_duration_ms{strategy}` - Routing decision latency histogram (buckets: 0.1ms to 1000ms)
+- `octoroute_model_invocations_total{tier}` - Model invocations by tier
 
 **Prometheus scraping config:**
 
@@ -187,14 +187,10 @@ scrape_configs:
     scrape_interval: 15s
 ```
 
-**Why OpenTelemetry?** We use OpenTelemetry with Prometheus export to keep your options open:
-- Works with existing Prometheus/Grafana homelab setups
-- Vendor-neutral (can switch to other backends later)
-- Future-proof for adding distributed traces
-
-### Level 3: Distributed Traces (Future)
-
-Coming in a future release: Full request tracing showing routing flow, retries, and model execution timing.
+**Why Direct Prometheus?** We use the `prometheus` crate directly for simplicity and homelab-friendliness:
+- Works with existing Prometheus/Grafana setups out of the box
+- No intermediate abstraction layers - just Prometheus
+- Mature, stable crate with broad ecosystem support
 
 ---
 
@@ -230,6 +226,19 @@ Built on:
 - **[open-agent-sdk](https://github.com/slb350/open-agent-sdk-rust)**: Rust SDK for local LLM orchestration
 - **[Axum](https://github.com/tokio-rs/axum)**: Ergonomic web framework
 - **[Tokio](https://tokio.rs)**: Async runtime
+
+---
+
+## Documentation
+
+Comprehensive documentation is available in the `/docs` directory:
+
+- **[Architecture Guide](docs/architecture.md)** - System design, routing strategies, data flow, and technical decisions
+- **[API Reference](docs/api-reference.md)** - Complete HTTP API documentation with request/response schemas and examples
+- **[Configuration Guide](docs/configuration.md)** - Detailed configuration reference with examples for different deployment scenarios
+- **[Observability Guide](docs/observability.md)** - Logging, Prometheus metrics, Grafana dashboards, and monitoring setup
+- **[Development Guide](docs/development.md)** - Testing, benchmarking, code quality, and contributing guidelines
+- **[Deployment Guide](docs/deployment.md)** - Homelab deployment with systemd, Docker, reverse proxy, and security hardening
 
 ---
 
@@ -319,11 +328,8 @@ cargo install just cargo-nextest
 # Development build
 cargo build
 
-# Release build (optimized)
+# Release build (optimized, includes Prometheus metrics)
 cargo build --release
-
-# Build with metrics support (OpenTelemetry + Prometheus export)
-cargo build --release --features metrics
 ```
 
 ### Test
@@ -347,10 +353,19 @@ cargo fmt
 
 # Lint with clippy
 cargo clippy --all-targets --all-features -- -D warnings
-
-# Or use justfile
-just check
 ```
+
+**Quick Command Reference** (using `justfile`):
+
+| Command | Description |
+|---------|-------------|
+| `just check` | Run all checks (fmt, clippy, tests) |
+| `just test` | Run all tests |
+| `just bench` | Run benchmarks |
+| `just watch` | Auto-rebuild on file changes |
+| `just ci` | Complete CI check (used by GitHub Actions) |
+
+See `just --list` for all 20+ available commands.
 
 ### Run locally
 
@@ -369,7 +384,7 @@ RUST_LOG=debug cargo run
 
 ## Project Status
 
-**Current Phase**: Phase 2c - Priority-based selection with health checking
+**Current Phase**: Phase 5 Complete - Production Ready! 🚀
 
 **Roadmap**:
 
@@ -378,22 +393,26 @@ RUST_LOG=debug cargo run
 - [x] Phase 2a: Model integration with `open-agent-sdk` (round-robin selection)
 - [x] Phase 2b: Weighted load balancing
 - [x] Phase 2c: Priority-based selection with health checking
-- [ ] Phase 3: LLM-based routing
-- [ ] Phase 4: Tool-based routing (experimental)
-- [ ] Phase 5: Observability & production hardening
+- [x] Phase 3: LLM-based hybrid routing
+- [x] Phase 5: Production Polish & Observability
+- [ ] Phase 4: Tool-based routing (experimental - future)
 
 **Features implemented**:
-- ✅ HTTP API with `/chat`, `/health`, `/models` endpoints
+- ✅ HTTP API with `/chat`, `/health`, `/models`, `/metrics` endpoints
 - ✅ Multi-tier model selection (fast/balanced/deep)
 - ✅ Rule-based + LLM-based hybrid routing
 - ✅ Priority-based routing with weighted distribution
 - ✅ Health checking with automatic endpoint recovery
 - ✅ Retry logic with request-scoped exclusion
-- ✅ Timeout enforcement (connection + streaming)
+- ✅ Timeout enforcement (global + per-tier overrides)
+- ✅ Prometheus metrics (optional, behind `metrics` feature)
+- ✅ Performance benchmarks (Criterion)
+- ✅ CI/CD pipeline (GitHub Actions)
 - ✅ Comprehensive config validation
-- ✅ 234 tests passing (168 unit + 66 integration)
-
-See `CLAUDE.md` for detailed development workflow.
+- ✅ Development tooling (justfile with 20+ recipes)
+- ✅ **Comprehensive test coverage** (run `cargo test --all` to verify current count)
+- ✅ **Zero clippy warnings**
+- ✅ **Zero tech debt**
 
 ---
 
@@ -487,7 +506,7 @@ Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guideli
 
 ### Q: Does this support streaming responses?
 
-**A**: Not in v0.1, but planned for future releases. Currently accumulates full response before returning.
+**A**: Not currently. Octoroute accumulates the full response before returning.
 
 ### Q: How does LLM-based routing work?
 
@@ -495,21 +514,43 @@ Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guideli
 
 ### Q: How do I monitor Octoroute in production?
 
-**A**: Octoroute provides three observability levels:
+**A**: Octoroute provides two observability levels:
 1. **Structured logs** (always enabled): Use `RUST_LOG=info` to see routing decisions and health status
-2. **Metrics** (optional): Build with `--features metrics` to expose Prometheus metrics at `/metrics`
-3. **Traces** (future): Distributed tracing showing full request flow (coming soon)
+2. **Metrics** (always enabled): Prometheus metrics exposed at `/metrics` endpoint
 
 For homelab deployments, we recommend Prometheus + Grafana for metrics visualization.
 
-### Q: Why OpenTelemetry instead of direct Prometheus?
+### Q: Is the `/metrics` endpoint secure?
 
-**A**: OpenTelemetry is vendor-neutral and future-proof. You get:
-- Prometheus export for existing homelab setups (no changes needed)
-- Ability to switch to other backends (Grafana Cloud, Jaeger, etc.) without code changes
-- Built-in support for traces when we add that feature
+**A**: The `/metrics` endpoint is **unauthenticated** by design for simplicity in homelab deployments. It exposes operational metrics like request counts and routing latency.
 
-The `/metrics` endpoint works with your existing Prometheus scraper - no OTEL collector required.
+**Security recommendations**:
+- **Homelab**: Ensure Octoroute is only accessible on trusted networks (not exposed to the internet)
+- **Production**: Use a reverse proxy (nginx, Caddy) to add authentication:
+  ```nginx
+  location /metrics {
+      auth_basic "Metrics";
+      auth_basic_user_file /etc/nginx/.htpasswd;
+      proxy_pass http://octoroute:3000/metrics;
+  }
+  ```
+- **Alternative**: Use firewall rules to restrict `/metrics` to Prometheus server IP only
+
+**The metrics endpoint does NOT expose**:
+- User messages or content
+- API keys or credentials
+- Individual request details (only aggregates)
+
+For internet-exposed deployments, always use authentication or IP restrictions.
+
+### Q: Why direct Prometheus instead of OpenTelemetry?
+
+**A**: We chose the direct `prometheus` crate (v0.14) for simplicity and homelab-friendliness:
+- **Simplicity**: No intermediate abstraction layers - just Prometheus
+- **Homelab-friendly**: Works with existing Prometheus/Grafana setups out of the box, no OTEL collector required
+- **Stability**: Mature, actively maintained library
+
+The `/metrics` endpoint works with your existing Prometheus scraper without any additional infrastructure.
 
 ---
 

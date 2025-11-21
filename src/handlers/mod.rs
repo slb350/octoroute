@@ -6,24 +6,36 @@ use crate::models::ModelSelector;
 use crate::router::{HybridRouter, LlmBasedRouter, Router, RuleBasedRouter};
 use std::sync::Arc;
 
+type MetricsHandle = Arc<crate::metrics::Metrics>;
+
 pub mod chat;
 pub mod health;
+pub mod metrics;
 pub mod models;
 
 /// Application state shared across all handlers
 ///
 /// Contains configuration, model selector, and router instances.
-/// All fields are Arc'd for cheap cloning across Axum handlers.
+///
+/// All fields are wrapped in `Arc` for two reasons:
+/// 1. **Thread safety**: Axum handlers run concurrently on separate threads and require
+///    `Send + Sync` bounds. Arc provides atomic reference counting for safe sharing across threads.
+/// 2. **Cheap cloning**: Axum clones state per request. Arc makes this O(1) instead of deep copying.
+///
+/// Do NOT replace Arc with Rc - it's not Send+Sync and will fail to compile with Axum.
 ///
 /// The router type is determined by `config.routing.strategy`:
 /// - `Rule`: Only rule-based routing (no balanced tier required)
 /// - `Llm`: Only LLM-based routing (balanced tier required)
 /// - `Hybrid`: Rule-based with LLM fallback (balanced tier required)
+///
+/// Also contains a Prometheus metrics collector for observability.
 #[derive(Clone)]
 pub struct AppState {
     config: Arc<Config>,
     selector: Arc<ModelSelector>,
     router: Arc<Router>,
+    metrics: Arc<crate::metrics::Metrics>,
 }
 
 impl AppState {
@@ -82,10 +94,18 @@ impl AppState {
             }
         };
 
+        let metrics = {
+            let m = crate::metrics::Metrics::new()
+                .map_err(|e| AppError::Internal(format!("Failed to initialize metrics: {}", e)))?;
+            tracing::info!("Metrics collection enabled");
+            Arc::new(m)
+        };
+
         Ok(Self {
             config,
             selector,
             router,
+            metrics,
         })
     }
 
@@ -102,6 +122,13 @@ impl AppState {
     /// Get reference to the router
     pub fn router(&self) -> &Router {
         &self.router
+    }
+
+    /// Get reference to the metrics collector
+    ///
+    /// Metrics are always enabled for observability.
+    pub fn metrics(&self) -> MetricsHandle {
+        self.metrics.clone()
     }
 }
 

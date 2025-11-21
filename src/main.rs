@@ -43,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/health", get(handlers::health::handler))
         .route("/chat", post(handlers::chat::handler))
         .route("/models", get(handlers::models::handler))
+        .route("/metrics", get(handlers::metrics::handler))
         .with_state(state)
         .layer(middleware::from_fn(request_id_middleware));
 
@@ -64,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Health check available at http://{}/health", addr);
     tracing::info!("Chat endpoint available at http://{}/chat", addr);
     tracing::info!("Models status available at http://{}/models", addr);
+    tracing::info!("Metrics endpoint available at http://{}/metrics", addr);
 
     // Start server with graceful shutdown
     let listener = tokio::net::TcpListener::bind(addr).await?;

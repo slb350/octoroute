@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.90"
 authors = ["Steve Brandon <steve@localbrandonfamily.com>"]
 description = "Intelligent multi-model router for self-hosted LLMs"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://github.com/slb350/octoroute"
 
 [dependencies]
@@ -28,6 +28,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Async utilities
 futures = "0.3"
+async-trait = "0.1"
 
 # Random number generation (for weighted load balancing)
 rand = "0.8"
@@ -38,8 +39,16 @@ reqwest = { version = "0.12", features = ["json"] }
 # UUID generation (for request tracing)
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# Metrics (always enabled for observability)
+prometheus = "0.14"
+
 [dev-dependencies]
 proptest = "1.4"
 tokio-test = "0.4"
 tempfile = "3"
 wiremock = "0.6"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "routing"
+harness = false

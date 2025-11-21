@@ -254,18 +254,71 @@ pub async fn handler(
 
     // Use router to determine target tier
     // Router type determined by config.routing.strategy (rule, llm, or hybrid)
+    let routing_start = std::time::Instant::now();
     let decision = state
         .router()
         .route(request.message(), &metadata, state.selector())
         .await?;
+    let routing_duration_ms = routing_start.elapsed().as_secs_f64() * 1000.0;
 
     tracing::info!(
         request_id = %request_id,
         target_tier = ?decision.target(),
         routing_strategy = ?decision.strategy(),
         token_estimate = metadata.token_estimate,
+        routing_duration_ms = %routing_duration_ms,
         "Routing decision made"
     );
+
+    // Record routing decision metrics (recorded regardless of query success)
+    // NOTE: record_request() counts routing decisions, NOT successful responses.
+    //       record_model_invocation() (called later on success) counts actual model queries.
+    //       This distinction allows tracking routing overhead separately from query success rate.
+    {
+        let metrics = state.metrics();
+
+        // Convert routing decision to type-safe metric enums
+        let tier_enum = match decision.target() {
+            TargetModel::Fast => crate::metrics::Tier::Fast,
+            TargetModel::Balanced => crate::metrics::Tier::Balanced,
+            TargetModel::Deep => crate::metrics::Tier::Deep,
+        };
+        let strategy_enum = match decision.strategy() {
+            RoutingStrategy::Rule => crate::metrics::Strategy::Rule,
+            RoutingStrategy::Llm => crate::metrics::Strategy::Llm,
+        };
+
+        // Log-and-continue on metrics recording errors (observability should never break requests)
+        // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
+        // Errors can only occur from Prometheus internal issues (registry problems, etc.).
+        if let Err(e) = metrics.record_request(tier_enum, strategy_enum) {
+            tracing::error!(
+                request_id = %request_id,
+                error = %e,
+                tier = ?tier_enum,
+                strategy = ?strategy_enum,
+                "Metrics recording failed (non-fatal): {}. Request will continue. \
+                This indicates an internal Prometheus error (not a cardinality issue). \
+                Monitor this error - frequent occurrence requires investigation.",
+                e
+            );
+            // DO NOT return error - metrics are non-critical
+        }
+
+        if let Err(e) = metrics.record_routing_duration(strategy_enum, routing_duration_ms) {
+            tracing::error!(
+                request_id = %request_id,
+                error = %e,
+                strategy = ?strategy_enum,
+                duration_ms = routing_duration_ms,
+                "Metrics recording failed (non-fatal): {}. Request will continue. \
+                This indicates an internal Prometheus error (not a cardinality issue). \
+                Monitor this error - frequent occurrence requires investigation.",
+                e
+            );
+            // DO NOT return error - metrics are non-critical
+        }
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // RETRY STRATEGY: Dual-Level Failure Tracking
@@ -364,10 +417,12 @@ pub async fn handler(
         );
 
         // Try to query this endpoint
+        // Use per-tier timeout if configured, otherwise use global default
+        let timeout_seconds = state.config().timeout_for_tier(decision.target());
         match try_query_model(
             &endpoint,
             &request,
-            state.config().server.request_timeout_seconds,
+            timeout_seconds,
             request_id,
             attempt,
             MAX_RETRIES,
@@ -438,6 +493,34 @@ pub async fn handler(
                     decision.target(),
                     decision.strategy(),
                 );
+
+                // Record successful model invocation
+                // NOTE: This is only recorded on SUCCESS, unlike record_request() which is
+                //       recorded before the query attempt. This allows tracking success rate:
+                //       success_rate = model_invocations_total / requests_total
+                {
+                    let metrics = state.metrics();
+                    let tier_enum = match decision.target() {
+                        TargetModel::Fast => crate::metrics::Tier::Fast,
+                        TargetModel::Balanced => crate::metrics::Tier::Balanced,
+                        TargetModel::Deep => crate::metrics::Tier::Deep,
+                    };
+
+                    // Log-and-continue on metrics recording errors (observability should never break requests)
+                    // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
+                    if let Err(e) = metrics.record_model_invocation(tier_enum) {
+                        tracing::error!(
+                            request_id = %request_id,
+                            error = %e,
+                            tier = ?tier_enum,
+                            "Metrics recording failed (non-fatal): {}. Request will continue. \
+                            This indicates an internal Prometheus error (not a cardinality issue). \
+                            Monitor this error - frequent occurrence requires investigation.",
+                            e
+                        );
+                        // DO NOT return error - metrics are non-critical
+                    }
+                }
 
                 return Ok(Json(response));
             }
