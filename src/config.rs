@@ -450,26 +450,6 @@ impl Config {
             }
         }
 
-        // Validate that each model tier has at least one endpoint
-        if self.models.fast.is_empty() {
-            return Err(crate::error::AppError::Config(
-                "Configuration error: models.fast must contain at least one model endpoint"
-                    .to_string(),
-            ));
-        }
-        if self.models.balanced.is_empty() {
-            return Err(crate::error::AppError::Config(
-                "Configuration error: models.balanced must contain at least one model endpoint"
-                    .to_string(),
-            ));
-        }
-        if self.models.deep.is_empty() {
-            return Err(crate::error::AppError::Config(
-                "Configuration error: models.deep must contain at least one model endpoint"
-                    .to_string(),
-            ));
-        }
-
         // Validate router_model is valid
         if !["fast", "balanced", "deep"].contains(&self.routing.router_model.as_str()) {
             return Err(crate::error::AppError::Config(format!(
@@ -691,14 +671,17 @@ router_model = "balanced"
     }
 
     #[test]
-    fn test_config_validation_empty_fast_tier_fails() {
-        // Create a config with empty fast tier programmatically
+    fn test_config_validation_empty_fast_tier_allowed_for_non_router_tier() {
+        // With the new validation logic, empty tiers are allowed as long as they're not the router_model tier
+        // TEST_CONFIG uses router_model = "balanced", so clearing fast tier should be OK
         let mut config = Config::from_str(TEST_CONFIG).unwrap();
         config.models.fast.clear(); // Empty the fast tier
 
         let result = config.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("models.fast"));
+        assert!(
+            result.is_ok(),
+            "Fast tier can be empty when router_model is 'balanced'"
+        );
     }
 
     #[test]

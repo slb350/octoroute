@@ -15,6 +15,11 @@ dist/
 *.dylib
 *.dll
 
+# Executables (prevent accidental commits of test binaries)
+/method
+/method[0-9]
+/method[0-9][0-9]
+
 # IDE
 .vscode/
 .idea/
