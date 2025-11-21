@@ -216,9 +216,9 @@ RUN cargo build --release
 # Runtime stage
 FROM debian:bookworm-slim
 
-# Install CA certificates for HTTPS
+# Install CA certificates for HTTPS and curl for health checks
 RUN apt-get update && \
-    apt-get install -y ca-certificates && \
+    apt-get install -y ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Create app user
@@ -238,9 +238,9 @@ WORKDIR /etc/octoroute
 # Expose port
 EXPOSE 3000
 
-# Health check
+# Health check (requires curl in the image)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD ["/usr/local/bin/octoroute", "health"] || exit 1
+  CMD curl -f http://localhost:3000/health || exit 1
 
 CMD ["/usr/local/bin/octoroute"]
 ```

@@ -106,17 +106,13 @@ octoroute/
 ├── main.rs                    # Axum server entrypoint
 ├── lib.rs                     # Public library API
 │
-├── config/                    # Configuration management
-│   ├── mod.rs
-│   ├── models.rs             # ModelConfig, ModelEndpoint
-│   └── routing.rs            # RoutingConfig, Strategy enum
+├── config.rs                  # Configuration management (ModelConfig, RoutingConfig, etc.)
 │
 ├── router/                    # Routing strategies
-│   ├── mod.rs                # Router trait + factory
+│   ├── mod.rs                # Router enum, RouteMetadata, Importance, TaskType
 │   ├── rule_based.rs         # Fast pattern-based routing
 │   ├── llm_based.rs          # LLM-powered routing (30B)
-│   ├── hybrid.rs             # Hybrid router (rule + LLM fallback)
-│   └── metadata.rs           # RouteMetadata struct
+│   └── hybrid.rs             # Hybrid router (rule + LLM fallback)
 │
 ├── models/                    # Model client management
 │   ├── mod.rs
@@ -136,7 +132,7 @@ octoroute/
 │
 ├── middleware/                # Axum middleware
 │   ├── mod.rs
-│   └── logging.rs            # Request/response tracing
+│   └── request_id.rs         # Request ID generation and propagation
 │
 ├── metrics.rs                 # Prometheus metrics implementation
 ├── error.rs                   # AppError, AppResult types
