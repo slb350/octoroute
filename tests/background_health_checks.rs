@@ -41,7 +41,7 @@ priority = 1
 [routing]
 strategy = "rule"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 
 [observability]
 log_level = "debug"

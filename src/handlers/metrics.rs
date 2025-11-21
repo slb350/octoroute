@@ -84,7 +84,7 @@ mod tests {
 
             [routing]
             strategy = "hybrid"
-            router_model = "balanced"
+            router_tier = "balanced"
         "#;
 
         let config: Config = toml::from_str(config_str).unwrap();
@@ -140,7 +140,7 @@ mod tests {
 
             [routing]
             strategy = "rule"
-            router_model = "balanced"
+            router_tier = "balanced"
         "#;
 
         let config: Config = toml::from_str(config_str).unwrap();
@@ -237,7 +237,7 @@ mod tests {
 
             [routing]
             strategy = "rule"
-            router_model = "balanced"
+            router_tier = "balanced"
         "#;
 
         let config: Config = toml::from_str(config_str).unwrap();
@@ -386,7 +386,7 @@ mod tests {
 
             [routing]
             strategy = "rule"
-            router_model = "balanced"
+            router_tier = "balanced"
         "#;
 
         let config: Config = toml::from_str(config_str).unwrap();

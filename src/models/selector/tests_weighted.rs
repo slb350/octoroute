@@ -81,7 +81,7 @@ max_tokens = 8192
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
     let config: Config = toml::from_str(toml_config).expect("should parse TOML");
     let selector = ModelSelector::new(Arc::new(config));
@@ -130,7 +130,7 @@ max_tokens = 8192
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
     let config: Config = toml::from_str(toml_config).expect("should parse TOML");
     let selector = ModelSelector::new(Arc::new(config));
@@ -178,7 +178,7 @@ max_tokens = 8192
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
     let config: Config = toml::from_str(toml_config).expect("should parse TOML");
     let selector = ModelSelector::new(Arc::new(config));
@@ -244,7 +244,7 @@ max_tokens = 8192
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
     let config: Config = toml::from_str(toml_config).expect("should parse TOML");
     let selector = ModelSelector::new(Arc::new(config));
@@ -351,7 +351,7 @@ max_tokens = 8192
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
     let config: Config = toml::from_str(toml_config).expect("should parse TOML");
     let selector = ModelSelector::new(Arc::new(config));
@@ -435,7 +435,7 @@ max_tokens = 8192
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
     let config: Config = toml::from_str(toml_config).expect("should parse TOML");
     let selector = ModelSelector::new(Arc::new(config));

@@ -1,9 +1,9 @@
-//! Integration tests for router_model tier selection
+//! Integration tests for router_tier tier selection
 //!
 //! This test file addresses PR #4 review critical issue #3:
 //! "Missing integration tests for Fast/Deep router tiers"
 //!
-//! Verifies that the system works end-to-end with different router_model
+//! Verifies that the system works end-to-end with different router_tier
 //! configurations: "fast", "balanced", and "deep".
 
 use octoroute::config::Config;
@@ -23,7 +23,7 @@ fn validated_config_from_toml(toml: &str) -> Config {
 
 #[tokio::test]
 async fn test_llm_router_with_fast_tier() {
-    // Test that LLM routing works with router_model = "fast"
+    // Test that LLM routing works with router_tier = "fast"
     // Expected: Faster routing (~50-200ms) using Fast (8B) tier for routing decisions
 
     let config_toml = r#"
@@ -63,7 +63,7 @@ priority = 1
 [routing]
 strategy = "llm"
 default_importance = "normal"
-router_model = "fast"  # Using Fast tier for routing decisions
+router_tier = "fast"  # Using Fast tier for routing decisions
 "#;
 
     let config = validated_config_from_toml(config_toml);
@@ -80,14 +80,14 @@ router_model = "fast"  # Using Fast tier for routing decisions
         result.err()
     );
 
-    println!("✅ Verified LLM router works with router_model='fast'");
+    println!("✅ Verified LLM router works with router_tier='fast'");
     println!("   - LlmBasedRouter construction succeeded");
     println!("   - Fast tier used for routing decisions");
 }
 
 #[tokio::test]
 async fn test_hybrid_router_with_deep_tier() {
-    // Test that Hybrid routing works with router_model = "deep"
+    // Test that Hybrid routing works with router_tier = "deep"
     // Expected: Slowest routing (~2-5s) but most accurate, using Deep (120B) tier
 
     let config_toml = r#"
@@ -127,7 +127,7 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "deep"  # Using Deep tier for LLM fallback routing
+router_tier = "deep"  # Using Deep tier for LLM fallback routing
 "#;
 
     let config = validated_config_from_toml(config_toml);
@@ -144,7 +144,7 @@ router_model = "deep"  # Using Deep tier for LLM fallback routing
         result.err()
     );
 
-    println!("✅ Verified Hybrid router works with router_model='deep'");
+    println!("✅ Verified Hybrid router works with router_tier='deep'");
     println!("   - HybridRouter construction succeeded");
     println!("   - Deep tier used for LLM fallback routing");
 }
@@ -184,7 +184,7 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "deep"  # Using Deep tier for LLM fallback
+router_tier = "deep"  # Using Deep tier for LLM fallback
 "#;
 
     let config = validated_config_from_toml(config_toml);
@@ -233,10 +233,10 @@ router_model = "deep"  # Using Deep tier for LLM fallback
 
 #[tokio::test]
 async fn test_all_router_tiers_with_appstate() {
-    // Comprehensive test: Verify AppState construction works with all router_model values
+    // Comprehensive test: Verify AppState construction works with all router_tier values
     // This is a smoke test for the full application startup path
 
-    for router_model in ["fast", "balanced", "deep"] {
+    for router_tier in ["fast", "balanced", "deep"] {
         let config_toml = format!(
             r#"
 [server]
@@ -268,9 +268,9 @@ priority = 1
 [routing]
 strategy = "llm"
 default_importance = "normal"
-router_model = "{}"
+router_tier = "{}"
 "#,
-            router_model
+            router_tier
         );
 
         let config = validated_config_from_toml(&config_toml);
@@ -280,30 +280,30 @@ router_model = "{}"
         // Test that router construction succeeds with this tier
         let result = LlmBasedRouter::new(
             selector,
-            match router_model {
+            match router_tier {
                 "fast" => octoroute::router::TargetModel::Fast,
                 "balanced" => octoroute::router::TargetModel::Balanced,
                 "deep" => octoroute::router::TargetModel::Deep,
-                _ => panic!("Invalid router_model in test"),
+                _ => panic!("Invalid router_tier in test"),
             },
         );
 
         assert!(
             result.is_ok(),
-            "Router construction should succeed for router_model='{}'",
-            router_model
+            "Router construction should succeed for router_tier='{}'",
+            router_tier
         );
 
         println!(
-            "✅ Router construction passed for router_model='{}'",
-            router_model
+            "✅ Router construction passed for router_tier='{}'",
+            router_tier
         );
     }
 }
 
 #[test]
-fn test_config_validation_rejects_router_model_without_endpoints() {
-    // Verify that Config::validate() rejects empty router_model tier
+fn test_config_validation_rejects_router_tier_without_endpoints() {
+    // Verify that Config::validate() rejects empty router_tier tier
     // This test focuses on CONFIG VALIDATION, not router construction
 
     let config_toml = r#"
@@ -336,7 +336,7 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "deep"
+router_tier = "deep"
 "#;
 
     let mut config: Config = toml::from_str(config_toml).expect("should parse config");
@@ -349,13 +349,13 @@ router_model = "deep"
 
     assert!(
         result.is_err(),
-        "Config::validate() should reject router_model='deep' with no deep endpoints"
+        "Config::validate() should reject router_tier='deep' with no deep endpoints"
     );
 
     let err_msg = result.unwrap_err().to_string();
     assert!(
-        err_msg.contains("deep") && err_msg.contains("endpoint"),
-        "Error should mention 'deep' and 'endpoint', got: {}",
+        (err_msg.contains("deep") || err_msg.contains("Deep")) && err_msg.contains("endpoint"),
+        "Error should mention 'deep'/'Deep' and 'endpoint', got: {}",
         err_msg
     );
 }
@@ -395,7 +395,7 @@ priority = 1
 [routing]
 strategy = "llm"
 default_importance = "normal"
-router_model = "fast"
+router_tier = "fast"
 "#;
 
     let config = validated_config_from_toml(config_toml);
@@ -445,12 +445,12 @@ router_model = "fast"
 #[tokio::test]
 async fn test_appstate_construction_hybrid_router_with_all_tiers() {
     // Test that AppState::new() successfully constructs Hybrid routers
-    // with all three router_model tiers (fast, balanced, deep).
+    // with all three router_tier tiers (fast, balanced, deep).
     //
     // This tests the ACTUAL application initialization path, not just
     // the router constructors directly.
 
-    for router_model in ["fast", "balanced", "deep"] {
+    for router_tier in ["fast", "balanced", "deep"] {
         let config_toml = format!(
             r#"
 [server]
@@ -482,9 +482,9 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "{}"
+router_tier = "{}"
 "#,
-            router_model
+            router_tier
         );
 
         let config = validated_config_from_toml(&config_toml);
@@ -495,8 +495,8 @@ router_model = "{}"
 
         assert!(
             result.is_ok(),
-            "AppState::new() should succeed with strategy='hybrid', router_model='{}', got: {:?}",
-            router_model,
+            "AppState::new() should succeed with strategy='hybrid', router_tier='{}', got: {:?}",
+            router_tier,
             result.err()
         );
 
@@ -506,8 +506,8 @@ router_model = "{}"
         let _ = app_state.router(); // Access router to verify it's available
 
         println!(
-            "✅ AppState construction passed for Hybrid + router_model='{}'",
-            router_model
+            "✅ AppState construction passed for Hybrid + router_tier='{}'",
+            router_tier
         );
     }
 }
@@ -516,7 +516,7 @@ router_model = "{}"
 async fn test_appstate_construction_llm_router_with_all_tiers() {
     // Same test but for LLM-only strategy
 
-    for router_model in ["fast", "balanced", "deep"] {
+    for router_tier in ["fast", "balanced", "deep"] {
         let config_toml = format!(
             r#"
 [server]
@@ -548,9 +548,9 @@ priority = 1
 [routing]
 strategy = "llm"
 default_importance = "normal"
-router_model = "{}"
+router_tier = "{}"
 "#,
-            router_model
+            router_tier
         );
 
         let config = validated_config_from_toml(&config_toml);
@@ -560,14 +560,14 @@ router_model = "{}"
 
         assert!(
             result.is_ok(),
-            "AppState::new() should succeed with strategy='llm', router_model='{}', got: {:?}",
-            router_model,
+            "AppState::new() should succeed with strategy='llm', router_tier='{}', got: {:?}",
+            router_tier,
             result.err()
         );
 
         println!(
-            "✅ AppState construction passed for LLM + router_model='{}'",
-            router_model
+            "✅ AppState construction passed for LLM + router_tier='{}'",
+            router_tier
         );
     }
 }

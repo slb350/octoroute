@@ -137,7 +137,7 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
         let config: Config = toml::from_str(toml).expect("should parse config");
         Arc::new(config)
@@ -170,7 +170,7 @@ priority = 1
 [routing]
 strategy = "rule"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
         let config: Config = toml::from_str(toml).expect("should parse config");
         Arc::new(config)

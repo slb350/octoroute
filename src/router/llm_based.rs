@@ -1,6 +1,6 @@
 //! LLM-based router that uses an LLM to make intelligent routing decisions
 //!
-//! Uses a configurable tier (Fast/Balanced/Deep) via config.routing.router_model to analyze
+//! Uses a configurable tier (Fast/Balanced/Deep) via config.routing.router_tier to analyze
 //! requests and choose the optimal target model. Falls back when rule-based routing cannot
 //! determine the best model.
 //!
@@ -167,7 +167,7 @@ const MAX_ROUTER_RESPONSE: usize = 1024;
 /// # Construction-Time Validation
 ///
 /// Uses `TierSelector` to validate that the specified tier has available endpoints.
-/// The tier is chosen via `config.routing.router_model` at construction time.
+/// The tier is chosen via `config.routing.router_tier` at construction time.
 pub struct LlmBasedRouter {
     selector: TierSelector,
 }
@@ -315,7 +315,7 @@ impl LlmBasedRouter {
                             router_tier, router_tier
                         );
                         last_error = Some(AppError::Config(format!(
-                            "No endpoints configured for {:?} tier (router_model setting). \
+                            "No endpoints configured for {:?} tier (router_tier setting). \
                             Add at least one endpoint to [[models.{:?}]] in config.toml.",
                             router_tier, router_tier
                         )));
@@ -1606,7 +1606,7 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
 
         let config: Config = toml::from_str(config_toml).expect("should parse config");
@@ -1692,7 +1692,7 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
 
         let config: crate::config::Config =

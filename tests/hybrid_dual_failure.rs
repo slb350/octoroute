@@ -48,7 +48,7 @@ priority = 1
 
 [routing]
 strategy = "hybrid"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
     toml::from_str(toml).expect("should parse TOML")
 }

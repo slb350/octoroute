@@ -42,7 +42,7 @@ max_tokens = 8192
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [observability]
 log_level = "info"
@@ -90,7 +90,7 @@ max_tokens = 8192
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [observability]
 log_level = "info"
@@ -138,7 +138,7 @@ max_tokens = 8192
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [observability]
 log_level = "info"
@@ -185,7 +185,7 @@ max_tokens = 8192
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [observability]
 log_level = "info"
@@ -232,7 +232,7 @@ max_tokens = 8192
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [observability]
 log_level = "info"
@@ -282,7 +282,7 @@ weight = 1.5
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [observability]
 log_level = "info"
@@ -323,7 +323,7 @@ max_tokens = 8192
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [observability]
 log_level = "info"

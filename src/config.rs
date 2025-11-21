@@ -2,6 +2,7 @@
 //!
 //! Parses TOML configuration files and provides typed access to settings.
 
+use crate::router::TargetModel;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::str::FromStr;
@@ -112,7 +113,11 @@ pub struct RoutingConfig {
     pub strategy: RoutingStrategy,
     #[serde(default)]
     pub default_importance: crate::router::Importance,
-    pub router_model: String,
+    /// Which tier (Fast/Balanced/Deep) to use for LLM routing decisions
+    ///
+    /// Serde deserializes from lowercase strings: "fast", "balanced", "deep"
+    /// Invalid values are caught at deserialization time, not validation time.
+    pub router_tier: TargetModel,
 }
 
 /// Routing strategy enum
@@ -453,48 +458,32 @@ impl Config {
             }
         }
 
-        // Validate router_model format (ALWAYS, regardless of strategy)
-        if !["fast", "balanced", "deep"].contains(&self.routing.router_model.as_str()) {
-            return Err(crate::error::AppError::Config(format!(
-                "Configuration error: routing.router_model must be 'fast', 'balanced', or 'deep', got '{}'. \
-                Valid values are case-sensitive (lowercase only). \
-                Common mistakes: capitalization (e.g., 'FAST'), typos (e.g., 'balance'). \
-                Note: router_model is only used by LLM/Hybrid strategies, but must always be valid.",
-                self.routing.router_model
-            )));
-        }
-
-        // Validate that router_model tier has endpoints (ONLY for strategies that use it)
+        // Validate that router_tier has endpoints (ONLY for strategies that use it)
+        // Note: router_tier format validation is handled by serde at deserialization time
         match self.routing.strategy {
             RoutingStrategy::Llm | RoutingStrategy::Hybrid => {
-                let router_tier_endpoints = match self.routing.router_model.as_str() {
-                    "fast" => &self.models.fast,
-                    "balanced" => &self.models.balanced,
-                    "deep" => &self.models.deep,
-                    _ => {
-                        // DEFENSIVE: This shouldn't happen due to validation above, but handle gracefully
-                        return Err(crate::error::AppError::Config(format!(
-                            "DEFENSIVE ERROR: router_model '{}' passed format validation but has no tier mapping. \
-                             This indicates a bug in the validation logic. Please report this.",
-                            self.routing.router_model
-                        )));
-                    }
+                // Use TargetModel directly - no string matching needed
+                let router_tier_endpoints = match self.routing.router_tier {
+                    TargetModel::Fast => &self.models.fast,
+                    TargetModel::Balanced => &self.models.balanced,
+                    TargetModel::Deep => &self.models.deep,
                 };
 
                 if router_tier_endpoints.is_empty() {
                     return Err(crate::error::AppError::Config(format!(
-                        "Configuration error: routing.router_model is '{}' but models.{} has no endpoints. \
+                        "Configuration error: routing.router_tier is '{:?}' but models.{:?} has no endpoints. \
                         LLM/Hybrid routing requires at least one endpoint for the router tier.",
-                        self.routing.router_model, self.routing.router_model
+                        self.routing.router_tier, self.routing.router_tier
                     )));
                 }
             }
             RoutingStrategy::Rule | RoutingStrategy::Tool => {
-                // Rule/Tool routing validates router_model format (above) but doesn't require endpoints
+                // Rule/Tool routing doesn't use router_tier, but it must still be valid
+                // (serde validates format, we just log for debugging)
                 tracing::debug!(
-                    router_model = %self.routing.router_model,
+                    router_tier = ?self.routing.router_tier,
                     strategy = ?self.routing.strategy,
-                    "router_model format is valid but not used by {:?} strategy",
+                    "router_tier is valid but not used by {:?} strategy",
                     self.routing.strategy
                 );
             }
@@ -575,7 +564,7 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 
 [observability]
 log_level = "info"
@@ -626,7 +615,7 @@ log_level = "info"
             config.routing.default_importance,
             crate::router::Importance::Normal
         );
-        assert_eq!(config.routing.router_model, "balanced");
+        assert_eq!(config.routing.router_tier, TargetModel::Balanced);
     }
 
     #[test]
@@ -680,7 +669,7 @@ max_tokens = 8192
 [routing]
 strategy = "rule"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
 
         let config = Config::from_str(minimal_config).expect("should parse minimal config");
@@ -693,20 +682,20 @@ router_model = "balanced"
 
     #[test]
     fn test_config_validation_empty_fast_tier_allowed_for_non_router_tier() {
-        // With the new validation logic, empty tiers are allowed as long as they're not the router_model tier
-        // TEST_CONFIG uses router_model = "balanced", so clearing fast tier should be OK
+        // With the new validation logic, empty tiers are allowed as long as they're not the router_tier tier
+        // TEST_CONFIG uses router_tier = "balanced", so clearing fast tier should be OK
         let mut config = Config::from_str(TEST_CONFIG).unwrap();
         config.models.fast.clear(); // Empty the fast tier
 
         let result = config.validate();
         assert!(
             result.is_ok(),
-            "Fast tier can be empty when router_model is 'balanced'"
+            "Fast tier can be empty when router_tier is 'balanced'"
         );
     }
 
     #[test]
-    fn test_config_validation_invalid_router_model_fails() {
+    fn test_config_validation_invalid_router_tier_fails() {
         let config_str = r#"
 [server]
 host = "127.0.0.1"
@@ -729,19 +718,25 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_model = "invalid"
+router_tier = "invalid"
 "#;
 
-        let config = Config::from_str(config_str).unwrap();
-        let result = config.validate();
-        assert!(result.is_err());
+        // Serde should reject invalid router_tier at deserialization time
+        let result = Config::from_str(config_str);
+        assert!(
+            result.is_err(),
+            "Should fail to deserialize invalid router_tier"
+        );
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("router_model"));
-        assert!(err_msg.contains("invalid"));
+        assert!(err_msg.contains("router_tier") || err_msg.contains("invalid"));
+        assert!(
+            err_msg.contains("fast") || err_msg.contains("balanced") || err_msg.contains("deep"),
+            "Error should list valid values"
+        );
     }
 
     #[test]
-    fn test_config_validation_router_model_with_no_endpoints_fails() {
+    fn test_config_validation_router_tier_with_no_endpoints_fails() {
         let mut config = Config::from_str(TEST_CONFIG).unwrap();
 
         // Clear deep endpoints to test validation
@@ -749,88 +744,37 @@ router_model = "invalid"
 
         // Set router to use deep tier (which now has no endpoints)
         config.routing.strategy = RoutingStrategy::Llm;
-        config.routing.router_model = "deep".to_string();
+        config.routing.router_tier = TargetModel::Deep;
 
         let result = config.validate();
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("deep"));
+        assert!(err_msg.contains("deep") || err_msg.contains("Deep"));
         assert!(err_msg.contains("endpoint"));
     }
 
-    #[test]
-    fn test_config_validation_router_model_empty_string_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
-
-        // Set router_model to empty string
-        config.routing.router_model = "".to_string();
-
-        let result = config.validate();
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("router_model"));
-    }
-
-    #[test]
-    fn test_config_validation_router_model_case_sensitive() {
-        let test_cases = vec!["FAST", "Fast", "Balanced", "DEEP", "Deep"];
-
-        for invalid_case in test_cases {
-            let mut config = Config::from_str(TEST_CONFIG).unwrap();
-
-            // Set router_model to invalid case
-            config.routing.router_model = invalid_case.to_string();
-
-            let result = config.validate();
-            assert!(
-                result.is_err(),
-                "Should reject router_model='{}'",
-                invalid_case
-            );
-            let err_msg = result.unwrap_err().to_string();
-            assert!(err_msg.contains("router_model"));
-        }
-    }
-
-    #[test]
-    fn test_config_validation_always_validates_router_model_format() {
-        // Verify that router_model format is validated even for Rule strategy
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
-
-        // Set to Rule strategy (doesn't USE router_model but should validate format)
-        config.routing.strategy = RoutingStrategy::Rule;
-        config.routing.router_model = "INVALID".to_string();
-
-        let result = config.validate();
-        assert!(
-            result.is_err(),
-            "Should reject invalid router_model even for Rule strategy"
-        );
-
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("router_model") && err_msg.contains("INVALID"),
-            "Error should mention router_model validation, got: {}",
-            err_msg
-        );
-    }
+    // Note: Format validation tests removed - serde now validates router_tier format
+    // at deserialization time. Invalid values like "" or "FAST" are caught by serde's
+    // enum deserializer, not by Config::validate(). This provides stronger type safety
+    // - invalid configs can't even be deserialized, preventing the need for runtime
+    // validation.
 
     #[test]
     fn test_config_validation_rule_strategy_allows_empty_router_tier() {
-        // Verify that Rule strategy allows empty router_model tier
+        // Verify that Rule strategy allows empty router_tier tier
         let mut config = Config::from_str(TEST_CONFIG).unwrap();
 
         // Set to Rule strategy
         config.routing.strategy = RoutingStrategy::Rule;
-        config.routing.router_model = "deep".to_string();
+        config.routing.router_tier = TargetModel::Deep;
 
-        // Clear deep tier (this is OK for Rule strategy which doesn't use router_model)
+        // Clear deep tier (this is OK for Rule strategy which doesn't use router_tier)
         config.models.deep.clear();
 
         let result = config.validate();
         assert!(
             result.is_ok(),
-            "Rule strategy should allow empty router_model tier since it doesn't use it, got: {:?}",
+            "Rule strategy should allow empty router_tier tier since it doesn't use it, got: {:?}",
             result.err()
         );
     }
@@ -993,7 +937,7 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 fast = 15
@@ -1032,7 +976,7 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 fast = 15
@@ -1160,7 +1104,7 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 fast = 0
@@ -1203,7 +1147,7 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 deep = 301
@@ -1246,7 +1190,7 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 fast = 15
@@ -1290,7 +1234,7 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 fast = 1

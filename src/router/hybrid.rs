@@ -6,9 +6,7 @@
 use crate::config::Config;
 use crate::error::AppResult;
 use crate::models::selector::ModelSelector;
-use crate::router::{
-    LlmBasedRouter, LlmRouter, RouteMetadata, RoutingDecision, RuleBasedRouter, parse_router_tier,
-};
+use crate::router::{LlmBasedRouter, LlmRouter, RouteMetadata, RoutingDecision, RuleBasedRouter};
 use std::sync::Arc;
 
 /// Hybrid router combining rule-based and LLM-based strategies
@@ -27,10 +25,10 @@ impl HybridRouter {
     /// Returns an error if LLM router construction fails
     /// (e.g., no endpoints configured for the router tier).
     ///
-    /// The router tier is determined by `config.routing.router_model`.
+    /// The router tier is determined by `config.routing.router_tier`.
     pub fn new(config: Arc<Config>, selector: Arc<ModelSelector>) -> AppResult<Self> {
-        // Parse router tier from config (validated by Config::validate())
-        let router_tier = parse_router_tier(&config.routing.router_model)?;
+        // Router tier from config (serde validates format at deserialization time)
+        let router_tier = config.routing.router_tier;
 
         let llm_router = LlmBasedRouter::new(selector.clone(), router_tier)?;
         Ok(Self {
@@ -215,7 +213,7 @@ mod tests {
             [routing]
             strategy = "hybrid"
             default_importance = "normal"
-            router_model = "balanced"
+            router_tier = "balanced"
 
             [observability]
             log_level = "info"

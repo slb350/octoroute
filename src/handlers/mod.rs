@@ -3,7 +3,7 @@
 use crate::config::{Config, RoutingStrategy};
 use crate::error::{AppError, AppResult};
 use crate::models::ModelSelector;
-use crate::router::{HybridRouter, LlmBasedRouter, Router, RuleBasedRouter, parse_router_tier};
+use crate::router::{HybridRouter, LlmBasedRouter, Router, RuleBasedRouter};
 use std::sync::Arc;
 
 type MetricsHandle = Arc<crate::metrics::Metrics>;
@@ -60,8 +60,8 @@ impl AppState {
             }
             RoutingStrategy::Llm => {
                 // LLM-only routing: router tier required
-                // Config::validate() ensures router_model is valid, but parse defensively
-                let router_tier = parse_router_tier(&config.routing.router_model)?;
+                // Serde validates router_tier format at deserialization time
+                let router_tier = config.routing.router_tier;
 
                 tracing::info!(
                     "Initializing LLM-based router with {:?} tier for routing decisions",
@@ -73,12 +73,10 @@ impl AppState {
             }
             RoutingStrategy::Hybrid => {
                 // Hybrid routing: router tier required for LLM fallback
-                // Config::validate() ensures router_model is valid, but parse defensively
-                let router_tier = parse_router_tier(&config.routing.router_model)?;
-
+                // Serde validates router_tier format at deserialization time
                 tracing::info!(
                     "Initializing hybrid router (rule-based with LLM fallback using {:?} tier)",
-                    router_tier
+                    config.routing.router_tier
                 );
 
                 let hybrid_router = HybridRouter::new(config.clone(), selector.clone())?;
@@ -169,7 +167,7 @@ priority = 1
 [routing]
 strategy = "rule"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
         toml::from_str(toml).expect("should parse TOML config")
     }

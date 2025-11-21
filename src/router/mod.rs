@@ -233,97 +233,9 @@ impl Router {
     }
 }
 
-/// Parse router_model string to TargetModel enum
-///
-/// Validates that the router_model configuration value is valid and converts
-/// to the appropriate TargetModel enum variant. This helper eliminates code
-/// duplication across handlers and router initialization.
-///
-/// # Arguments
-/// * `router_model` - The router_model string from configuration (must be "fast", "balanced", or "deep")
-///
-/// # Returns
-/// * `Ok(TargetModel)` if valid
-/// * `Err(AppError::Config)` if invalid with actionable error message
-///
-/// # Examples
-/// ```
-/// use octoroute::router::{parse_router_tier, TargetModel};
-///
-/// let tier = parse_router_tier("balanced").unwrap();
-/// assert_eq!(tier, TargetModel::Balanced);
-///
-/// assert!(parse_router_tier("FAST").is_err()); // case sensitive
-/// ```
-pub fn parse_router_tier(router_model: &str) -> AppResult<TargetModel> {
-    match router_model {
-        "fast" => Ok(TargetModel::Fast),
-        "balanced" => Ok(TargetModel::Balanced),
-        "deep" => Ok(TargetModel::Deep),
-        invalid => Err(crate::error::AppError::Config(format!(
-            "Invalid router_model '{}'. Expected 'fast', 'balanced', or 'deep'. \
-             Valid values are case-sensitive (lowercase only). \
-             Common mistakes: capitalization (e.g., 'FAST'), typos (e.g., 'balance').",
-            invalid
-        ))),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_router_tier_valid_values() {
-        assert!(matches!(parse_router_tier("fast"), Ok(TargetModel::Fast)));
-        assert!(matches!(
-            parse_router_tier("balanced"),
-            Ok(TargetModel::Balanced)
-        ));
-        assert!(matches!(parse_router_tier("deep"), Ok(TargetModel::Deep)));
-    }
-
-    #[test]
-    fn test_parse_router_tier_invalid_values() {
-        let invalid_cases = vec!["FAST", "Fast", "invalid", "", "medium", "Balanced", "DEEP"];
-
-        for invalid in invalid_cases {
-            let result = parse_router_tier(invalid);
-            assert!(
-                result.is_err(),
-                "Should reject '{}' as invalid router_model",
-                invalid
-            );
-
-            let err_msg = result.unwrap_err().to_string();
-            assert!(
-                err_msg.contains(invalid) || err_msg.contains("router_model"),
-                "Error should reference the invalid value or field name, got: {}",
-                err_msg
-            );
-        }
-    }
-
-    #[test]
-    fn test_parse_router_tier_error_message_quality() {
-        let result = parse_router_tier("FAST");
-        assert!(result.is_err());
-
-        let err_msg = result.unwrap_err().to_string();
-
-        // Error should be actionable
-        assert!(err_msg.contains("'FAST'"), "Should quote the invalid value");
-        assert!(
-            err_msg.contains("fast") || err_msg.contains("balanced") || err_msg.contains("deep"),
-            "Should list valid values, got: {}",
-            err_msg
-        );
-        assert!(
-            err_msg.contains("case-sensitive") || err_msg.contains("lowercase"),
-            "Should mention case sensitivity, got: {}",
-            err_msg
-        );
-    }
 
     #[test]
     fn test_target_model_enum_values() {

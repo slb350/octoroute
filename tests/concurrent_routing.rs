@@ -40,7 +40,7 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
 
     let config: Config = toml::from_str(config_toml).expect("should parse config");
