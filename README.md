@@ -2,7 +2,7 @@
 
 **Intelligent multi-model router for self-hosted LLMs**
 
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Octoroute is a smart HTTP API that sits between your applications and your homelab's fleet of local LLMs. It automatically routes requests to the optimal model (8B, 30B, or 120B) based on task complexity, reducing compute costs while maintaining quality.
@@ -33,7 +33,7 @@ Running multiple LLM sizes on your homelab is powerful, but routing requests man
 
 ### Prerequisites
 
-- Rust 1.85+ (Edition 2024)
+- Rust 1.90+ (Edition 2024)
 - At least one local LLM endpoint (Ollama, LM Studio, llama.cpp, etc.)
 - Optional: Multiple model sizes (8B, 30B, 120B) for intelligent routing
 
@@ -76,7 +76,7 @@ base_url = "http://localhost:8080/v1"   # llama.cpp
 max_tokens = 16384
 
 [routing]
-strategy = "hybrid"  # rule, llm, hybrid, tool
+strategy = "hybrid"  # rule, llm, hybrid
 ```
 
 ### Usage
@@ -87,7 +87,7 @@ Send a chat request:
 curl -X POST http://localhost:3000/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "prompt": "Explain quantum computing in simple terms",
+    "message": "Explain quantum computing in simple terms",
     "importance": "normal",
     "task_type": "question_answer"
   }'
@@ -252,11 +252,9 @@ Submit a chat request for intelligent routing.
 
 ```json
 {
-  "prompt": "Your question or task",
+  "message": "Your question or task",
   "importance": "low" | "normal" | "high",
-  "task_type": "casual_chat" | "code" | "creative_writing" | "deep_analysis" | "document_summary" | "question_answer",
-  "model": null | "fast_8b" | "balanced_30b" | "deep_120b",
-  "temperature": 0.7
+  "task_type": "casual_chat" | "code" | "creative_writing" | "deep_analysis" | "document_summary" | "question_answer"
 }
 ```
 
@@ -264,11 +262,10 @@ Submit a chat request for intelligent routing.
 
 ```json
 {
-  "response": "Generated text",
-  "model_used": "balanced_30b",
-  "routing_strategy": "rule",
-  "token_count": 1234,
-  "processing_time_ms": 567
+  "content": "Generated text",
+  "model_tier": "fast" | "balanced" | "deep",
+  "model_name": "qwen3-30b-instruct",
+  "routing_strategy": "rule" | "llm"
 }
 ```
 
@@ -288,9 +285,12 @@ List available models and their status.
 {
   "models": [
     {
-      "name": "fast_8b",
-      "endpoint": "http://localhost:11434",
-      "healthy": true
+      "name": "qwen3-8b-instruct",
+      "tier": "fast",
+      "endpoint": "http://localhost:11434/v1",
+      "healthy": true,
+      "last_check_seconds_ago": 2,
+      "consecutive_failures": 0
     }
   ]
 }
@@ -300,11 +300,11 @@ List available models and their status.
 
 ## Configuration Reference
 
-See `config.toml.example` for full configuration options:
+See [Configuration Guide](docs/configuration.md) for full configuration options:
 
 - **Server settings**: Host, port, timeouts
 - **Model endpoints**: Names, URLs, token limits
-- **Routing strategy**: Rule, LLM, hybrid, or tool-based
+- **Routing strategy**: Rule, LLM, or hybrid
 - **Observability**: Log level, metrics
 
 ---
@@ -342,7 +342,7 @@ cargo test
 cargo nextest run
 
 # Run integration tests
-cargo test --test integration
+cargo test --test '*'
 ```
 
 ### Format & Lint
@@ -363,7 +363,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 | `just test` | Run all tests |
 | `just bench` | Run benchmarks |
 | `just watch` | Auto-rebuild on file changes |
-| `just ci` | Complete CI check (used by GitHub Actions) |
+| `just ci` | Complete CI check (clippy + format + tests) |
 
 See `just --list` for all 20+ available commands.
 
@@ -400,12 +400,12 @@ RUST_LOG=debug cargo run
 **Features implemented**:
 - ✅ HTTP API with `/chat`, `/health`, `/models`, `/metrics` endpoints
 - ✅ Multi-tier model selection (fast/balanced/deep)
-- ✅ Rule-based + LLM-based hybrid routing
+- ✅ Rule-based + LLM-based hybrid routing (Phase 3)
 - ✅ Priority-based routing with weighted distribution
 - ✅ Health checking with automatic endpoint recovery
 - ✅ Retry logic with request-scoped exclusion
 - ✅ Timeout enforcement (global + per-tier overrides)
-- ✅ Prometheus metrics (optional, behind `metrics` feature)
+- ✅ Prometheus metrics (always enabled)
 - ✅ Performance benchmarks (Criterion)
 - ✅ CI/CD pipeline (GitHub Actions)
 - ✅ Comprehensive config validation
@@ -425,12 +425,12 @@ Route simple commands to 8B, complex reasoning to 120B:
 ```python
 import requests
 
-def ask_llm(prompt, importance="normal"):
+def ask_llm(message, importance="normal"):
     response = requests.post("http://localhost:3000/chat", json={
-        "prompt": prompt,
+        "message": message,
         "importance": importance
     })
-    return response.json()["response"]
+    return response.json()["content"]
 
 # Uses 8B model (fast)
 ask_llm("What's the weather like?")
@@ -453,10 +453,10 @@ Integrate with IDE/scripts to route tasks intelligently:
 
 ```bash
 # Quick code explanation (8B)
-curl -X POST http://localhost:3000/chat -d '{"prompt":"Explain this function"}'
+curl -X POST http://localhost:3000/chat -d '{"message":"Explain this function"}'
 
 # Deep code review (120B)
-curl -X POST http://localhost:3000/chat -d '{"prompt":"Review for security issues", "importance":"high"}'
+curl -X POST http://localhost:3000/chat -d '{"message":"Review for security issues", "importance":"high"}'
 ```
 
 ---
@@ -477,7 +477,7 @@ curl -X POST http://localhost:3000/chat -d '{"prompt":"Review for security issue
 
 ## Contributing
 
-Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions welcome! Please see [Development Guide](docs/development.md) for guidelines.
 
 **Areas for contribution**:
 
@@ -510,7 +510,7 @@ Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guideli
 
 ### Q: How does LLM-based routing work?
 
-**A**: A 30B model analyzes your prompt + metadata and outputs one of: `FAST_8B`, `BALANCED_30B`, `DEEP_120B`. This decision is then used to route the actual request.
+**A**: A 30B model analyzes your prompt + metadata and outputs one of: `FAST`, `BALANCED`, `DEEP`. This decision is then used to route the actual request.
 
 ### Q: How do I monitor Octoroute in production?
 
