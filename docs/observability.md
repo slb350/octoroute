@@ -348,28 +348,29 @@ sum(rate(octoroute_requests_total[5m])) * 100
 - Background task can crash (panics, unexpected exits)
 - Automatic restart with exponential backoff (1s, 2s, 4s, 8s, 16s)
 - Maximum 5 restart attempts
-- Server panics if health monitoring cannot be restored
+- After 5 failures, background health checking stops but server continues (graceful degradation)
+- Health status remains at last known state without background updates
 
 ### Health Monitoring with Prometheus
 
-**Alert on unhealthy endpoints**:
+**Note**: Octoroute does not export per-endpoint health metrics. Health status is available via the `GET /models` endpoint.
+
+**Monitor via request success rate**:
 
 ```yaml
 groups:
   - name: octoroute
     rules:
-      - alert: OctorouteEndpointUnhealthy
-        expr: octoroute_endpoint_healthy == 0
+      - alert: OctorouteNoSuccessfulRequests
+        expr: rate(octoroute_requests_total[5m]) == 0
         for: 5m
         labels:
-          severity: warning
+          severity: critical
         annotations:
-          summary: "Octoroute endpoint {{ $labels.endpoint }} is unhealthy"
+          summary: "Octoroute has processed no successful requests in 5 minutes"
 ```
 
-**Alert on service unavailable**:
-
-Monitor error responses via HTTP status code metrics (if using reverse proxy).
+**Alternative**: Monitor error responses via HTTP status code metrics (if using reverse proxy with access logs).
 
 ---
 
@@ -539,7 +540,8 @@ A complete Grafana dashboard JSON template is available in the repository:
 1. Check logs for panic message
 2. Verify endpoint URLs are valid
 3. Check network connectivity to all endpoints
-4. If 5 restart attempts exhausted, restart server
+4. If 5 restart attempts exhausted, server continues with degraded health checking (last known status)
+5. Restart server to restore full health monitoring functionality
 
 ---
 

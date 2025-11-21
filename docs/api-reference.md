@@ -110,10 +110,9 @@ Routing tier is chosen automatically based on routing logic; manual tier overrid
 
 - `200 OK`: Request successful
 - `400 Bad Request`: Invalid request (empty message, invalid enum values)
-- `500 Internal Server Error`: Configuration or routing error
-- `502 Bad Gateway`: Model invocation failed
-- `503 Service Unavailable`: All endpoints for selected tier are unhealthy
-- `504 Gateway Timeout`: Request exceeded timeout
+- `500 Internal Server Error`: Configuration error, routing failed, or health check failed
+- `502 Bad Gateway`: Stream interrupted, model query failed, or LLM routing error
+- `504 Gateway Timeout`: Endpoint timeout exceeded
 
 ---
 
@@ -149,8 +148,8 @@ List all configured model endpoints with health status.
       "tier": "fast | balanced | deep",
       "endpoint": "string",
       "healthy": true | false,
-      "priority": 1,
-      "weight": 1.0
+      "last_check_seconds_ago": 5,
+      "consecutive_failures": 0
     }
   ]
 }
@@ -162,8 +161,8 @@ List all configured model endpoints with health status.
 - `tier` (enum): Which tier this model belongs to
 - `endpoint` (string): Base URL for the model endpoint
 - `healthy` (boolean): Current health status
-- `priority` (integer): Priority level (higher = tried first)
-- `weight` (number): Load balancing weight
+- `last_check_seconds_ago` (integer): Seconds since last health check
+- `consecutive_failures` (integer): Number of consecutive health check failures
 
 #### Status Codes
 
@@ -251,13 +250,6 @@ All errors return JSON with an `error` field:
 **Examples**:
 - `{"error": "Model error: connection refused"}`
 - `{"error": "Model error: unexpected response format"}`
-
-#### 503 Service Unavailable
-
-**Cause**: All endpoints for selected tier are unhealthy
-
-**Example**:
-- `{"error": "Fast tier unavailable"}`
 
 #### 504 Gateway Timeout
 
@@ -393,32 +385,32 @@ curl http://localhost:3000/models
       "tier": "fast",
       "endpoint": "http://macmini-1:11434/v1",
       "healthy": true,
-      "priority": 1,
-      "weight": 1.0
+      "last_check_seconds_ago": 2,
+      "consecutive_failures": 0
     },
     {
       "name": "qwen3-8b-instruct",
       "tier": "fast",
       "endpoint": "http://macmini-2:11434/v1",
       "healthy": false,
-      "priority": 1,
-      "weight": 1.0
+      "last_check_seconds_ago": 45,
+      "consecutive_failures": 3
     },
     {
       "name": "qwen3-30b-instruct",
       "tier": "balanced",
       "endpoint": "http://lmstudio-host:1234/v1",
       "healthy": true,
-      "priority": 1,
-      "weight": 1.0
+      "last_check_seconds_ago": 1,
+      "consecutive_failures": 0
     },
     {
       "name": "gpt-oss-120b",
       "tier": "deep",
       "endpoint": "http://llamacpp-box:8080/v1",
       "healthy": true,
-      "priority": 1,
-      "weight": 1.0
+      "last_check_seconds_ago": 3,
+      "consecutive_failures": 0
     }
   ]
 }

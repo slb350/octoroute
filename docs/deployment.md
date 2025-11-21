@@ -75,7 +75,7 @@ ls -lh target/release/octoroute
 sudo cp target/release/octoroute /usr/local/bin/
 
 # Verify installation
-octoroute --version
+which octoroute
 ```
 
 ### Create Configuration
@@ -94,12 +94,11 @@ sudo nano /etc/octoroute/config.toml
 ### Run Manually
 
 ```bash
-# Run with config
-OCTOROUTE_CONFIG=/etc/octoroute/config.toml octoroute
-
-# Or from working directory with local config.toml
+# Must run from directory containing config.toml
 cd /etc/octoroute
 octoroute
+
+# Note: Configuration file path is hardcoded to config.toml in current directory
 ```
 
 ---
@@ -126,8 +125,9 @@ User=octoroute
 Group=octoroute
 WorkingDirectory=/etc/octoroute
 ExecStart=/usr/local/bin/octoroute
-Environment="OCTOROUTE_CONFIG=/etc/octoroute/config.toml"
 Environment="RUST_LOG=octoroute=info"
+
+# Note: config.toml must exist in WorkingDirectory
 
 # Restart policy
 Restart=on-failure
@@ -297,7 +297,6 @@ services:
       - octoroute-logs:/var/log/octoroute
     environment:
       - RUST_LOG=octoroute=info
-      - OCTOROUTE_CONFIG=/etc/octoroute/config.toml
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
@@ -702,8 +701,8 @@ docker-compose logs -f
 # Check systemd logs
 sudo journalctl -u octoroute -n 50
 
-# Check configuration
-octoroute --config /etc/octoroute/config.toml --validate
+# Check configuration file exists and is readable
+cat /etc/octoroute/config.toml
 
 # Check permissions
 ls -la /etc/octoroute/config.toml

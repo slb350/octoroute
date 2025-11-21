@@ -64,10 +64,10 @@ Octoroute is an intelligent HTTP API router that sits between client application
 │  └────────────┬───────────────────────────────────────────┘  │
 │               │                                              │
 │  ┌────────────▼───────────────────────────────────────────┐  │
-│  │  Model Client Manager (open-agent-sdk)                │  │
-│  │  - Client pooling                                      │  │
-│  │  - Request proxying                                    │  │
-│  │  - Response streaming                                  │  │
+│  │  Model Invocation (open-agent-sdk)                    │  │
+│  │  - Build AgentOptions per request                     │  │
+│  │  - Call open_agent::query() with endpoint + prompt    │  │
+│  │  - Buffer and return full response                    │  │
 │  └────────────┬───────────────────────────────────────────┘  │
 └───────────────┼──────────────────────────────────────────────┘
                 │
@@ -97,7 +97,7 @@ Octoroute is an intelligent HTTP API router that sits between client application
 | Error Handling | thiserror | Rich error context, `IntoResponse` integration |
 | Logging | tracing + tracing-subscriber | Structured logging with spans |
 | Metrics | prometheus 0.14 | Direct Prometheus integration, homelab-friendly |
-| Testing | proptest + criterion | Property tests + benchmarks |
+| Testing | criterion | Benchmarks for routing performance |
 
 ### Module Hierarchy
 
@@ -403,10 +403,9 @@ AppError::into_response()
    ↓
 Return HTTP error response
    - 400: Invalid request (validation)
-   - 500: Internal error (config, logic)
-   - 502: Bad Gateway (model invocation failed)
-   - 503: Service Unavailable (all endpoints unhealthy)
-   - 504: Gateway Timeout (request timeout exceeded)
+   - 500: Internal error (config, routing, health check failures)
+   - 502: Bad Gateway (stream interrupted, model query failed, LLM routing error)
+   - 504: Gateway Timeout (endpoint timeout exceeded)
 ```
 
 ### Health Check Flow
@@ -455,26 +454,36 @@ pub enum AppError {
     #[error("Invalid request: {0}")]
     Validation(String),
 
-    #[error("Model invocation failed: {source}")]
-    ModelInvocation {
-        #[source]
-        source: open_agent::Error,
-    },
-
-    #[error("All {tier:?} tier endpoints are unhealthy")]
-    NoHealthyEndpoints {
-        tier: ModelTier,
-    },
-
     #[error("Routing failed: {0}")]
     RoutingFailed(String),
 
-    #[error("Request timeout after {timeout_secs}s (attempt {attempt}/{max_attempts})")]
-    Timeout {
-        timeout_secs: u64,
-        attempt: usize,
-        max_attempts: usize,
+    #[error("Stream interrupted from {endpoint} after receiving {bytes_received} bytes ({blocks_received} blocks)")]
+    StreamInterrupted {
+        endpoint: String,
+        bytes_received: usize,
+        blocks_received: usize,
     },
+
+    #[error("Request to {endpoint} timed out after {timeout_seconds} seconds")]
+    EndpointTimeout {
+        endpoint: String,
+        timeout_seconds: u64,
+    },
+
+    #[error("Health check failed for {endpoint}: {reason}")]
+    HealthCheckFailed {
+        endpoint: String,
+        reason: String,
+    },
+
+    #[error("Failed to query model at {endpoint}: {reason}")]
+    ModelQueryFailed {
+        endpoint: String,
+        reason: String,
+    },
+
+    #[error(transparent)]
+    LlmRouting(#[from] LlmRouterError),
 
     #[error("Internal error: {0}")]
     Internal(String),
@@ -482,20 +491,16 @@ pub enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::Config(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-            AppError::ModelInvocation { source } => {
-                (StatusCode::BAD_GATEWAY, format!("Model error: {}", source))
-            }
-            AppError::NoHealthyEndpoints { tier } => {
-                (StatusCode::SERVICE_UNAVAILABLE, format!("{:?} tier unavailable", tier))
-            }
-            AppError::RoutingFailed(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-            AppError::Timeout { timeout_secs, .. } => {
-                (StatusCode::GATEWAY_TIMEOUT, format!("Request timeout after {}s", timeout_secs))
-            }
-            AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        let (status, message) = match &self {
+            Self::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            Self::Config(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            Self::RoutingFailed(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            Self::StreamInterrupted { .. } => (StatusCode::BAD_GATEWAY, self.to_string()),
+            Self::EndpointTimeout { .. } => (StatusCode::GATEWAY_TIMEOUT, self.to_string()),
+            Self::HealthCheckFailed { .. } => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            Self::ModelQueryFailed { .. } => (StatusCode::BAD_GATEWAY, self.to_string()),
+            Self::LlmRouting(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
+            Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
 
         let body = Json(serde_json::json!({

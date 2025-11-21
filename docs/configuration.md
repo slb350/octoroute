@@ -38,12 +38,7 @@ Octoroute is configured via a TOML configuration file (default: `config.toml` in
 
 Default: `./config.toml` in the current working directory
 
-Override via environment variable:
-
-```bash
-export OCTOROUTE_CONFIG=/path/to/config.toml
-cargo run
-```
+**Note**: The configuration file path is currently hardcoded. The server must be run from the directory containing `config.toml`.
 
 ### File Format
 
@@ -88,7 +83,6 @@ max_tokens = 4096
 temperature = 0.7
 weight = 1.0
 priority = 1
-timeout_seconds = 15
 
 [[models.fast]]
 name = "qwen3-8b-instruct"
@@ -97,7 +91,6 @@ max_tokens = 4096
 temperature = 0.7
 weight = 1.0
 priority = 1
-timeout_seconds = 15
 
 [[models.balanced]]
 name = "qwen3-30b-instruct"
@@ -106,7 +99,6 @@ max_tokens = 8192
 temperature = 0.7
 weight = 1.0
 priority = 1
-timeout_seconds = 30
 
 [[models.deep]]
 name = "gpt-oss-120b"
@@ -115,7 +107,6 @@ max_tokens = 16384
 temperature = 0.7
 weight = 1.0
 priority = 1
-timeout_seconds = 60
 ```
 
 ### Fields
@@ -204,7 +195,7 @@ Result: A gets 33% traffic, B gets 67% traffic, C gets 0% traffic (lower priorit
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_tier = "balanced"
+router_model = "balanced"
 ```
 
 ### Fields
@@ -218,7 +209,7 @@ router_tier = "balanced"
   - Values: `"low"`, `"normal"`, `"high"`
   - Default: `"normal"`
 
-- `router_tier` (string, required): Which tier to use for LLM-based routing decisions
+- `router_model` (string, required): Which tier to use for LLM-based routing decisions
   - Values: `"fast"`, `"balanced"`, `"deep"`
   - Recommended: `"balanced"` (30B models balance speed and quality)
 
@@ -254,43 +245,39 @@ router_tier = "balanced"
 
 ## Timeout Configuration
 
-```toml
-[timeouts]
-global_timeout_seconds = 30
-```
-
 ### Global Timeout
 
-- `global_timeout_seconds` (integer, optional): Default timeout for all requests
+Configure in `[server]` section:
+
+```toml
+[server]
+host = "0.0.0.0"
+port = 3000
+request_timeout_seconds = 30
+```
+
+- `request_timeout_seconds` (integer, optional): Default timeout for all requests
   - Range: 1-300 seconds
   - Default: 30 seconds if not specified
   - Applies per retry attempt (not cumulative)
 
 ### Per-Tier Timeout Overrides
 
-Specify `timeout_seconds` on individual model endpoints:
+Override timeouts for specific tiers in `[timeouts]` section:
 
 ```toml
-[[models.fast]]
-name = "qwen3-8b-instruct"
-base_url = "http://localhost:11434/v1"
-timeout_seconds = 15  # Override for this endpoint
-
-[[models.balanced]]
-name = "qwen3-30b-instruct"
-base_url = "http://localhost:1234/v1"
-timeout_seconds = 30  # Override for this endpoint
-
-[[models.deep]]
-name = "gpt-oss-120b"
-base_url = "http://localhost:8080/v1"
-timeout_seconds = 60  # Override for this endpoint
+[timeouts]
+fast = 15      # Fast tier (8B) timeout in seconds
+balanced = 30  # Balanced tier (30B) timeout in seconds
+deep = 60      # Deep tier (120B) timeout in seconds
 ```
 
 **Timeout Precedence**:
-1. Endpoint-specific `timeout_seconds` (if set)
-2. Global `timeouts.global_timeout_seconds` (if set)
+1. Tier-specific override from `[timeouts]` section (if set)
+2. Global `server.request_timeout_seconds` (if set)
 3. Default 30 seconds
+
+**Note**: Endpoint-level `timeout_seconds` is NOT supported. Timeouts are configured per-tier, not per-endpoint.
 
 ### Retry Behavior
 
@@ -301,7 +288,7 @@ timeout_seconds = 60  # Override for this endpoint
 **Worst-Case Latency**:
 - 3 attempts × 30s timeout = 90s maximum total latency
 
-**Example**: With `timeout_seconds = 60` for deep tier:
+**Example**: With deep tier timeout of 60s:
 - 3 attempts × 60s = 180s maximum total latency
 
 ---
@@ -386,7 +373,7 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_tier = "balanced"
+router_model = "balanced"
 
 [observability]
 log_level = "info"
@@ -411,7 +398,6 @@ max_tokens = 4096
 temperature = 0.7
 weight = 1.0
 priority = 1
-timeout_seconds = 15
 
 [[models.fast]]
 name = "qwen3-8b-instruct"
@@ -420,7 +406,6 @@ max_tokens = 4096
 temperature = 0.7
 weight = 1.0
 priority = 1
-timeout_seconds = 15
 
 [[models.fast]]
 name = "qwen3-8b-instruct"
@@ -429,7 +414,6 @@ max_tokens = 4096
 temperature = 0.7
 weight = 1.0
 priority = 1
-timeout_seconds = 15
 
 # Balanced tier: 2 endpoints with different weights
 [[models.balanced]]
@@ -439,7 +423,6 @@ max_tokens = 8192
 temperature = 0.7
 weight = 2.0  # Higher spec machine
 priority = 1
-timeout_seconds = 30
 
 [[models.balanced]]
 name = "qwen3-30b-instruct"
@@ -448,7 +431,6 @@ max_tokens = 8192
 temperature = 0.7
 weight = 1.0  # Lower spec machine
 priority = 1
-timeout_seconds = 30
 
 # Deep tier: 1 high-priority + 1 fallback
 [[models.deep]]
@@ -458,7 +440,6 @@ max_tokens = 16384
 temperature = 0.7
 weight = 1.0
 priority = 2  # Try this first
-timeout_seconds = 60
 
 [[models.deep]]
 name = "gpt-oss-120b"
@@ -467,12 +448,11 @@ max_tokens = 16384
 temperature = 0.7
 weight = 1.0
 priority = 1  # Fallback only
-timeout_seconds = 60
 
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_tier = "balanced"
+router_model = "balanced"
 
 [timeouts]
 global_timeout_seconds = 45
@@ -500,7 +480,6 @@ max_tokens = 2048  # Lower max for faster responses
 temperature = 0.5  # More deterministic
 weight = 1.0
 priority = 1
-timeout_seconds = 10  # Aggressive timeout
 
 # Balanced tier required for LLM routing
 [[models.balanced]]
@@ -510,7 +489,6 @@ max_tokens = 4096
 temperature = 0.7
 weight = 1.0
 priority = 1
-timeout_seconds = 20
 
 # Deep tier for fallback
 [[models.deep]]
@@ -520,12 +498,11 @@ max_tokens = 8192
 temperature = 0.7
 weight = 1.0
 priority = 1
-timeout_seconds = 30
 
 [routing]
 strategy = "rule"  # Rule-only for minimum latency
 default_importance = "low"  # Bias toward fast tier
-router_tier = "balanced"
+router_model = "balanced"
 
 [timeouts]
 global_timeout_seconds = 15
@@ -553,7 +530,6 @@ max_tokens = 4096
 temperature = 0.7
 weight = 1.0
 priority = 1
-timeout_seconds = 30
 
 [[models.balanced]]
 name = "qwen3-30b-instruct"
@@ -562,7 +538,6 @@ max_tokens = 8192
 temperature = 0.7
 weight = 1.0
 priority = 1
-timeout_seconds = 60
 
 [[models.deep]]
 name = "gpt-oss-120b"
@@ -571,12 +546,11 @@ max_tokens = 16384
 temperature = 0.7
 weight = 1.0
 priority = 1
-timeout_seconds = 90
 
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_tier = "balanced"
+router_model = "balanced"
 
 [timeouts]
 global_timeout_seconds = 120  # Generous for local debugging

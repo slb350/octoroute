@@ -86,14 +86,14 @@ The `justfile` provides convenient development commands:
 # Run all checks (fmt, clippy, tests)
 just check
 
-# Run tests
+# Run all tests
 just test
 
-# Run tests with verbose output
-just test-verbose
+# Run only unit tests
+just test-unit
 
-# Run specific test
-just test-one test_name
+# Run only integration tests
+just test-integration
 
 # Watch for changes and rebuild
 just watch
@@ -163,12 +163,14 @@ tests/
 │   ├── src/models/*.rs           # Model selection tests
 │   └── src/config/*.rs           # Configuration tests
 │
-└── integration tests
-    ├── tests/chat_integration.rs     # End-to-end chat tests
-    ├── tests/health_integration.rs   # Health check tests
-    ├── tests/retry_logic.rs          # Retry behavior tests
-    ├── tests/concurrent_routing.rs   # Concurrency tests
-    └── tests/timeout_integration.rs  # Timeout handling tests
+└── integration tests (in tests/ directory)
+    ├── chat_integration.rs
+    ├── retry_logic.rs
+    ├── concurrent_routing.rs
+    ├── timeout_enforcement.rs
+    ├── stream_interruption.rs
+    ├── background_health_checks.rs
+    └── ... (see tests/ directory for full list)
 ```
 
 ### Running Tests
@@ -260,48 +262,6 @@ async fn test_chat_endpoint_with_rule_routing() {
 - Timeout handling and enforcement
 - Concurrent request handling
 - Error responses and status codes
-
-### Property Tests
-
-Using `proptest` for property-based testing:
-
-```rust
-use proptest::prelude::*;
-
-proptest! {
-    #[test]
-    fn router_always_returns_valid_tier(
-        token_estimate in 0..10000usize,
-        importance in prop_oneof![
-            Just(Importance::Low),
-            Just(Importance::Normal),
-            Just(Importance::High),
-        ]
-    ) {
-        let router = RuleBasedRouter;
-        let meta = RouteMetadata {
-            token_estimate,
-            importance,
-            task_type: TaskType::QuestionAnswer,
-        };
-
-        let result = router.route(&meta);
-        assert!(
-            result.is_none() ||
-            matches!(
-                result.unwrap().tier(),
-                ModelTier::Fast | ModelTier::Balanced | ModelTier::Deep
-            )
-        );
-    }
-}
-```
-
-**Coverage**:
-- Configuration parsing with random inputs
-- Router always returns valid tiers
-- Token estimation never panics
-- Error responses always have valid HTTP status codes
 
 ### Test Coverage
 
@@ -541,7 +501,6 @@ Pull requests must:
 **New Features**:
 - Unit tests for core logic
 - Integration tests for end-to-end behavior
-- Property tests for invariants (if applicable)
 - Benchmark if performance-critical
 
 **Bug Fixes**:
@@ -608,10 +567,12 @@ octoroute/
 │
 ├── tests/                         # Integration tests
 │   ├── chat_integration.rs
-│   ├── health_integration.rs
 │   ├── retry_logic.rs
 │   ├── concurrent_routing.rs
-│   └── timeout_integration.rs
+│   ├── timeout_enforcement.rs
+│   ├── stream_interruption.rs
+│   ├── background_health_checks.rs
+│   └── ... (19 integration test files total)
 │
 ├── benches/                       # Benchmarks
 │   └── routing.rs
