@@ -1,7 +1,7 @@
-//! Type-safe wrapper ensuring only Balanced tier selection
+//! Type-safe wrapper for tier-specific endpoint selection
 //!
-//! The BalancedSelector enforces the architectural invariant that the LLM-based
-//! router always uses Balanced tier endpoints for routing decisions.
+//! The TierSelector validates that at least one endpoint exists for the specified tier
+//! and provides type-safe selection from that tier only.
 
 use crate::config::ModelEndpoint;
 use crate::error::{AppError, AppResult};
@@ -10,68 +10,80 @@ use crate::models::selector::ModelSelector;
 use crate::router::TargetModel;
 use std::sync::Arc;
 
-/// Type-safe selector that can ONLY select from Balanced tier
+/// Type-safe selector for a specific model tier
 ///
-/// This newtype wrapper enforces the critical architectural invariant that the
-/// LLM-based router always queries the Balanced tier (30B model) for routing decisions.
+/// This newtype wrapper validates that at least one endpoint exists for the specified
+/// tier at construction time, then provides type-safe selection from that tier.
 ///
-/// # Why Balanced Tier Only?
+/// # Tier Selection for LLM Routing
 ///
-/// - **FAST (8B)**: Too unreliable for routing decisions - could misroute expensive
-///   requests or waste resources. Bad routing decisions cost more than savings.
+/// When used by the LLM-based router, the tier choice impacts routing performance:
 ///
-/// - **BALANCED (30B)**: Sweet spot for routing - good reasoning for classification
-///   with acceptable latency (~100-500ms). Smart enough for reliable decisions.
+/// - **FAST (8B)**: Lowest latency (~50-200ms) but may misroute complex requests.
+///   Risk of bad routing decisions outweighs latency savings.
 ///
-/// - **DEEP (120B)**: Overkill for routing - the latency overhead (~2-5s) would
-///   often exceed the time to just use BALANCED for the user query itself.
+/// - **BALANCED (30B)**: Recommended default. Good reasoning for classification
+///   with acceptable latency (~100-500ms). Best balance of accuracy and speed.
+///
+/// - **DEEP (120B)**: Highest accuracy but very slow (~2-5s). Router latency may
+///   exceed the time to just run the user query on BALANCED. Rarely worth it.
 ///
 /// # Type Safety
 ///
-/// By enforcing this via types, it becomes **impossible to violate** this invariant
-/// at compile time. A developer cannot accidentally change the router to use Fast
-/// or Deep tier without a compiler error.
+/// The tier is validated at construction and cannot be changed afterward, preventing
+/// accidental tier mismatches at runtime.
 #[derive(Debug)]
-pub struct BalancedSelector {
+pub struct TierSelector {
     inner: Arc<ModelSelector>,
+    tier: TargetModel,
 }
 
-impl BalancedSelector {
-    /// Create a new BalancedSelector
+impl TierSelector {
+    /// Create a new TierSelector for the specified tier
     ///
-    /// Returns an error if the ModelSelector has no Balanced tier endpoints configured.
+    /// Returns an error if the ModelSelector has no endpoints for the specified tier.
     /// This validation ensures the router can never be in an invalid state.
+    ///
+    /// # Arguments
+    /// * `selector` - The underlying ModelSelector
+    /// * `tier` - Which tier (Fast, Balanced, Deep) to select from
     ///
     /// # Errors
     ///
-    /// Returns `AppError::Config` if no balanced tier endpoints are configured.
-    pub fn new(selector: Arc<ModelSelector>) -> AppResult<Self> {
-        if selector.endpoint_count(TargetModel::Balanced) == 0 {
-            return Err(AppError::Config(
-                "BalancedSelector requires at least one balanced tier endpoint".to_string(),
-            ));
+    /// Returns `AppError::Config` if no endpoints are configured for the specified tier.
+    pub fn new(selector: Arc<ModelSelector>, tier: TargetModel) -> AppResult<Self> {
+        if selector.endpoint_count(tier) == 0 {
+            return Err(AppError::Config(format!(
+                "TierSelector requires at least one {:?} tier endpoint",
+                tier
+            )));
         }
-        Ok(Self { inner: selector })
+        Ok(Self {
+            inner: selector,
+            tier,
+        })
     }
 
-    /// Select a Balanced tier endpoint with health filtering and exclusion
-    ///
-    /// This is the ONLY way to select an endpoint through a BalancedSelector,
-    /// and it can ONLY return Balanced tier endpoints.
+    /// Select an endpoint from this selector's tier with health filtering and exclusion
     ///
     /// # Arguments
     /// * `exclude` - Set of endpoint names to exclude (for retry logic)
     ///
     /// # Returns
-    /// - `Some(&ModelEndpoint)` if a healthy, non-excluded Balanced endpoint exists
-    /// - `None` if all Balanced endpoints are unhealthy or excluded
-    pub async fn select_balanced(&self, exclude: &ExclusionSet) -> Option<&ModelEndpoint> {
-        self.inner.select(TargetModel::Balanced, exclude).await
+    /// - `Some(&ModelEndpoint)` if a healthy, non-excluded endpoint exists for this tier
+    /// - `None` if all endpoints for this tier are unhealthy or excluded
+    pub async fn select(&self, exclude: &ExclusionSet) -> Option<&ModelEndpoint> {
+        self.inner.select(self.tier, exclude).await
     }
 
-    /// Get the number of configured Balanced tier endpoints
+    /// Get the tier this selector operates on
+    pub fn tier(&self) -> TargetModel {
+        self.tier
+    }
+
+    /// Get the number of configured endpoints for this selector's tier
     pub fn endpoint_count(&self) -> usize {
-        self.inner.endpoint_count(TargetModel::Balanced)
+        self.inner.endpoint_count(self.tier)
     }
 
     /// Get a reference to the health checker for external use (e.g., marking success/failure)
@@ -164,31 +176,31 @@ router_model = "balanced"
     }
 
     #[tokio::test]
-    async fn test_balanced_selector_new_with_balanced_endpoints() {
+    async fn test_tier_selector_new_with_balanced_endpoints() {
         let config = create_test_config_with_balanced();
         let selector = Arc::new(ModelSelector::new(config));
 
-        let result = BalancedSelector::new(selector);
+        let result = TierSelector::new(selector, TargetModel::Balanced);
         assert!(
             result.is_ok(),
-            "should create BalancedSelector with balanced endpoints"
+            "should create TierSelector with balanced endpoints"
         );
     }
 
     #[tokio::test]
-    async fn test_balanced_selector_new_without_balanced_endpoints() {
+    async fn test_tier_selector_new_without_balanced_endpoints() {
         let config = create_test_config_without_balanced();
         let selector = Arc::new(ModelSelector::new(config));
 
-        let result = BalancedSelector::new(selector);
+        let result = TierSelector::new(selector, TargetModel::Balanced);
         assert!(result.is_err(), "should fail without balanced endpoints");
 
         let err = result.unwrap_err();
         match err {
             AppError::Config(msg) => {
                 assert!(
-                    msg.contains("balanced tier endpoint"),
-                    "error should mention balanced tier requirement, got: {}",
+                    msg.contains("Balanced") && msg.contains("tier endpoint"),
+                    "error should mention Balanced tier requirement, got: {}",
                     msg
                 );
             }
@@ -197,14 +209,14 @@ router_model = "balanced"
     }
 
     #[tokio::test]
-    async fn test_balanced_selector_selects_balanced_endpoint() {
+    async fn test_tier_selector_selects_balanced_endpoint() {
         let config = create_test_config_with_balanced();
         let selector = Arc::new(ModelSelector::new(config));
-        let balanced_selector =
-            BalancedSelector::new(selector).expect("should create BalancedSelector");
+        let tier_selector =
+            TierSelector::new(selector, TargetModel::Balanced).expect("should create TierSelector");
 
         let exclude = ExclusionSet::new();
-        let endpoint = balanced_selector.select_balanced(&exclude).await;
+        let endpoint = tier_selector.select(&exclude).await;
 
         assert!(endpoint.is_some(), "should select a balanced endpoint");
         let endpoint = endpoint.unwrap();
@@ -216,15 +228,15 @@ router_model = "balanced"
     }
 
     #[tokio::test]
-    async fn test_balanced_selector_respects_exclusion() {
+    async fn test_tier_selector_respects_exclusion() {
         let config = create_test_config_with_balanced();
         let selector = Arc::new(ModelSelector::new(config));
-        let balanced_selector =
-            BalancedSelector::new(selector).expect("should create BalancedSelector");
+        let tier_selector =
+            TierSelector::new(selector, TargetModel::Balanced).expect("should create TierSelector");
 
         // First selection should succeed
         let exclude = ExclusionSet::new();
-        let first = balanced_selector.select_balanced(&exclude).await;
+        let first = tier_selector.select(&exclude).await;
         assert!(first.is_some());
 
         // Build exclusion set with both balanced endpoints
@@ -233,7 +245,7 @@ router_model = "balanced"
         exclude.insert(EndpointName::from("balanced-2"));
 
         // Should return None when all balanced endpoints excluded
-        let excluded = balanced_selector.select_balanced(&exclude).await;
+        let excluded = tier_selector.select(&exclude).await;
         assert!(
             excluded.is_none(),
             "should return None when all balanced endpoints excluded"
@@ -241,16 +253,80 @@ router_model = "balanced"
     }
 
     #[tokio::test]
-    async fn test_balanced_selector_endpoint_count() {
+    async fn test_tier_selector_endpoint_count() {
         let config = create_test_config_with_balanced();
         let selector = Arc::new(ModelSelector::new(config));
-        let balanced_selector =
-            BalancedSelector::new(selector).expect("should create BalancedSelector");
+        let tier_selector =
+            TierSelector::new(selector, TargetModel::Balanced).expect("should create TierSelector");
 
         assert_eq!(
-            balanced_selector.endpoint_count(),
+            tier_selector.endpoint_count(),
             2,
             "should have 2 balanced endpoints"
         );
+    }
+
+    #[tokio::test]
+    async fn test_tier_selector_with_fast_tier() {
+        let config = create_test_config_with_balanced();
+        let selector = Arc::new(ModelSelector::new(config));
+
+        let tier_selector = TierSelector::new(selector, TargetModel::Fast)
+            .expect("should create TierSelector for Fast tier");
+
+        assert_eq!(tier_selector.tier(), TargetModel::Fast);
+        assert_eq!(
+            tier_selector.endpoint_count(),
+            1,
+            "should have 1 fast endpoint"
+        );
+
+        let exclude = ExclusionSet::new();
+        let endpoint = tier_selector.select(&exclude).await;
+        assert!(endpoint.is_some(), "should select a fast endpoint");
+        assert_eq!(endpoint.unwrap().name(), "fast-1");
+    }
+
+    #[tokio::test]
+    async fn test_tier_selector_with_deep_tier() {
+        let config = create_test_config_with_balanced();
+        let selector = Arc::new(ModelSelector::new(config));
+
+        let tier_selector = TierSelector::new(selector, TargetModel::Deep)
+            .expect("should create TierSelector for Deep tier");
+
+        assert_eq!(tier_selector.tier(), TargetModel::Deep);
+        assert_eq!(
+            tier_selector.endpoint_count(),
+            1,
+            "should have 1 deep endpoint"
+        );
+
+        let exclude = ExclusionSet::new();
+        let endpoint = tier_selector.select(&exclude).await;
+        assert!(endpoint.is_some(), "should select a deep endpoint");
+        assert_eq!(endpoint.unwrap().name(), "deep-1");
+    }
+
+    #[tokio::test]
+    async fn test_tier_selector_fails_with_no_endpoints_for_tier() {
+        let config = create_test_config_without_balanced();
+        let selector = Arc::new(ModelSelector::new(config));
+
+        // Should fail for Balanced tier (no endpoints)
+        let result = TierSelector::new(selector.clone(), TargetModel::Balanced);
+        assert!(result.is_err(), "should fail when tier has no endpoints");
+
+        let err = result.unwrap_err();
+        match err {
+            AppError::Config(msg) => {
+                assert!(
+                    msg.contains("Balanced") && msg.contains("tier endpoint"),
+                    "error should mention missing tier, got: {}",
+                    msg
+                );
+            }
+            _ => panic!("expected Config error, got: {:?}", err),
+        }
     }
 }

@@ -24,7 +24,7 @@
 
 use crate::error::{AppError, AppResult};
 use crate::models::endpoint_name::ExclusionSet;
-use crate::models::{BalancedSelector, ModelSelector};
+use crate::models::{ModelSelector, TierSelector};
 use crate::router::{RouteMetadata, RoutingDecision, RoutingStrategy, TargetModel};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -174,34 +174,42 @@ const MAX_ROUTER_RESPONSE: usize = 1024;
 
 /// LLM-powered router that uses a model to make routing decisions
 ///
-/// Uses the balanced tier (30B) to analyze requests and choose optimal target.
+/// Uses the configured tier to analyze requests and choose optimal target.
 /// Provides intelligent fallback when rule-based routing is ambiguous.
 ///
 /// # Type Safety
 ///
-/// Uses `BalancedSelector` to enforce the architectural invariant that routing
-/// decisions ALWAYS use the Balanced tier. The type system makes it impossible
-/// to accidentally query Fast or Deep tiers for routing.
+/// Uses `TierSelector` to validate that the specified tier has available endpoints.
+/// The tier is chosen via `config.routing.router_model` at construction time.
 pub struct LlmBasedRouter {
-    selector: BalancedSelector,
+    selector: TierSelector,
 }
 
 impl LlmBasedRouter {
-    /// Create a new LLM-based router
+    /// Create a new LLM-based router using the specified tier
     ///
-    /// Returns an error if no balanced tier endpoints are configured.
-    /// The balanced tier is required because it's used to query the router LLM.
+    /// Returns an error if no endpoints are configured for the specified tier.
+    ///
+    /// # Arguments
+    /// * `selector` - The underlying ModelSelector
+    /// * `tier` - Which tier (Fast, Balanced, Deep) to use for routing decisions
+    ///
+    /// # Tier Selection
+    ///
+    /// - **Fast**: Lowest latency (~50-200ms) but may misroute complex requests
+    /// - **Balanced**: Recommended default (~100-500ms) with good accuracy
+    /// - **Deep**: Highest accuracy (~2-5s) but rarely worth the latency overhead
     ///
     /// # Type Safety
     ///
-    /// The `BalancedSelector` validates balanced tier availability at construction,
-    /// and the type system prevents querying any other tier.
-    pub fn new(selector: Arc<ModelSelector>) -> AppResult<Self> {
-        // BalancedSelector validates that balanced tier exists
-        let balanced_selector = BalancedSelector::new(selector)?;
+    /// The `TierSelector` validates tier availability at construction and prevents
+    /// accidental tier mismatches at runtime.
+    pub fn new(selector: Arc<ModelSelector>, tier: TargetModel) -> AppResult<Self> {
+        // TierSelector validates that the tier exists
+        let tier_selector = TierSelector::new(selector, tier)?;
 
         Ok(Self {
-            selector: balanced_selector,
+            selector: tier_selector,
         })
     }
 
@@ -299,7 +307,7 @@ impl LlmBasedRouter {
 
         for attempt in 1..=MAX_ROUTER_RETRIES {
             // Select endpoint from balanced tier (with health filtering + exclusions)
-            let endpoint = match self.selector.select_balanced(&failed_endpoints).await {
+            let endpoint = match self.selector.select(&failed_endpoints).await {
                 Some(ep) => ep.clone(),
                 None => {
                     let total_configured = self.selector.endpoint_count();
@@ -1569,7 +1577,7 @@ router_model = "balanced"
         assert_eq!(selector.endpoint_count(TargetModel::Balanced), 1);
 
         // Construction should succeed
-        let result = LlmBasedRouter::new(selector);
+        let result = LlmBasedRouter::new(selector, TargetModel::Balanced);
         assert!(
             result.is_ok(),
             "LlmBasedRouter::new() should succeed with balanced tier"
@@ -1653,7 +1661,7 @@ router_model = "balanced"
         let selector = Arc::new(ModelSelector::new(config.clone()));
 
         // This should succeed because there is a balanced tier endpoint
-        let result = LlmBasedRouter::new(selector);
+        let result = LlmBasedRouter::new(selector, TargetModel::Balanced);
         assert!(
             result.is_ok(),
             "LlmBasedRouter::new() should succeed with balanced tier present"

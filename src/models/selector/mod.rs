@@ -10,7 +10,7 @@
 
 mod balanced;
 
-pub use balanced::BalancedSelector;
+pub use balanced::TierSelector;
 
 use crate::config::{Config, ModelEndpoint};
 use crate::models::endpoint_name::{EndpointName, ExclusionSet};

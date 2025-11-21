@@ -23,9 +23,19 @@ impl HybridRouter {
     /// Create a new hybrid router with default LLM-based router
     ///
     /// Returns an error if LLM router construction fails
-    /// (e.g., no balanced tier endpoints configured).
-    pub fn new(_config: Arc<Config>, selector: Arc<ModelSelector>) -> AppResult<Self> {
-        let llm_router = LlmBasedRouter::new(selector.clone())?;
+    /// (e.g., no endpoints configured for the router tier).
+    ///
+    /// The router tier is determined by `config.routing.router_model`.
+    pub fn new(config: Arc<Config>, selector: Arc<ModelSelector>) -> AppResult<Self> {
+        // Parse router tier from config
+        let router_tier = match config.routing.router_model.as_str() {
+            "fast" => crate::router::TargetModel::Fast,
+            "balanced" => crate::router::TargetModel::Balanced,
+            "deep" => crate::router::TargetModel::Deep,
+            _ => unreachable!("Config validation ensures valid router_model"),
+        };
+
+        let llm_router = LlmBasedRouter::new(selector.clone(), router_tier)?;
         Ok(Self {
             rule_router: RuleBasedRouter::new(),
             llm_router: Arc::new(llm_router),

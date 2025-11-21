@@ -3,7 +3,7 @@
 use crate::config::{Config, RoutingStrategy};
 use crate::error::{AppError, AppResult};
 use crate::models::ModelSelector;
-use crate::router::{HybridRouter, LlmBasedRouter, Router, RuleBasedRouter};
+use crate::router::{HybridRouter, LlmBasedRouter, Router, RuleBasedRouter, TargetModel};
 use std::sync::Arc;
 
 type MetricsHandle = Arc<crate::metrics::Metrics>;
@@ -59,30 +59,36 @@ impl AppState {
                 Arc::new(Router::Rule(RuleBasedRouter::new()))
             }
             RoutingStrategy::Llm => {
-                // LLM-only routing: balanced tier required
-                tracing::info!("Initializing LLM-based router (requires balanced tier)");
-                if config.models.balanced.is_empty() {
-                    return Err(AppError::Config(
-                        "LLM routing strategy selected but no balanced tier endpoints configured. \
-                        Either add balanced tier endpoints or change routing.strategy to 'rule'."
-                            .to_string(),
-                    ));
-                }
-                let llm_router = LlmBasedRouter::new(selector.clone())?;
+                // LLM-only routing: router tier required
+                let router_tier = match config.routing.router_model.as_str() {
+                    "fast" => TargetModel::Fast,
+                    "balanced" => TargetModel::Balanced,
+                    "deep" => TargetModel::Deep,
+                    _ => unreachable!("Config validation ensures valid router_model"),
+                };
+
+                tracing::info!(
+                    "Initializing LLM-based router with {:?} tier for routing decisions",
+                    router_tier
+                );
+
+                let llm_router = LlmBasedRouter::new(selector.clone(), router_tier)?;
                 Arc::new(Router::Llm(llm_router))
             }
             RoutingStrategy::Hybrid => {
-                // Hybrid routing: balanced tier required for LLM fallback
+                // Hybrid routing: router tier required for LLM fallback
+                let router_tier = match config.routing.router_model.as_str() {
+                    "fast" => TargetModel::Fast,
+                    "balanced" => TargetModel::Balanced,
+                    "deep" => TargetModel::Deep,
+                    _ => unreachable!("Config validation ensures valid router_model"),
+                };
+
                 tracing::info!(
-                    "Initializing hybrid router (rule-based with LLM fallback, requires balanced tier)"
+                    "Initializing hybrid router (rule-based with LLM fallback using {:?} tier)",
+                    router_tier
                 );
-                if config.models.balanced.is_empty() {
-                    return Err(AppError::Config(
-                        "Hybrid routing strategy selected but no balanced tier endpoints configured. \
-                        Either add balanced tier endpoints or change routing.strategy to 'rule'."
-                            .to_string(),
-                    ));
-                }
+
                 let hybrid_router = HybridRouter::new(config.clone(), selector.clone())?;
                 Arc::new(Router::Hybrid(hybrid_router))
             }
