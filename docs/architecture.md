@@ -277,6 +277,7 @@ impl LlmBasedRouter {
         let router_prompt = Self::build_router_prompt(user_prompt, meta);
 
         // Retry up to MAX_ROUTER_RETRIES (2) times with different endpoints
+        let mut last_error = None;
         let mut failed_endpoints = ExclusionSet::new();
 
         for attempt in 1..=MAX_ROUTER_RETRIES {
@@ -284,10 +285,26 @@ impl LlmBasedRouter {
             let endpoint = match self.selector.select_balanced(&failed_endpoints).await {
                 Some(ep) => ep.clone(),
                 None => {
-                    return Err(AppError::RoutingFailed(format!(
+                    let total_configured = self.selector.endpoint_count();
+                    let excluded_count = failed_endpoints.len();
+
+                    tracing::error!(
+                        tier = "Balanced",
+                        attempt = attempt,
+                        max_retries = MAX_ROUTER_RETRIES,
+                        total_configured_endpoints = total_configured,
+                        failed_endpoints_count = excluded_count,
+                        failed_endpoints = ?failed_endpoints,
+                        "No healthy balanced tier endpoints for routing decision. \
+                        Configured: {}, Excluded: {}",
+                        total_configured, excluded_count
+                    );
+                    last_error = Some(AppError::RoutingFailed(format!(
                         "No healthy balanced tier endpoints for routing \
-                        (attempt {}/{})", attempt, 2  // MAX_ROUTER_RETRIES
+                        (configured: {}, excluded: {}, attempt {}/{})",
+                        total_configured, excluded_count, attempt, MAX_ROUTER_RETRIES
                     )));
+                    continue;
                 }
             };
 
@@ -639,10 +656,12 @@ pub type AppResult<T> = Result<T, AppError>;
 - Range: 1-300 seconds (validated at config parse time)
 - Applies per request attempt (not cumulative across retries)
 
-**Per-Tier Timeout Overrides**:
+**Per-Tier Timeout Overrides** (Optional Configuration Examples):
 - Fast tier: 15 seconds (8B models respond quickly)
 - Balanced tier: 30 seconds (30B models need more time)
 - Deep tier: 60 seconds (120B models require patience)
+
+Note: All tier timeouts default to `None` and fall back to the global `server.request_timeout_seconds` value (30s by default). The values above are example configurations that can be set in `config.toml`.
 
 **Worst-Case Latency**:
 - 3 retry attempts × 30s timeout = 90s maximum total latency
