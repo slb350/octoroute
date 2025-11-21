@@ -219,13 +219,11 @@ router_model = "{}"
     }
 }
 
-#[tokio::test]
-async fn test_config_validation_rejects_router_model_without_endpoints() {
-    // Verify that router construction fails when router_model tier has no endpoints
-    // This is the integration test for PR #4 review critical issue #2
-    // Note: Config validation happens in HybridRouter::new() via the config module
+#[test]
+fn test_config_validation_rejects_router_model_without_endpoints() {
+    // Verify that Config::validate() rejects empty router_model tier
+    // This test focuses on CONFIG VALIDATION, not router construction
 
-    // Start with a valid config
     let config_toml = r#"
 [server]
 host = "127.0.0.1"
@@ -261,32 +259,23 @@ router_model = "deep"
 
     let mut config: Config = toml::from_str(config_toml).expect("should parse config");
 
-    // Now clear the deep tier to create the invalid state
+    // Clear deep tier to create invalid state
     config.models.deep.clear();
 
-    let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    // Config validation should catch this BEFORE router construction
+    let result = config.validate();
 
-    // HybridRouter::new should fail during validation because deep tier has no endpoints
-    let result = HybridRouter::new(config, selector);
+    assert!(
+        result.is_err(),
+        "Config::validate() should reject router_model='deep' with no deep endpoints"
+    );
 
-    match result {
-        Ok(_) => panic!(
-            "HybridRouter::new should have failed when router_model='deep' has no deep endpoints"
-        ),
-        Err(error) => {
-            let error_msg = format!("{}", error);
-            assert!(
-                error_msg.contains("Deep") && error_msg.contains("endpoint"),
-                "Error should mention 'Deep' and 'endpoint', got: {}",
-                error_msg
-            );
-
-            println!("✅ Router construction correctly rejects router_model with no endpoints");
-            println!("   - router_model='deep' but deep tier has no configured endpoints");
-            println!("   - Construction error: {}", error_msg);
-        }
-    }
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("deep") && err_msg.contains("endpoint"),
+        "Error should mention 'deep' and 'endpoint', got: {}",
+        err_msg
+    );
 }
 
 #[tokio::test]
