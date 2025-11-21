@@ -113,7 +113,7 @@ priority = 1
 
 - `name` (string, required): Model name
   - Must match the model name on the endpoint server
-  - Used in health checks (`GET /v1/models`)
+  - Used in health checks (`HEAD {base_url}/models`)
 
 - `base_url` (string, required): Model endpoint base URL
   - Must start with `http://` or `https://`
@@ -172,7 +172,7 @@ Result: A gets 33% traffic, B gets 67% traffic, C gets 0% traffic (lower priorit
 
 **Background Health Checks**:
 - Run every 30 seconds automatically
-- Send `GET /v1/models` to each endpoint
+- Send `HEAD {base_url}/models` to each endpoint
 - Track consecutive failures (unhealthy after 3 failures)
 - Automatic recovery on successful requests
 

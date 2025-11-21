@@ -257,7 +257,7 @@ All errors return JSON with an `error` field:
 **Cause**: Request exceeded configured timeout
 
 **Example**:
-- `{"error": "Request timeout after 30s"}`
+- `{"error": "Request to http://localhost:1234/v1 timed out after 30 seconds"}`
 
 ---
 
@@ -382,7 +382,7 @@ curl http://localhost:3000/models
 {
   "models": [
     {
-      "name": "qwen3-8b-instruct",
+      "name": "qwen3-8b-instruct-1",
       "tier": "fast",
       "endpoint": "http://macmini-1:11434/v1",
       "healthy": true,
@@ -390,7 +390,7 @@ curl http://localhost:3000/models
       "consecutive_failures": 0
     },
     {
-      "name": "qwen3-8b-instruct",
+      "name": "qwen3-8b-instruct-2",
       "tier": "fast",
       "endpoint": "http://macmini-2:11434/v1",
       "healthy": false,

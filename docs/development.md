@@ -236,10 +236,9 @@ async fn test_chat_endpoint_with_rule_routing() {
     let app_state = AppState::new(config).await.unwrap();
 
     let request = ChatRequest {
-        prompt: "Hello!".to_string(),
+        message: "Hello!".to_string(),
         importance: Importance::Low,
         task_type: TaskType::CasualChat,
-        tier: None,
     };
 
     let response = chat_handler(State(app_state), Json(request))
@@ -393,9 +392,8 @@ cargo doc --no-deps
 # Build and open documentation
 cargo doc --no-deps --open
 
-# Or use just
-just doc
-just doc-open
+# Or use just (builds and opens in browser)
+just docs
 ```
 
 **Documentation Standards**:

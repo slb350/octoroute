@@ -589,7 +589,7 @@ pub type AppResult<T> = Result<T, AppError>;
 ### Concurrency Model
 
 - **Tokio runtime**: Default worker threads = CPU cores
-- **Client locking**: Use `Arc<Mutex<Client>>` for thread-safe access (LLM router only)
+- **Stateless invocation**: Uses `open_agent::query()` for per-request model calls (no client pooling)
 - **Request isolation**: Each request is an independent async task
 - **Health monitoring**: Background task runs independently on 30-second interval
 
