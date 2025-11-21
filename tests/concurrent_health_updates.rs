@@ -3,8 +3,14 @@
 //! Tests that concurrent mark_failure/mark_success calls maintain correct
 //! consecutive_failures count and health state under concurrent load
 
-use octoroute::{config::Config, handlers::AppState};
+use octoroute::{
+    config::Config,
+    handlers::AppState,
+    models::ModelSelector,
+    router::{Importance, LlmBasedRouter, RouteMetadata, TargetModel, TaskType},
+};
 use std::sync::Arc;
+use std::time::Duration;
 
 fn create_test_config() -> Config {
     // ModelEndpoint fields are private - use TOML deserialization
@@ -246,4 +252,144 @@ async fn test_interleaved_success_and_failure_updates() {
             "Unhealthy endpoint should have >= 3 consecutive failures"
         );
     }
+}
+
+#[tokio::test]
+async fn test_concurrent_router_tier_selection_with_health_transitions() {
+    // ISSUE #2: Test concurrent routing with health state transitions
+    //
+    // Critical test for production: verifies no race conditions when routing
+    // requests arrive concurrently with health state changes on router tier endpoints.
+    //
+    // Scenario:
+    // - LLM router uses Balanced tier for routing decisions
+    // - 10 concurrent routing requests happen simultaneously
+    // - 5 background tasks continuously flip Balanced endpoints healthy/unhealthy
+    //
+    // Expected: No panics, no data races, all operations complete successfully
+
+    let config_toml = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://192.0.2.1:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://192.0.2.2:11434/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-2"
+base_url = "http://192.0.2.3:11434/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://192.0.2.4:11434/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "llm"
+router_tier = "balanced"
+"#;
+
+    let config: Config = toml::from_str(config_toml).expect("should parse config");
+    let config = Arc::new(config);
+    let selector = Arc::new(ModelSelector::new(config.clone()));
+
+    let router = Arc::new(
+        LlmBasedRouter::new(selector.clone(), TargetModel::Balanced)
+            .expect("should construct LLM router"),
+    );
+
+    // Spawn 10 concurrent routing requests
+    let routing_handles: Vec<_> = (0..10)
+        .map(|i| {
+            let router = router.clone();
+            tokio::spawn(async move {
+                let metadata = RouteMetadata {
+                    token_estimate: 100,
+                    importance: Importance::Normal,
+                    task_type: TaskType::QuestionAnswer,
+                };
+                // Routing will fail (endpoints are non-routable), but should not panic
+                let _result = router
+                    .route(&format!("test message {}", i), &metadata)
+                    .await;
+            })
+        })
+        .collect();
+
+    // Spawn 5 concurrent health flip tasks (continuously toggle health state)
+    let health_handles: Vec<_> = (0..5)
+        .map(|_| {
+            let selector = selector.clone();
+            tokio::spawn(async move {
+                for endpoint_name in ["balanced-1", "balanced-2"] {
+                    // Mark failure
+                    let _ = selector.health_checker().mark_failure(endpoint_name).await;
+
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+
+                    // Mark success
+                    let _ = selector.health_checker().mark_success(endpoint_name).await;
+                }
+            })
+        })
+        .collect();
+
+    // Wait for all routing tasks - should not panic
+    for handle in routing_handles {
+        handle
+            .await
+            .expect("routing task should not panic or be cancelled");
+    }
+
+    // Wait for all health flip tasks - should not panic
+    for handle in health_handles {
+        handle
+            .await
+            .expect("health task should not panic or be cancelled");
+    }
+
+    // Verify health tracker state is still internally consistent
+    let all_statuses = selector.health_checker().get_all_statuses().await;
+
+    for status in &all_statuses {
+        // Each endpoint should be in a valid state (no corruption from races)
+        if status.is_healthy() {
+            assert_eq!(
+                status.consecutive_failures(),
+                0,
+                "Healthy endpoint {} should have 0 consecutive failures",
+                status.name()
+            );
+        } else {
+            assert!(
+                status.consecutive_failures() >= 3,
+                "Unhealthy endpoint {} should have >= 3 consecutive failures, got {}",
+                status.name(),
+                status.consecutive_failures()
+            );
+        }
+    }
+
+    println!("✅ Concurrent routing + health transitions completed without race conditions");
+    println!("   - 10 concurrent routing requests completed");
+    println!("   - 5 concurrent health flip tasks completed");
+    println!("   - All health states remain internally consistent");
 }
