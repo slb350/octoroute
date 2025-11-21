@@ -3,7 +3,7 @@
 use crate::config::{Config, RoutingStrategy};
 use crate::error::{AppError, AppResult};
 use crate::models::ModelSelector;
-use crate::router::{HybridRouter, LlmBasedRouter, Router, RuleBasedRouter, TargetModel};
+use crate::router::{HybridRouter, LlmBasedRouter, Router, RuleBasedRouter, parse_router_tier};
 use std::sync::Arc;
 
 type MetricsHandle = Arc<crate::metrics::Metrics>;
@@ -60,18 +60,8 @@ impl AppState {
             }
             RoutingStrategy::Llm => {
                 // LLM-only routing: router tier required
-                let router_tier = match config.routing.router_model.as_str() {
-                    "fast" => TargetModel::Fast,
-                    "balanced" => TargetModel::Balanced,
-                    "deep" => TargetModel::Deep,
-                    invalid => {
-                        return Err(AppError::Config(format!(
-                            "Invalid router_model '{}'. Expected 'fast', 'balanced', or 'deep'. \
-                             This indicates a bug - config validation should have caught this earlier.",
-                            invalid
-                        )));
-                    }
-                };
+                // Config::validate() ensures router_model is valid, but parse defensively
+                let router_tier = parse_router_tier(&config.routing.router_model)?;
 
                 tracing::info!(
                     "Initializing LLM-based router with {:?} tier for routing decisions",
@@ -83,18 +73,8 @@ impl AppState {
             }
             RoutingStrategy::Hybrid => {
                 // Hybrid routing: router tier required for LLM fallback
-                let router_tier = match config.routing.router_model.as_str() {
-                    "fast" => TargetModel::Fast,
-                    "balanced" => TargetModel::Balanced,
-                    "deep" => TargetModel::Deep,
-                    invalid => {
-                        return Err(AppError::Config(format!(
-                            "Invalid router_model '{}'. Expected 'fast', 'balanced', or 'deep'. \
-                             This indicates a bug - config validation should have caught this earlier.",
-                            invalid
-                        )));
-                    }
-                };
+                // Config::validate() ensures router_model is valid, but parse defensively
+                let router_tier = parse_router_tier(&config.routing.router_model)?;
 
                 tracing::info!(
                     "Initializing hybrid router (rule-based with LLM fallback using {:?} tier)",

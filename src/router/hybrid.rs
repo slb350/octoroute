@@ -6,7 +6,9 @@
 use crate::config::Config;
 use crate::error::AppResult;
 use crate::models::selector::ModelSelector;
-use crate::router::{LlmBasedRouter, LlmRouter, RouteMetadata, RoutingDecision, RuleBasedRouter};
+use crate::router::{
+    LlmBasedRouter, LlmRouter, RouteMetadata, RoutingDecision, RuleBasedRouter, parse_router_tier,
+};
 use std::sync::Arc;
 
 /// Hybrid router combining rule-based and LLM-based strategies
@@ -27,19 +29,8 @@ impl HybridRouter {
     ///
     /// The router tier is determined by `config.routing.router_model`.
     pub fn new(config: Arc<Config>, selector: Arc<ModelSelector>) -> AppResult<Self> {
-        // Parse router tier from config
-        let router_tier = match config.routing.router_model.as_str() {
-            "fast" => crate::router::TargetModel::Fast,
-            "balanced" => crate::router::TargetModel::Balanced,
-            "deep" => crate::router::TargetModel::Deep,
-            invalid => {
-                return Err(crate::error::AppError::Config(format!(
-                    "Invalid router_model '{}'. Expected 'fast', 'balanced', or 'deep'. \
-                     This indicates a bug - config validation should have caught this earlier.",
-                    invalid
-                )));
-            }
-        };
+        // Parse router tier from config (validated by Config::validate())
+        let router_tier = parse_router_tier(&config.routing.router_model)?;
 
         let llm_router = LlmBasedRouter::new(selector.clone(), router_tier)?;
         Ok(Self {
