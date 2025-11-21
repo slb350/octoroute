@@ -212,10 +212,25 @@ router_tier = "deep"  # Using Deep tier for LLM fallback
 
     let err_msg = result.unwrap_err().to_string();
 
-    // Error should mention Deep tier, proving it tried to use Deep (not Balanced)
+    // STRENGTHENED: Require BOTH tier identification AND action indication
+    // to prevent false positives from generic error messages
+
+    // Part 1: Error should mention Deep tier, proving it tried to use Deep (not Balanced)
     assert!(
         err_msg.to_lowercase().contains("deep") || err_msg.contains("192.0.2.2"),
         "Error should reference Deep tier or deep endpoint IP to prove correct tier was used, got: {}",
+        err_msg
+    );
+
+    // Part 2: Error should indicate what action was attempted
+    // (prevents false positive from message like "deep breath failed")
+    assert!(
+        err_msg.contains("query")
+            || err_msg.contains("routing")
+            || err_msg.contains("endpoint")
+            || err_msg.contains("timeout")
+            || err_msg.contains("request"),
+        "Error should indicate what routing action was attempted, got: {}",
         err_msg
     );
 
@@ -422,14 +437,29 @@ router_tier = "fast"
     let error = result.unwrap_err();
     let error_msg = format!("{}", error);
 
-    // STRENGTHENED: Verify error mentions Fast tier (proves correct tier was used)
+    // STRENGTHENED: Require BOTH tier identification AND action indication
+    // to prevent false positives from generic error messages
+
+    // Part 1: Verify error mentions Fast tier (proves correct tier was used)
     assert!(
         error_msg.to_lowercase().contains("fast") || error_msg.contains("192.0.2.1"),
         "Error should mention Fast tier or fast endpoint IP to prove correct tier was queried, got: {}",
         error_msg
     );
 
-    // STRENGTHENED: Verify it didn't fall back to Balanced or Deep
+    // Part 2: Error should indicate what action was attempted
+    // (prevents false positive from message like "fast forward failed")
+    assert!(
+        error_msg.contains("query")
+            || error_msg.contains("routing")
+            || error_msg.contains("endpoint")
+            || error_msg.contains("timeout")
+            || error_msg.contains("request"),
+        "Error should indicate what routing action was attempted, got: {}",
+        error_msg
+    );
+
+    // Part 3: Verify it didn't fall back to Balanced or Deep
     assert!(
         !error_msg.to_lowercase().contains("balanced")
             && !error_msg.to_lowercase().contains("deep"),

@@ -15,7 +15,9 @@
 //! octoroute = { version = "0.1", features = ["metrics"] }
 //! ```
 
-use prometheus::{CounterVec, Encoder, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder};
+use prometheus::{
+    CounterVec, Encoder, HistogramOpts, HistogramVec, IntCounter, Opts, Registry, TextEncoder,
+};
 use std::sync::Arc;
 
 /// Model tier enum for type-safe metrics labels
@@ -114,6 +116,7 @@ pub struct Metrics {
     requests_total: CounterVec,
     routing_duration: HistogramVec,
     model_invocations: CounterVec,
+    health_tracking_failures: IntCounter,
 }
 
 impl Metrics {
@@ -155,16 +158,24 @@ impl Metrics {
             &["tier"],
         )?;
 
+        // Counter: Health tracking operation failures
+        let health_tracking_failures = IntCounter::new(
+            "octoroute_health_tracking_failures_total",
+            "Total number of health tracking operation failures (mark_success/mark_failure errors)",
+        )?;
+
         // Register all metrics
         registry.register(Box::new(requests_total.clone()))?;
         registry.register(Box::new(routing_duration.clone()))?;
         registry.register(Box::new(model_invocations.clone()))?;
+        registry.register(Box::new(health_tracking_failures.clone()))?;
 
         Ok(Self {
             registry: Arc::new(registry),
             requests_total,
             routing_duration,
             model_invocations,
+            health_tracking_failures,
         })
     }
 
@@ -282,6 +293,27 @@ impl Metrics {
         Ok(())
     }
 
+    /// Record a health tracking operation failure
+    ///
+    /// Increments the counter when mark_success() or mark_failure() operations
+    /// fail (e.g., unknown endpoint name, internal errors).
+    ///
+    /// This metric helps operators detect:
+    /// - Configuration mismatches (endpoint names in routing logic don't match config)
+    /// - Internal errors in health tracking (lock failures, etc.)
+    /// - Degraded observability (if tracking fails, routing decisions lack health data)
+    pub fn health_tracking_failure(&self) {
+        self.health_tracking_failures.inc();
+    }
+
+    /// Get the current count of health tracking failures
+    ///
+    /// Returns the total number of health tracking operation failures since startup.
+    /// Used by the /health endpoint to report health tracking status.
+    pub fn health_tracking_failures_count(&self) -> u64 {
+        self.health_tracking_failures.get()
+    }
+
     /// Gather all metrics and encode them in Prometheus text format
     ///
     /// # Returns
@@ -355,10 +387,11 @@ mod tests {
             .record_routing_duration(Strategy::Rule, 1.0)
             .unwrap();
         metrics.record_model_invocation(Tier::Fast).unwrap();
+        metrics.health_tracking_failure(); // Increment health tracking failures
 
         let metric_families = metrics.registry.gather();
-        // Should have 3 metric families: requests_total, routing_duration, model_invocations
-        assert_eq!(metric_families.len(), 3, "Expected 3 metric families");
+        // Should have 4 metric families: requests_total, routing_duration, model_invocations, health_tracking_failures
+        assert_eq!(metric_families.len(), 4, "Expected 4 metric families");
 
         // Verify metric names
         let names: Vec<String> = metric_families
@@ -368,6 +401,7 @@ mod tests {
         assert!(names.contains(&"octoroute_requests_total".to_string()));
         assert!(names.contains(&"octoroute_routing_duration_ms".to_string()));
         assert!(names.contains(&"octoroute_model_invocations_total".to_string()));
+        assert!(names.contains(&"octoroute_health_tracking_failures_total".to_string()));
     }
 
     #[test]
