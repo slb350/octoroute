@@ -272,7 +272,7 @@ impl LlmBasedRouter {
         &self,
         user_prompt: &str,
         meta: &RouteMetadata
-    ) -> Result<RoutingDecision, AppError> {
+    ) -> AppResult<RoutingDecision> {
         // Build router prompt with truncation for safety
         let router_prompt = Self::build_router_prompt(user_prompt, meta);
 
@@ -382,27 +382,34 @@ impl HybridRouter {
         &self,
         user_prompt: &str,
         meta: &RouteMetadata
-    ) -> Result<RoutingDecision, AppError> {
+    ) -> AppResult<RoutingDecision> {
         // Try rule-based first (fast path, ~70-80% of requests)
-        if let Some(decision) = self.rule_router.route(meta) {
-            tracing::info!(
-                tier = ?decision.tier(),
-                strategy = "rule",
-                "Route decision made"
-            );
-            return Ok(decision);
+        match self
+            .rule_router
+            .route(user_prompt, meta, &self.selector)
+            .await?
+        {
+            Some(decision) => {
+                tracing::info!(
+                    tier = ?decision.tier(),
+                    strategy = "rule",
+                    "Route decision made"
+                );
+                Ok(decision)
+            }
+            None => {
+                // Fall back to LLM router for ambiguous cases (~20% of requests)
+                tracing::debug!("No rule matched, delegating to LLM router");
+                let decision = self.llm_router.route(user_prompt, meta).await?;
+                tracing::info!(
+                    tier = ?decision.tier(),
+                    strategy = "llm",
+                    "Route decision made"
+                );
+
+                Ok(decision)
+            }
         }
-
-        // Fall back to LLM router for ambiguous cases (~20% of requests)
-        tracing::debug!("No rule matched, delegating to LLM router");
-        let decision = self.llm_router.route(user_prompt, meta).await?;
-        tracing::info!(
-            tier = ?decision.tier(),
-            strategy = "llm",
-            "Route decision made"
-        );
-
-        Ok(decision)
     }
 }
 ```
