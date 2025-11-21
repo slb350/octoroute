@@ -103,40 +103,44 @@ Octoroute is an intelligent HTTP API router that sits between client application
 
 ```
 octoroute/
-├── main.rs                    # Axum server entrypoint
-├── lib.rs                     # Public library API
-│
-├── config.rs                  # Configuration management (ModelConfig, RoutingConfig, etc.)
-│
-├── router/                    # Routing strategies
-│   ├── mod.rs                # Router enum, RouteMetadata, Importance, TaskType
-│   ├── rule_based.rs         # Fast pattern-based routing
-│   ├── llm_based.rs          # LLM-powered routing (30B)
-│   └── hybrid.rs             # Hybrid router (rule + LLM fallback)
-│
-├── models/                    # Model client management
-│   ├── mod.rs
-│   ├── client.rs             # Wrapper around open-agent-sdk Client
-│   ├── selector/             # Model selection logic
-│   │   ├── mod.rs            # ModelSelector with load balancing
-│   │   └── balanced.rs       # BalancedSelector (type-safe tier selection)
-│   ├── health.rs             # Health checking with background monitoring
-│   └── endpoint_name.rs      # Type-safe endpoint identifiers
-│
-├── handlers/                  # HTTP request handlers
-│   ├── mod.rs
-│   ├── chat.rs               # POST /chat
-│   ├── health.rs             # GET /health
-│   ├── models.rs             # GET /models
-│   └── metrics.rs            # GET /metrics
-│
-├── middleware/                # Axum middleware
-│   ├── mod.rs
-│   └── request_id.rs         # Request ID generation and propagation
-│
-├── metrics.rs                 # Prometheus metrics implementation
-├── error.rs                   # AppError, AppResult types
-└── telemetry.rs              # Tracing setup
+├── src/
+│   ├── main.rs                    # Axum server entrypoint
+│   ├── lib.rs                     # Public library API
+│   │
+│   ├── config.rs                  # Configuration management (ModelConfig, RoutingConfig, etc.)
+│   │
+│   ├── router/                    # Routing strategies
+│   │   ├── mod.rs                # Router enum, RouteMetadata, Importance, TaskType
+│   │   ├── rule_based.rs         # Fast pattern-based routing
+│   │   ├── llm_based.rs          # LLM-powered routing (30B)
+│   │   └── hybrid.rs             # Hybrid router (rule + LLM fallback)
+│   │
+│   ├── models/                    # Model client management
+│   │   ├── mod.rs
+│   │   ├── client.rs             # Wrapper around open-agent-sdk Client
+│   │   ├── selector/             # Model selection logic
+│   │   │   ├── mod.rs            # ModelSelector with load balancing
+│   │   │   └── balanced.rs       # BalancedSelector (type-safe tier selection)
+│   │   ├── health.rs             # Health checking with background monitoring
+│   │   └── endpoint_name.rs      # Type-safe endpoint identifiers
+│   │
+│   ├── handlers/                  # HTTP request handlers
+│   │   ├── mod.rs
+│   │   ├── chat.rs               # POST /chat
+│   │   ├── health.rs             # GET /health
+│   │   ├── models.rs             # GET /models
+│   │   └── metrics.rs            # GET /metrics
+│   │
+│   ├── middleware/                # Axum middleware
+│   │   ├── mod.rs
+│   │   └── request_id.rs         # Request ID generation and propagation
+│   │
+│   ├── metrics.rs                 # Prometheus metrics implementation
+│   ├── error.rs                   # AppError, AppResult types
+│   └── telemetry.rs              # Tracing setup
+├── tests/                         # Integration tests
+├── benches/                       # Benchmarks
+└── Cargo.toml
 ```
 
 ### Key Design Decisions

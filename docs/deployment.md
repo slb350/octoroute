@@ -135,7 +135,7 @@ RestartSec=5s
 
 # Resource limits
 LimitNOFILE=65536
-MemoryLimit=1G
+MemoryMax=1G
 
 # Security hardening
 NoNewPrivileges=true
@@ -744,7 +744,7 @@ docker stats  # For Docker
 ps aux | grep octoroute  # For binary
 
 # Set memory limit in systemd
-MemoryLimit=512M
+MemoryMax=512M
 
 # Monitor with htop
 htop

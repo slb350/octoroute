@@ -117,14 +117,14 @@ just ci
 
 ### Watch Mode
 
-Auto-rebuild on file changes:
+Auto-run tests on file changes:
 
 ```bash
-# Watch and rebuild
+# Watch and run full test suite on every change
 just watch
 
-# Watch and run tests
-cargo watch -x test
+# Or manually specify cargo watch command
+cargo watch -x 'test --all-features'
 
 # Watch and run specific test
 cargo watch -x "test test_rule_router"
@@ -428,7 +428,7 @@ just ci
 1. **Fork the repository** on GitHub
 2. **Create a feature branch**: `git checkout -b feature/my-feature`
 3. **Make changes**: Write code, tests, and docs
-4. **Run checks**: `just ci` (format, clippy, tests, bench, docs)
+4. **Run checks**: `just ci` (clippy + format + tests only; use `just validate` for bench too)
 5. **Commit**: Use conventional commit messages
 6. **Push**: `git push origin feature/my-feature`
 7. **Create PR**: Open pull request on GitHub

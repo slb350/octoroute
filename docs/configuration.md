@@ -202,6 +202,7 @@ router_model = "balanced"
   - `"rule"`: Rule-based only (fastest)
   - `"llm"`: LLM-based only (most intelligent)
   - `"hybrid"`: Rule-based with LLM fallback (recommended)
+  - **Note**: `"tool"` is accepted by the config parser but rejected at runtime with a configuration error. Use `"rule"`, `"llm"`, or `"hybrid"` only.
 
 - `default_importance` (string, optional): Default importance when not specified in request
   - Values: `"low"`, `"normal"`, `"high"`
