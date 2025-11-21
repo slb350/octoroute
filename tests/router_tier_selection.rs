@@ -150,6 +150,88 @@ router_model = "deep"  # Using Deep tier for LLM fallback routing
 }
 
 #[tokio::test]
+async fn test_hybrid_router_deep_tier_uses_deep_for_llm_fallback() {
+    // Behavioral test: Verify Hybrid router actually uses Deep tier when falling back to LLM
+    // This test ensures the tier selection propagates to the LLM router, not just construction
+
+    let config_toml = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://192.0.2.1:1234/v1"  # Non-routable (will fail if used)
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://192.0.2.2:8080/v1"  # Non-routable (expected to fail)
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "hybrid"
+default_importance = "normal"
+router_model = "deep"  # Using Deep tier for LLM fallback
+"#;
+
+    let config = validated_config_from_toml(config_toml);
+    let config = Arc::new(config);
+    let selector = Arc::new(ModelSelector::new(config.clone()));
+
+    let router = HybridRouter::new(config.clone(), selector.clone())
+        .expect("should create HybridRouter with Deep tier");
+
+    // Create metadata that doesn't match any rules (triggers LLM fallback)
+    let meta = RouteMetadata {
+        token_estimate: 100,
+        importance: Importance::High,
+        task_type: TaskType::CasualChat, // No rule matches High + CasualChat
+    };
+
+    // Attempt routing - should try to query DEEP tier (192.0.2.2), not Balanced (192.0.2.1)
+    let result = router.route("test message", &meta).await;
+
+    // Should fail because deep endpoint is non-routable
+    assert!(
+        result.is_err(),
+        "Should fail trying to query non-routable Deep tier endpoint"
+    );
+
+    let err_msg = result.unwrap_err().to_string();
+
+    // Error should mention Deep tier, proving it tried to use Deep (not Balanced)
+    assert!(
+        err_msg.to_lowercase().contains("deep") || err_msg.contains("192.0.2.2"),
+        "Error should reference Deep tier or deep endpoint IP to prove correct tier was used, got: {}",
+        err_msg
+    );
+
+    // Should NOT mention Balanced tier IP
+    assert!(
+        !err_msg.contains("192.0.2.1"),
+        "Error should not reference Balanced tier IP, got: {}",
+        err_msg
+    );
+
+    println!("✅ Verified Hybrid router uses Deep tier for LLM fallback");
+    println!("   - Hybrid router attempted to query Deep tier");
+    println!("   - Did not fall back to Balanced tier");
+}
+
+#[tokio::test]
 async fn test_all_router_tiers_with_appstate() {
     // Comprehensive test: Verify AppState construction works with all router_model values
     // This is a smoke test for the full application startup path
@@ -340,10 +422,152 @@ router_model = "fast"
     let error = result.unwrap_err();
     let error_msg = format!("{}", error);
 
-    // Error should indicate it tried to use Fast tier (not Balanced or Deep)
-    // The exact error message depends on the tier selector implementation
-    println!("✅ LLM router with fast tier attempted query on fast tier");
-    println!("   - Router used Fast tier for routing decision");
-    println!("   - Query failed as expected (non-routable endpoint)");
-    println!("   - Error: {}", error_msg);
+    // STRENGTHENED: Verify error mentions Fast tier (proves correct tier was used)
+    assert!(
+        error_msg.to_lowercase().contains("fast") || error_msg.contains("192.0.2.1"),
+        "Error should mention Fast tier or fast endpoint IP to prove correct tier was queried, got: {}",
+        error_msg
+    );
+
+    // STRENGTHENED: Verify it didn't fall back to Balanced or Deep
+    assert!(
+        !error_msg.to_lowercase().contains("balanced")
+            && !error_msg.to_lowercase().contains("deep"),
+        "Error should not mention other tiers (would indicate fallback bug), got: {}",
+        error_msg
+    );
+
+    println!("✅ LLM router with Fast tier attempted query on Fast tier endpoints");
+    println!("   - Error mentions Fast tier: confirmed");
+    println!("   - No fallback to other tiers: confirmed");
+}
+
+#[tokio::test]
+async fn test_appstate_construction_hybrid_router_with_all_tiers() {
+    // Test that AppState::new() successfully constructs Hybrid routers
+    // with all three router_model tiers (fast, balanced, deep).
+    //
+    // This tests the ACTUAL application initialization path, not just
+    // the router constructors directly.
+
+    for router_model in ["fast", "balanced", "deep"] {
+        let config_toml = format!(
+            r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "hybrid"
+default_importance = "normal"
+router_model = "{}"
+"#,
+            router_model
+        );
+
+        let config = validated_config_from_toml(&config_toml);
+        let config = Arc::new(config);
+
+        // Test the ACTUAL AppState construction (full integration)
+        let result = octoroute::handlers::AppState::new(config);
+
+        assert!(
+            result.is_ok(),
+            "AppState::new() should succeed with strategy='hybrid', router_model='{}', got: {:?}",
+            router_model,
+            result.err()
+        );
+
+        let app_state = result.unwrap();
+
+        // Verify router was constructed (just check AppState succeeded)
+        let _ = app_state.router(); // Access router to verify it's available
+
+        println!(
+            "✅ AppState construction passed for Hybrid + router_model='{}'",
+            router_model
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_appstate_construction_llm_router_with_all_tiers() {
+    // Same test but for LLM-only strategy
+
+    for router_model in ["fast", "balanced", "deep"] {
+        let config_toml = format!(
+            r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "llm"
+default_importance = "normal"
+router_model = "{}"
+"#,
+            router_model
+        );
+
+        let config = validated_config_from_toml(&config_toml);
+        let config = Arc::new(config);
+
+        let result = octoroute::handlers::AppState::new(config);
+
+        assert!(
+            result.is_ok(),
+            "AppState::new() should succeed with strategy='llm', router_model='{}', got: {:?}",
+            router_model,
+            result.err()
+        );
+
+        println!(
+            "✅ AppState construction passed for LLM + router_model='{}'",
+            router_model
+        );
+    }
 }
