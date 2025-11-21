@@ -93,7 +93,7 @@ just test-unit
 # Run only integration tests
 just test-integration
 
-# Watch for changes and rebuild
+# Watch for changes and run tests
 just watch
 
 # Auto-fix clippy warnings
@@ -204,14 +204,13 @@ mod tests {
     #[test]
     fn test_rule_router_casual_chat() {
         let router = RuleBasedRouter;
-        let meta = RouteMetadata {
-            token_estimate: 100,
-            importance: Importance::Normal,
-            task_type: TaskType::CasualChat,
-        };
+        let meta = RouteMetadata::new(100)
+            .with_importance(Importance::Normal)
+            .with_task_type(TaskType::CasualChat);
 
-        let decision = router.route(&meta);
-        assert_eq!(decision, Some(RoutingDecision::new(ModelTier::Fast)));
+        // evaluate_rules is the internal rule matching logic
+        let decision = router.evaluate_rules(&meta);
+        assert_eq!(decision, Some(TargetModel::Fast));
     }
 }
 ```
@@ -232,21 +231,21 @@ Located in `tests/` directory.
 ```rust
 #[tokio::test]
 async fn test_chat_endpoint_with_rule_routing() {
-    let config = Config::from_toml(TEST_CONFIG).unwrap();
+    let config = Config::from_str(TEST_CONFIG).unwrap();
     let app_state = AppState::new(config).await.unwrap();
 
-    let request = ChatRequest {
-        message: "Hello!".to_string(),
-        importance: Importance::Low,
-        task_type: TaskType::CasualChat,
-    };
+    let request = ChatRequest::new(
+        "Hello!".to_string(),
+        Importance::Low,
+        TaskType::CasualChat,
+    );
 
-    let response = chat_handler(State(app_state), Json(request))
+    let response = mock_chat_handler(State(app_state), Json(request))
         .await
         .unwrap();
 
-    assert_eq!(response.0.model_tier(), ModelTier::Fast);
-    assert_eq!(response.0.routing_strategy(), "rule");
+    assert_eq!(response.model_tier(), ModelTier::Fast);
+    assert_eq!(response.routing_strategy(), RoutingStrategy::Rule);
 }
 ```
 
@@ -305,22 +304,17 @@ Located in `benches/routing.rs`:
 ```rust
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
-fn benchmark_rule_routing(c: &mut Criterion) {
-    let router = RuleBasedRouter;
-    let meta = RouteMetadata {
-        token_estimate: 500,
-        importance: Importance::Normal,
-        task_type: TaskType::QuestionAnswer,
-    };
-
-    c.bench_function("rule_routing", |b| {
+fn bench_metadata_creation(c: &mut Criterion) {
+    c.bench_function("metadata_creation", |b| {
         b.iter(|| {
-            router.route(black_box(&meta))
+            RouteMetadata::new(black_box(500))
+                .with_importance(black_box(Importance::Normal))
+                .with_task_type(black_box(TaskType::QuestionAnswer))
         })
     });
 }
 
-criterion_group!(benches, benchmark_rule_routing);
+criterion_group!(benches, bench_metadata_creation);
 criterion_main!(benches);
 ```
 
@@ -541,7 +535,7 @@ octoroute/
 │   │
 │   ├── models/                    # Model management
 │   │   ├── mod.rs
-│   │   ├── client.rs             # ModelClient wrapper
+│   │   ├── client.rs             # ModelClient (unused, reserved for future tool-based routing)
 │   │   ├── selector/             # Model selection
 │   │   ├── health.rs             # Health checking
 │   │   └── endpoint_name.rs      # Type-safe endpoint IDs
@@ -641,12 +635,11 @@ cargo bench routing
 ## Release Process
 
 1. **Update version** in `Cargo.toml`
-2. **Update CHANGELOG.md** with release notes
-3. **Run full CI**: `just ci`
-4. **Create git tag**: `git tag v0.1.0`
-5. **Push tag**: `git push origin v0.1.0`
-6. **Create GitHub release** with release notes
-7. **(Optional) Publish to crates.io**: `cargo publish`
+2. **Run full validation**: `just validate` (includes tests + benchmarks)
+3. **Create git tag**: `git tag v0.1.0`
+4. **Push tag**: `git push origin v0.1.0`
+5. **Create GitHub release** with release notes
+6. **(Optional) Publish to crates.io**: `cargo publish`
 
 ---
 
