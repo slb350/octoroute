@@ -384,28 +384,15 @@ RUST_LOG=debug cargo run
 
 ## Project Status
 
-**Current Phase**: Phase 5 Complete - Production Ready! 🚀
-
-**Roadmap**:
-
-- [x] Project setup and design
-- [x] Phase 1: Rule-based router + HTTP server
-- [x] Phase 2a: Model integration with `open-agent-sdk` (round-robin selection)
-- [x] Phase 2b: Weighted load balancing
-- [x] Phase 2c: Priority-based selection with health checking
-- [x] Phase 3: LLM-based hybrid routing
-- [x] Phase 5: Production Polish & Observability
-- [ ] Phase 4: Tool-based routing (experimental - future)
-
 **Features implemented**:
 - ✅ HTTP API with `/chat`, `/health`, `/models`, `/metrics` endpoints
 - ✅ Multi-tier model selection (fast/balanced/deep)
-- ✅ Rule-based + LLM-based hybrid routing (Phase 3)
+- ✅ Rule-based + LLM-based hybrid routing
 - ✅ Priority-based routing with weighted distribution
 - ✅ Health checking with automatic endpoint recovery
 - ✅ Retry logic with request-scoped exclusion
 - ✅ Timeout enforcement (global + per-tier overrides)
-- ✅ Prometheus metrics (always enabled)
+- ✅ Prometheus metrics
 - ✅ Performance benchmarks (Criterion)
 - ✅ CI/CD pipeline (GitHub Actions)
 - ✅ Comprehensive config validation
