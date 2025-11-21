@@ -304,9 +304,8 @@ log_level = "info"
 ### Fields
 
 - `log_level` (string, optional): Logging verbosity level
-  - Default: `"info"` (if not specified)
   - Values: `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"`
-  - Default: `"info"`
+  - Default: `"info"` (if not specified)
 
 ### Log Levels
 
@@ -585,18 +584,20 @@ Configuration error: weight must be positive and finite, got -1.0
 
 **Invalid timeout**:
 ```
-Configuration error: timeout_seconds must be between 1 and 300, got 500
+Configuration error: Invalid timeout configuration: timeouts.deep cannot exceed 300 seconds (5 minutes), got 500. This limit prevents connection pool exhaustion and arithmetic overflow.
 ```
 
 **Missing tier**:
 ```
-Configuration error: no endpoints defined for Fast tier
+Configuration error: models.fast must contain at least one model endpoint
 ```
 
 **Invalid port**:
 ```
-Configuration error: port must be between 1 and 65535, got 70000
+TOML parse error: invalid value: integer `70000`, expected u16 for key `server.port`
 ```
+
+Note: Port validation is enforced by Rust's type system (u16 = 0-65535). Values outside this range fail during TOML parsing.
 
 ---
 
