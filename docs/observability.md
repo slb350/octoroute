@@ -317,16 +317,16 @@ sum(rate(octoroute_requests_total[5m])) * 100
       "tier": "fast",
       "endpoint": "http://macmini-1:11434/v1",
       "healthy": true,
-      "priority": 1,
-      "weight": 1.0
+      "last_check_seconds_ago": 2,
+      "consecutive_failures": 0
     },
     {
       "name": "qwen3-8b-instruct",
       "tier": "fast",
       "endpoint": "http://macmini-2:11434/v1",
       "healthy": false,
-      "priority": 1,
-      "weight": 1.0
+      "last_check_seconds_ago": 45,
+      "consecutive_failures": 3
     }
   ]
 }

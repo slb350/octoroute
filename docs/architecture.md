@@ -364,7 +364,7 @@ impl HybridRouter {
 ```
 1. HTTP Request arrives at Axum
    ↓
-2. Middleware: Request logging, metrics
+2. Middleware: Request ID generation and propagation
    ↓
 3. Handler: Extract ChatRequest JSON
    ↓
@@ -587,16 +587,15 @@ pub type AppResult<T> = Result<T, AppError>;
 - **Request isolation**: Each request is an independent async task
 - **Health monitoring**: Background task runs independently on 30-second interval
 
-### Benchmark Results
+### Performance Benchmarks
 
-All performance targets met:
+Performance benchmarks are available to measure:
+- Metadata creation latency
+- Config parsing overhead
+- Token estimation speed
+- Rule routing decision time
 
-- **Metadata creation**: ~940 picoseconds
-- **Config parsing**: ~9.7 microseconds
-- **Token estimation**: ~5-10 nanoseconds
-- **Rule routing**: <1ms (pure CPU operations)
-
-Benchmarks available via: `cargo bench`
+Run `cargo bench` to measure current performance on your hardware.
 
 ---
 

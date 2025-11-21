@@ -124,24 +124,22 @@ priority = 1
   - Must be > 0
   - Typical values: 4096 (8B), 8192 (30B), 16384 (120B)
 
-- `temperature` (float, required): Sampling temperature
+- `temperature` (float, optional): Sampling temperature
   - Range: 0.0-2.0 typically
+  - Default: 0.7
   - Lower = more deterministic, higher = more creative
 
-- `weight` (float, required): Load balancing weight
+- `weight` (float, optional): Load balancing weight
   - Must be > 0.0 and finite
+  - Default: 1.0
   - Higher weight = more traffic
   - Example: `weight = 2.0` gets 2x traffic of `weight = 1.0`
 
-- `priority` (integer, required): Priority level
+- `priority` (integer, optional): Priority level
   - Higher values = tried first
+  - Default: 1
   - Endpoints with same priority are weighted randomly
   - Example: `priority = 2` endpoints tried before `priority = 1`
-
-- `timeout_seconds` (integer, optional): Per-tier timeout override
-  - Range: 1-300 seconds
-  - Overrides global `server.request_timeout_seconds`
-  - Recommended: 15s (fast), 30s (balanced), 60s (deep)
 
 ### Tiers
 
@@ -457,7 +455,9 @@ default_importance = "normal"
 router_model = "balanced"
 
 [timeouts]
-global_timeout_seconds = 45
+fast = 20
+balanced = 45
+deep = 90
 
 [observability]
 log_level = "info"
@@ -507,7 +507,9 @@ default_importance = "low"  # Bias toward fast tier
 router_model = "balanced"
 
 [timeouts]
-global_timeout_seconds = 15
+fast = 10
+balanced = 15
+deep = 30
 
 [observability]
 log_level = "warn"  # Minimal logging overhead
@@ -555,7 +557,9 @@ default_importance = "normal"
 router_model = "balanced"
 
 [timeouts]
-global_timeout_seconds = 120  # Generous for local debugging
+fast = 60
+balanced = 120
+deep = 180  # Generous for local debugging
 
 [observability]
 log_level = "debug"  # Verbose for development
@@ -631,5 +635,5 @@ cargo run 2>&1 | grep "Configuration error"
 ### Timeouts Too Short/Long
 
 1. Monitor actual response times via `/metrics`
-2. Adjust per-tier `timeout_seconds` based on observed latency
+2. Adjust per-tier timeouts in `[timeouts]` section (`fast`, `balanced`, `deep`) based on observed latency
 3. Consider model performance when setting timeouts

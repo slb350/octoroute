@@ -96,8 +96,8 @@ just test-integration
 # Watch for changes and rebuild
 just watch
 
-# Run clippy linter
-just clippy
+# Auto-fix clippy warnings
+just clippy-fix
 
 # Format code
 just fmt
@@ -106,15 +106,12 @@ just fmt
 just bench
 
 # Generate documentation
-just doc
-
-# Open documentation in browser
-just doc-open
+just docs
 
 # Clean build artifacts
 just clean
 
-# Complete CI check (fmt + clippy + tests + bench compile + docs)
+# Complete CI check (clippy + tests only)
 just ci
 ```
 
@@ -335,10 +332,7 @@ criterion_main!(benches);
 - Token estimation: <100 nanoseconds
 - Rule routing: <1 millisecond
 
-**Current Results** (run `cargo bench` to verify):
-- Metadata creation: ~940 picoseconds ✓
-- Config parsing: ~9.7 microseconds ✓
-- Token estimation: ~5-10 nanoseconds ✓
+Run `cargo bench` to verify current performance metrics.
 
 ---
 
@@ -378,8 +372,14 @@ just clippy-fix
 **Clippy Configuration** (`clippy.toml`):
 
 ```toml
-# Currently using default clippy configuration
-# Add custom rules here if needed
+# Cognitive complexity threshold
+cognitive-complexity-threshold = 30
+
+# Disallowed names (prevent placeholder variables)
+disallowed-names = ["foo", "bar", "baz", "tmp"]
+
+# MSRV for clippy
+msrv = "1.90"
 ```
 
 ### Documentation
