@@ -38,7 +38,7 @@ Octoroute is an intelligent HTTP API router that sits between client application
 │          (CLI, Web UI, API consumers, etc.)                  │
 └────────────────────┬─────────────────────────────────────────┘
                      │ HTTP POST /chat
-                     │ { prompt, importance, task_type, ... }
+                     │ { message, importance, task_type }
                      ▼
 ┌──────────────────────────────────────────────────────────────┐
 │                      Octoroute API                           │
@@ -117,7 +117,7 @@ octoroute/
 │   │
 │   ├── models/                    # Model client management
 │   │   ├── mod.rs
-│   │   ├── client.rs             # Wrapper around open-agent-sdk Client
+│   │   ├── client.rs             # ModelClient (unused, reserved for future tool-based routing)
 │   │   ├── selector/             # Model selection logic
 │   │   │   ├── mod.rs            # ModelSelector with load balancing
 │   │   │   └── balanced.rs       # BalancedSelector (type-safe tier selection)
@@ -182,7 +182,22 @@ Note: `lazy_static` is not a direct dependency. It's a transitive dependency pul
 pub struct RuleBasedRouter;
 
 impl RuleBasedRouter {
-    pub fn route(&self, meta: &RouteMetadata) -> Option<RoutingDecision> {
+    pub async fn route(
+        &self,
+        _user_prompt: &str,
+        meta: &RouteMetadata,
+        _selector: &ModelSelector,
+    ) -> AppResult<Option<RoutingDecision>> {
+        // Try rule-based matching
+        if let Some(target) = self.evaluate_rules(meta) {
+            return Ok(Some(RoutingDecision::new(target, RoutingStrategy::Rule)));
+        }
+
+        // No rule matched - return None to signal caller should use fallback
+        Ok(None)
+    }
+
+    fn evaluate_rules(&self, meta: &RouteMetadata) -> Option<TargetModel> {
         use Importance::*;
         use TaskType::*;
 
@@ -191,7 +206,7 @@ impl RuleBasedRouter {
             && meta.token_estimate < 256
             && !matches!(meta.importance, High)
         {
-            return Some(RoutingDecision::new(TargetModel::Fast));
+            return Some(TargetModel::Fast);
         }
 
         // Rule 2: High importance or deep work → Deep tier
@@ -200,15 +215,15 @@ impl RuleBasedRouter {
         if (matches!(meta.importance, High) && !matches!(meta.task_type, CasualChat))
             || matches!(meta.task_type, DeepAnalysis | CreativeWriting)
         {
-            return Some(RoutingDecision::new(TargetModel::Deep));
+            return Some(TargetModel::Deep);
         }
 
         // Rule 3: Code generation (special case)
         if matches!(meta.task_type, Code) {
             return if meta.token_estimate > 1024 {
-                Some(RoutingDecision::new(TargetModel::Deep))
+                Some(TargetModel::Deep)
             } else {
-                Some(RoutingDecision::new(TargetModel::Balanced))
+                Some(TargetModel::Balanced)
             };
         }
 
@@ -219,7 +234,7 @@ impl RuleBasedRouter {
             && meta.token_estimate < 2048
             && matches!(meta.task_type, QuestionAnswer | DocumentSummary)
         {
-            return Some(RoutingDecision::new(TargetModel::Balanced));
+            return Some(TargetModel::Balanced);
         }
 
         // No rule matched → delegate to LLM router
@@ -249,7 +264,7 @@ When no rule matches and `strategy = "rule"`, the router uses `ModelSelector::de
 
 ```rust
 pub struct LlmBasedRouter {
-    balanced_selector: Arc<BalancedSelector>,
+    selector: BalancedSelector,
 }
 
 impl LlmBasedRouter {
@@ -258,39 +273,77 @@ impl LlmBasedRouter {
         user_prompt: &str,
         meta: &RouteMetadata
     ) -> Result<RoutingDecision, AppError> {
-        let router_prompt = format!(
+        // Build router prompt with truncation for safety
+        let router_prompt = Self::build_router_prompt(user_prompt, meta);
+
+        // Retry up to MAX_ROUTER_RETRIES times with different endpoints
+        let mut failed_endpoints = ExclusionSet::new();
+
+        for attempt in 1..=MAX_ROUTER_RETRIES {
+            // Select endpoint from balanced tier (with health filtering + exclusions)
+            let endpoint = match self.selector.select_balanced(&failed_endpoints).await {
+                Some(ep) => ep.clone(),
+                None => {
+                    return Err(AppError::RoutingFailed(format!(
+                        "No healthy balanced tier endpoints for routing \
+                        (attempt {}/{})", attempt, MAX_ROUTER_RETRIES
+                    )));
+                }
+            };
+
+            // Try to query this endpoint
+            let query_result = self
+                .try_router_query(&endpoint, &router_prompt, attempt, MAX_ROUTER_RETRIES)
+                .await;
+
+            match query_result {
+                Ok(target_model) => {
+                    // Success! Mark endpoint healthy and return
+                    self.selector.health_checker().mark_success(endpoint.name()).await?;
+                    return Ok(RoutingDecision::new(target_model, RoutingStrategy::Llm));
+                }
+                Err(e) if Self::is_retryable_error(&e) => {
+                    // Retryable error - try different endpoint
+                    failed_endpoints.insert(endpoint.name().into());
+                    continue;
+                }
+                Err(e) => {
+                    // Systemic error - fail immediately
+                    return Err(e);
+                }
+            }
+        }
+
+        Err(AppError::RoutingFailed("All router retry attempts exhausted".to_string()))
+    }
+
+    fn build_router_prompt(user_prompt: &str, meta: &RouteMetadata) -> String {
+        // Truncate user prompt to prevent prompt injection via context overflow
+        const MAX_USER_PROMPT_CHARS: usize = 500;
+
+        let char_count = user_prompt.chars().count();
+        let truncated_prompt = if char_count > MAX_USER_PROMPT_CHARS {
+            let truncated: String = user_prompt.chars().take(MAX_USER_PROMPT_CHARS).collect();
+            format!("{}... [truncated]", truncated)
+        } else {
+            user_prompt.to_string()
+        };
+
+        format!(
             "You are a router that chooses which LLM to use.\n\n\
              Available models:\n\
-             - FAST: Quick (8B params), for simple chat, short Q&A, casual tasks.\n\
-             - BALANCED: Good reasoning (30B params), coding, document summaries, explanations.\n\
-             - DEEP: Deep reasoning (120B params), creative writing, complex analysis, research.\n\n\
+             - FAST: Quick (small params), for simple chat, short Q&A, casual tasks.\n\
+             - BALANCED: Good reasoning (medium params), coding, document summaries, explanations.\n\
+             - DEEP: Deep reasoning (large params), creative writing, complex analysis, research.\n\n\
              User request:\n{}\n\n\
              Metadata:\n\
              - Estimated tokens: {}\n\
              - Importance: {:?}\n\
              - Task type: {:?}\n\n\
-             Respond with ONLY one of: FAST, BALANCED, DEEP",
-            user_prompt.chars().take(MAX_ROUTER_RESPONSE).collect::<String>(),
-            meta.token_estimate,
-            meta.importance,
-            meta.task_type
-        );
-
-        // Use balanced tier (30B) for routing decisions
-        let endpoint = self.balanced_selector.select_endpoint(&ExclusionSet::new())?;
-
-        // Query the router model
-        let response = open_agent::query(&endpoint.base_url, &endpoint.name, &router_prompt)
-            .await?;
-
-        // Parse router decision (fuzzy matching with word boundaries)
-        // Returns error if response doesn't contain FAST, BALANCED, or DEEP
-        let normalized = response.trim().to_uppercase();
-
-        // Find leftmost routing keyword using word boundary detection
-        let target = Self::parse_routing_decision(&normalized)?;
-
-        Ok(RoutingDecision::new(target))
+             Based on the above, respond with ONLY one word: FAST, BALANCED, or DEEP.\n\
+             Do not include explanations or other text.",
+            truncated_prompt, meta.token_estimate, meta.importance, meta.task_type
+        )
     }
 }
 ```
@@ -423,8 +476,8 @@ Return HTTP error response
 Background Task (every 30 seconds)
    ↓
 For each endpoint:
-   ├─ Send GET /models request
-   ├─ Check HTTP status
+   ├─ Send HEAD {base_url}/models request
+   ├─ Check HTTP status (no response body)
    ├─ Update health status
    │  ├─ Success → mark_success() (reset failure counter)
    │  └─ Failure → mark_failure() (increment counter, unhealthy after 3)
@@ -547,7 +600,7 @@ pub type AppResult<T> = Result<T, AppError>;
 ### Error Handling Best Practices
 
 1. **Use `?` operator**: Propagate errors up to handler
-2. **Map SDK errors**: Convert `open_agent::Error` to `AppError::ModelInvocation`
+2. **Map SDK errors**: Convert `open_agent::Error` to `AppError::ModelQueryFailed` or `AppError::LlmRouting`
 3. **Validate early**: Check request validity before routing
 4. **Log errors**: Use `tracing::error!` for all error paths
 5. **Never panic**: All errors should be handled gracefully (except health monitor exhaustion)
@@ -588,7 +641,6 @@ pub type AppResult<T> = Result<T, AppError>;
 2. **Weighted load balancing**: Distribute load according to endpoint capacity
 3. **Priority-based fallback**: Try high-priority endpoints first
 4. **Parallel requests**: Use `tokio::spawn` for independent operations
-5. **Streaming**: Stream model responses to client (reduce TTFB)
 
 ### Concurrency Model
 
