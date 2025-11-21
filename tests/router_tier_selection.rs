@@ -11,6 +11,16 @@ use octoroute::models::ModelSelector;
 use octoroute::router::{HybridRouter, Importance, LlmBasedRouter, RouteMetadata, TaskType};
 use std::sync::Arc;
 
+/// Helper function to parse and validate config from TOML
+///
+/// This ensures all tests properly validate configuration before use,
+/// catching configuration errors at the validation layer (not later at runtime).
+fn validated_config_from_toml(toml: &str) -> Config {
+    let config: Config = toml::from_str(toml).expect("should parse TOML");
+    config.validate().expect("config validation should pass");
+    config
+}
+
 #[tokio::test]
 async fn test_llm_router_with_fast_tier() {
     // Test that LLM routing works with router_model = "fast"
@@ -56,7 +66,7 @@ default_importance = "normal"
 router_model = "fast"  # Using Fast tier for routing decisions
 "#;
 
-    let config: Config = toml::from_str(config_toml).expect("should parse config");
+    let config = validated_config_from_toml(config_toml);
     let config = Arc::new(config);
 
     let selector = Arc::new(ModelSelector::new(config.clone()));
@@ -120,7 +130,7 @@ default_importance = "normal"
 router_model = "deep"  # Using Deep tier for LLM fallback routing
 "#;
 
-    let config: Config = toml::from_str(config_toml).expect("should parse config");
+    let config = validated_config_from_toml(config_toml);
     let config = Arc::new(config);
 
     let selector = Arc::new(ModelSelector::new(config.clone()));
@@ -181,7 +191,7 @@ router_model = "{}"
             router_model
         );
 
-        let config: Config = toml::from_str(&config_toml).expect("should parse config");
+        let config = validated_config_from_toml(&config_toml);
         let config = Arc::new(config);
         let selector = Arc::new(ModelSelector::new(config.clone()));
 
@@ -317,7 +327,7 @@ default_importance = "normal"
 router_model = "fast"
 "#;
 
-    let config: Config = toml::from_str(config_toml).expect("should parse config");
+    let config = validated_config_from_toml(config_toml);
     let config = Arc::new(config);
 
     let selector = Arc::new(ModelSelector::new(config.clone()));

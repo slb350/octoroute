@@ -370,7 +370,10 @@ impl Config {
     }
 
     /// Validate configuration after parsing
-    fn validate(&self) -> crate::error::AppResult<()> {
+    ///
+    /// This is called automatically by `from_file()`, but can also be called
+    /// explicitly when constructing Config via other means (e.g., in tests).
+    pub fn validate(&self) -> crate::error::AppResult<()> {
         // Validate ModelEndpoint fields across all tiers
         for (tier_name, endpoints) in [
             ("fast", &self.models.fast),
