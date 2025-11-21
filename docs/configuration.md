@@ -302,7 +302,8 @@ log_level = "info"
 
 ### Fields
 
-- `log_level` (string, required): Logging verbosity level
+- `log_level` (string, optional): Logging verbosity level
+  - Default: `"info"` (if not specified)
   - Values: `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"`
   - Default: `"info"`
 

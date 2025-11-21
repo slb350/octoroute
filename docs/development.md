@@ -81,7 +81,7 @@ just run
 The `justfile` provides convenient development commands:
 
 ```bash
-# Run all checks (fmt, clippy, tests)
+# Run clippy and format checks (no tests)
 just check
 
 # Run all tests

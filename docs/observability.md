@@ -19,7 +19,7 @@ Logging, metrics, and monitoring for Octoroute.
 
 Octoroute provides comprehensive observability through:
 
-- **Structured Logging**: JSON-formatted logs with rich context via `tracing`
+- **Structured Logging**: Human-readable formatted logs with rich context via `tracing`
 - **Prometheus Metrics**: Direct Prometheus integration for monitoring routing decisions and model usage
 - **Health Checks**: Background health monitoring with automatic recovery
 
@@ -224,9 +224,7 @@ octoroute_model_invocations_total{tier="balanced"} 81
 octoroute_model_invocations_total{tier="deep"} 15
 ```
 
-**Note**: LLM router uses balanced tier for routing decisions, so `tier="balanced"` includes both:
-- User requests routed to balanced tier
-- LLM routing decisions (internal overhead)
+**Note**: This metric only counts successful user model invocations (requests to `/chat`). Internal LLM router decisions are NOT recorded in this metric.
 
 **Cardinality**: 3 time series (3 tiers)
 
@@ -338,7 +336,7 @@ sum(rate(octoroute_requests_total[5m])) * 100
 
 **Frequency**: Every 30 seconds
 
-**Method**: `GET /v1/models` to each endpoint
+**Method**: `HEAD {base_url}/models` to each endpoint (note: HEAD request, not GET)
 
 **Failure Threshold**: 3 consecutive failures → mark unhealthy
 

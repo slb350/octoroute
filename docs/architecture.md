@@ -232,6 +232,9 @@ impl RuleBasedRouter {
 - ✗ Limited by rule expressiveness
 - ✗ Requires manual tuning
 
+**Fallback Behavior** (Rule-only strategy):
+When no rule matches and `strategy = "rule"`, the router uses `ModelSelector::default_tier()` which selects the highest-priority tier available. This provides a deterministic fallback without LLM overhead.
+
 ---
 
 ### LLM-Based Router
@@ -277,19 +280,21 @@ impl LlmBasedRouter {
             .await?;
 
         // Parse router decision (fuzzy matching with word boundaries)
+        // Returns error if response doesn't contain FAST, BALANCED, or DEEP
         let normalized = response.trim().to_uppercase();
-        let target = if normalized.contains("FAST") {
-            ModelTier::Fast
-        } else if normalized.contains("BALANCED") {
-            ModelTier::Balanced
-        } else {
-            ModelTier::Deep // Default to largest for safety
-        };
+
+        // Find leftmost routing keyword using word boundary detection
+        let target = Self::parse_routing_decision(&normalized)?;
 
         Ok(RoutingDecision::new(target))
     }
 }
 ```
+
+**Error Handling**:
+- Unparseable responses (no FAST/BALANCED/DEEP found) return an error and fail the request
+- Refusal patterns (CANNOT, ERROR, etc.) are detected and return an error
+- No silent fallback to any tier - routing failures are explicit
 
 **Performance**: 100-500ms (depends on 30B model speed).
 
@@ -299,6 +304,7 @@ impl LlmBasedRouter {
 - ✗ Adds latency (router invocation)
 - ✗ Requires reliable 30B model
 - ✗ Token cost for router prompt
+- ✗ Can fail if router model malfunctions
 
 ---
 
