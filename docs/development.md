@@ -56,22 +56,20 @@ cargo build
 # Release build (optimized)
 cargo build --release
 
-# Or use just
-just build
+# Or use just (only release builds available)
 just build-release
 ```
 
 ### Run
 
 ```bash
-# Run with default config.toml
+# Must run from directory containing config.toml
 cargo run
 
-# Run with custom config
-OCTOROUTE_CONFIG=/path/to/config.toml cargo run
-
-# Or use just
+# Or use just (runs with debug logging)
 just run
+
+# Note: Configuration file must be named config.toml in current directory
 ```
 
 ---

@@ -105,6 +105,7 @@ Routing tier is chosen automatically based on routing logic; manual tier overrid
 - `routing_strategy` (string): How the routing decision was made
   - `"rule"`: Rule-based router matched a pattern
   - `"llm"`: LLM router made the decision (ambiguous case)
+  - **Note**: Never returns `"hybrid"`. Hybrid routing configuration returns either `"rule"` or `"llm"` based on which path was taken.
 
 #### Status Codes
 

@@ -182,38 +182,43 @@ impl RuleBasedRouter {
         use Importance::*;
         use TaskType::*;
 
-        // Rule 1: Trivial/casual tasks → 8B
+        // Rule 1: Trivial/casual tasks → Fast tier
         if matches!(meta.task_type, CasualChat)
             && meta.token_estimate < 256
             && !matches!(meta.importance, High)
         {
-            return Some(RoutingDecision::new(ModelTier::Fast));
+            return Some(RoutingDecision::new(TargetModel::Fast));
         }
 
-        // Rule 2: Medium-depth tasks → 30B
-        if meta.token_estimate < 2048
-            && !matches!(meta.task_type, DeepAnalysis | CreativeWriting)
-        {
-            return Some(RoutingDecision::new(ModelTier::Balanced));
-        }
-
-        // Rule 3: High importance or deep work → 120B
-        if matches!(meta.importance, High)
+        // Rule 2: High importance or deep work → Deep tier
+        // (Check this BEFORE medium-depth rule to prioritize importance)
+        // (Exclude CasualChat + High as it's ambiguous → delegate to LLM)
+        if (matches!(meta.importance, High) && !matches!(meta.task_type, CasualChat))
             || matches!(meta.task_type, DeepAnalysis | CreativeWriting)
         {
-            return Some(RoutingDecision::new(ModelTier::Deep));
+            return Some(RoutingDecision::new(TargetModel::Deep));
         }
 
-        // Rule 4: Code generation (special case)
+        // Rule 3: Code generation (special case)
         if matches!(meta.task_type, Code) {
             return if meta.token_estimate > 1024 {
-                Some(RoutingDecision::new(ModelTier::Deep))
+                Some(RoutingDecision::new(TargetModel::Deep))
             } else {
-                Some(RoutingDecision::new(ModelTier::Balanced))
+                Some(RoutingDecision::new(TargetModel::Balanced))
             };
         }
 
-        // No rule matched → return None for LLM fallback
+        // Rule 4: Medium-depth tasks → Balanced tier
+        // (Only non-code, non-deep tasks with sufficient complexity)
+        // (Minimum 200 tokens to justify balanced model)
+        if meta.token_estimate >= 200
+            && meta.token_estimate < 2048
+            && matches!(meta.task_type, QuestionAnswer | DocumentSummary)
+        {
+            return Some(RoutingDecision::new(TargetModel::Balanced));
+        }
+
+        // No rule matched → delegate to LLM router
         None
     }
 }
@@ -365,31 +370,25 @@ impl HybridRouter {
    ↓
 4. Build RouteMetadata (token estimate, task type, importance)
    ↓
-5. Check for explicit model tier override
-   ├─ Yes → Skip routing, use specified tier
-   └─ No  → Continue to router
-           ↓
-6. RuleBasedRouter.route(metadata)
+5. RuleBasedRouter.route(metadata)
    ├─ Rule matched → Return routing decision
    └─ No match    → LlmBasedRouter.route(prompt, metadata)
                      ↓
-7. ModelSelector.select_endpoint(tier, exclusions)
+6. ModelSelector.select_endpoint(tier, exclusions)
    ├─ Filter by priority (highest priority tier)
    ├─ Filter by health status (exclude unhealthy)
    ├─ Weighted random selection within tier
    └─ Return selected endpoint
            ↓
-8. Create open-agent-sdk Client for endpoint
+7. Build AgentOptions for endpoint and invoke with open_agent::query()
    ↓
-9. Client sends prompt to model
+8. Stream response from model endpoint
    ↓
-10. Stream response blocks from model
+9. Buffer full response and return to client
    ↓
-11. Accumulate text blocks into response
+10. Build ChatResponse with model tier, routing strategy, and content
    ↓
-12. Build ChatResponse (tier, strategy, timing, etc.)
-   ↓
-13. Return JSON response
+11. Return JSON response to client
 ```
 
 ### Error Flow
@@ -431,7 +430,8 @@ For each endpoint:
 - Background health check task can crash (panics, unexpected exits)
 - Automatic restart with exponential backoff (1s, 2s, 4s, 8s, 16s)
 - Maximum 5 restart attempts before giving up
-- Server panics after exhausting retries (prevents silent degradation)
+- After 5 failures, background health checking stops but server continues (graceful degradation)
+- Health status remains at last known state without background updates
 
 ---
 

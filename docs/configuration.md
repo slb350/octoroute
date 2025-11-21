@@ -205,13 +205,15 @@ router_model = "balanced"
   - `"llm"`: LLM-based only (most intelligent)
   - `"hybrid"`: Rule-based with LLM fallback (recommended)
 
-- `default_importance` (string, required): Default importance when not specified in request
+- `default_importance` (string, optional): Default importance when not specified in request
   - Values: `"low"`, `"normal"`, `"high"`
-  - Default: `"normal"`
+  - Default: `"normal"` (if not specified)
 
-- `router_model` (string, required): Which tier to use for LLM-based routing decisions
+- `router_model` (string, required): Specifies which tier should be used for LLM-based routing
   - Values: `"fast"`, `"balanced"`, `"deep"`
-  - Recommended: `"balanced"` (30B models balance speed and quality)
+  - **Note**: Currently not implemented. LLM-based routing always uses the Balanced tier regardless of this setting.
+  - This field is validated but the value is not consulted at runtime.
+  - Recommended: Keep as `"balanced"` for future compatibility
 
 ### Routing Strategies
 
