@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.90"
 authors = ["Steve Brandon <steve@localbrandonfamily.com>"]
 description = "Intelligent multi-model router for self-hosted LLMs"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://github.com/slb350/octoroute"
 
 [dependencies]
