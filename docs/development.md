@@ -371,8 +371,8 @@ cargo clippy --all-targets --all-features
 cargo clippy --all-targets --all-features --fix
 
 # Or use just
-just clippy
-just clippy-fix
+just check       # Runs clippy + format check
+just clippy-fix  # Runs clippy with auto-fix
 ```
 
 **Clippy Configuration** (`clippy.toml`):
