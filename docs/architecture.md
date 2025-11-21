@@ -276,7 +276,7 @@ impl LlmBasedRouter {
         // Build router prompt with truncation for safety
         let router_prompt = Self::build_router_prompt(user_prompt, meta);
 
-        // Retry up to MAX_ROUTER_RETRIES times with different endpoints
+        // Retry up to MAX_ROUTER_RETRIES (2) times with different endpoints
         let mut failed_endpoints = ExclusionSet::new();
 
         for attempt in 1..=MAX_ROUTER_RETRIES {
@@ -286,7 +286,7 @@ impl LlmBasedRouter {
                 None => {
                     return Err(AppError::RoutingFailed(format!(
                         "No healthy balanced tier endpoints for routing \
-                        (attempt {}/{})", attempt, MAX_ROUTER_RETRIES
+                        (attempt {}/{})", attempt, 2  // MAX_ROUTER_RETRIES
                     )));
                 }
             };
@@ -314,7 +314,7 @@ impl LlmBasedRouter {
             }
         }
 
-        Err(AppError::RoutingFailed("All router retry attempts exhausted".to_string()))
+        Err(AppError::RoutingFailed("All 2 router retry attempts exhausted".to_string()))
     }
 
     fn build_router_prompt(user_prompt: &str, meta: &RouteMetadata) -> String {
@@ -392,7 +392,7 @@ impl HybridRouter {
         {
             Some(decision) => {
                 tracing::info!(
-                    tier = ?decision.tier(),
+                    target = ?decision.target(),
                     strategy = "rule",
                     "Route decision made"
                 );
@@ -403,7 +403,7 @@ impl HybridRouter {
                 tracing::debug!("No rule matched, delegating to LLM router");
                 let decision = self.llm_router.route(user_prompt, meta).await?;
                 tracing::info!(
-                    tier = ?decision.tier(),
+                    target = ?decision.target(),
                     strategy = "llm",
                     "Route decision made"
                 );
