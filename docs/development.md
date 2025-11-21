@@ -305,11 +305,13 @@ proptest! {
 
 ### Test Coverage
 
-Current coverage (run `cargo test` to verify):
-- 225+ unit tests
-- 60+ integration tests
+Octoroute maintains extensive test coverage across all components:
+- Comprehensive unit tests for all modules
+- Integration tests for end-to-end request flows
 - Zero clippy warnings
 - All tests passing
+
+Run `cargo test --all` to verify current test count and results.
 
 **Generate coverage report** (requires `cargo-tarpaulin`):
 

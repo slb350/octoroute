@@ -97,10 +97,10 @@ Response:
 
 ```json
 {
-  "response": "Quantum computing is...",
-  "model_used": "balanced_30b",
-  "routing_strategy": "rule",
-  "processing_time_ms": 1234
+  "content": "Quantum computing is...",
+  "model_tier": "balanced",
+  "model_name": "qwen3-30b-instruct",
+  "routing_strategy": "rule"
 }
 ```
 
@@ -191,11 +191,6 @@ scrape_configs:
 - Works with existing Prometheus/Grafana setups out of the box
 - No intermediate abstraction layers - just Prometheus
 - Mature, stable crate with broad ecosystem support
-- Future-proof: OpenTelemetry traces can be added separately if needed for distributed tracing
-
-### Level 3: Distributed Traces (Future)
-
-Coming in a future release: Full request tracing showing routing flow, retries, and model execution timing.
 
 ---
 
@@ -358,10 +353,19 @@ cargo fmt
 
 # Lint with clippy
 cargo clippy --all-targets --all-features -- -D warnings
-
-# Or use justfile
-just check
 ```
+
+**Quick Command Reference** (using `justfile`):
+
+| Command | Description |
+|---------|-------------|
+| `just check` | Run all checks (fmt, clippy, tests) |
+| `just test` | Run all tests |
+| `just bench` | Run benchmarks |
+| `just watch` | Auto-rebuild on file changes |
+| `just ci` | Complete CI check (used by GitHub Actions) |
+
+See `just --list` for all 20+ available commands.
 
 ### Run locally
 
@@ -502,7 +506,7 @@ Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guideli
 
 ### Q: Does this support streaming responses?
 
-**A**: Not in v0.1, but planned for future releases. Currently accumulates full response before returning.
+**A**: Not currently. Octoroute accumulates the full response before returning.
 
 ### Q: How does LLM-based routing work?
 
@@ -510,10 +514,9 @@ Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guideli
 
 ### Q: How do I monitor Octoroute in production?
 
-**A**: Octoroute provides three observability levels:
+**A**: Octoroute provides two observability levels:
 1. **Structured logs** (always enabled): Use `RUST_LOG=info` to see routing decisions and health status
 2. **Metrics** (always enabled): Prometheus metrics exposed at `/metrics` endpoint
-3. **Traces** (future): Distributed tracing showing full request flow (coming soon)
 
 For homelab deployments, we recommend Prometheus + Grafana for metrics visualization.
 
@@ -546,7 +549,6 @@ For internet-exposed deployments, always use authentication or IP restrictions.
 - **Simplicity**: No intermediate abstraction layers - just Prometheus
 - **Homelab-friendly**: Works with existing Prometheus/Grafana setups out of the box, no OTEL collector required
 - **Stability**: Mature, actively maintained library
-- **Future-proof**: OpenTelemetry traces can be added separately if needed for distributed tracing
 
 The `/metrics` endpoint works with your existing Prometheus scraper without any additional infrastructure.
 

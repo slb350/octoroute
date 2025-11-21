@@ -139,6 +139,18 @@ ERROR octoroute::models::health: Background health check task crashed error="pan
 
 ### Available Metrics
 
+**Cardinality Safety**: Octoroute uses **type-safe enums** for metric labels to prevent cardinality explosion:
+
+- `Tier` enum: 3 variants (Fast, Balanced, Deep)
+- `Strategy` enum: 2 variants (Rule, Llm)
+- **Maximum cardinality**: 3 tiers × 2 strategies = **6 time series** for `octoroute_requests_total`
+
+**Why This Matters**: Using raw strings for labels could create unbounded time series (e.g., if user input leaked into labels). Type-safe enums enforce compile-time cardinality bounds.
+
+**Note**: `Strategy::Hybrid` exists in the routing configuration but is **never recorded** as a metric label. Hybrid router records either "rule" or "llm" based on which path was taken.
+
+---
+
 #### octoroute_requests_total
 
 **Type**: Counter
