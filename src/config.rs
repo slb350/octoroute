@@ -117,8 +117,17 @@ pub struct RoutingConfig {
     ///
     /// Defaults to Balanced if not specified (recommended for most use cases).
     ///
-    /// Serde deserializes from lowercase strings: "fast", "balanced", "deep"
-    /// Invalid values are caught at deserialization time, not validation time.
+    /// # Validation (Two-Phase)
+    ///
+    /// **Phase 1 - Format Validation (Deserialization Time)**:
+    /// Serde deserializes from lowercase strings: "fast", "balanced", "deep".
+    /// Invalid format like "FAST" or "fasst" is rejected at deserialization time
+    /// with clear error messages from serde.
+    ///
+    /// **Phase 2 - Availability Validation (Config::validate)**:
+    /// After deserialization, `Config::validate()` checks that the specified tier
+    /// has at least one configured endpoint (see validation at lines 461-490).
+    /// This ensures the router tier is not only valid in format but also usable.
     #[serde(default)]
     pub router_tier: TargetModel,
 }
@@ -461,8 +470,17 @@ impl Config {
             }
         }
 
-        // Validate that router_tier has endpoints (ONLY for strategies that use it)
-        // Note: router_tier format validation is handled by serde at deserialization time
+        // ═══════════════════════════════════════════════════════════════════════
+        // Phase 2: Router Tier Availability Validation
+        // ═══════════════════════════════════════════════════════════════════════
+        //
+        // This is the second phase of router_tier validation:
+        //   - Phase 1 (Deserialization): Serde validates FORMAT ("fast"/"balanced"/"deep")
+        //   - Phase 2 (Here): We validate AVAILABILITY (tier has configured endpoints)
+        //
+        // We only validate availability for strategies that use router_tier (LLM/Hybrid).
+        // Rule/Tool strategies don't use router_tier, so endpoint availability doesn't matter.
+        //
         match self.routing.strategy {
             RoutingStrategy::Llm | RoutingStrategy::Hybrid => {
                 // Use TargetModel directly - no string matching needed

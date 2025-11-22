@@ -141,22 +141,25 @@ impl LlmRouterError {
 ///
 /// ## Expected Response Format
 ///
-/// Router responses should be "FAST", "BALANCED", or "DEEP" (~10 bytes).
-/// The parser correctly extracts keywords from verbose responses (e.g., "I recommend
-/// BALANCED because..."), so this 1KB limit is defensive: it prevents unbounded memory
-/// growth from runaway generation while supporting legitimate verbose responses.
+/// Router responses contain one of three keywords: "FAST", "BALANCED", or "DEEP".
+/// The parser extracts these keywords from verbose responses (e.g., "I recommend
+/// BALANCED because it provides the best balance of speed and accuracy for this task").
 ///
-/// Responses exceeding 1KB may indicate:
-/// - LLM generating essays instead of single-word classifications (>100 words)
-/// - Runaway generation (repeating text, hallucination loops)
-/// - Prompt injection attempts attempting to overwhelm the parser
+/// **Typical response sizes**:
+/// - Minimal: "BALANCED" (~10 bytes)
+/// - Verbose: "I recommend BALANCED because..." (~100-200 bytes)
+/// - Excessive: Multi-paragraph explanations (>500 bytes, likely indicates issues)
 ///
 /// ## Rationale for 1KB Limit
 ///
-/// The limit is 100x larger than expected (~10 bytes) to accommodate verbose responses
-/// while preventing unbounded memory growth. Legitimate verbose responses (100-200 bytes)
-/// are fully supported and parsed correctly. Multi-paragraph responses indicate the LLM
-/// is not following instructions or has entered a runaway generation loop.
+/// The 1KB limit accommodates legitimate verbose responses (100-200 bytes) while
+/// preventing unbounded memory growth from:
+/// - Runaway generation (repeating text, hallucination loops)
+/// - LLM generating essays instead of classifications (>100 words)
+/// - Prompt injection attempts attempting to overwhelm the parser
+///
+/// This is 5-10x larger than typical verbose responses, providing a comfortable safety
+/// margin while still catching problematic generation early.
 const MAX_ROUTER_RESPONSE: usize = 1024;
 
 /// LLM-powered router that uses a model to make routing decisions
