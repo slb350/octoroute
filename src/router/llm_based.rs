@@ -355,6 +355,12 @@ impl LlmBasedRouter {
                     } else if excluded_count == total_configured {
                         // COMPLETE EXHAUSTION: All configured endpoints tried and failed
                         // This is an error condition - we tried everything and nothing worked
+
+                        // Collect failed endpoint names for debugging
+                        let failed_names: Vec<&str> =
+                            failed_endpoints.iter().map(|ep| ep.as_str()).collect();
+                        let failed_names_str = failed_names.join(", ");
+
                         tracing::error!(
                             tier = ?router_tier,
                             attempt = attempt,
@@ -367,8 +373,13 @@ impl LlmBasedRouter {
                         );
                         last_error = Some(AppError::RoutingFailed(format!(
                             "All {} {:?} tier endpoints exhausted for routing (attempt {}/{}). \
+                            Failed endpoints: {}. \
                             Check endpoint connectivity and health.",
-                            total_configured, router_tier, attempt, MAX_ROUTER_RETRIES
+                            total_configured,
+                            router_tier,
+                            attempt,
+                            MAX_ROUTER_RETRIES,
+                            failed_names_str
                         )));
                         continue;
                     } else {
@@ -691,11 +702,21 @@ impl LlmBasedRouter {
                             // Oversized response indicates serious LLM malfunction
                             // Expected response: ~10 bytes ("FAST", "BALANCED", or "DEEP")
                             // >1KB response means LLM is ignoring instructions or misconfigured
+
+                            // Capture preview of response for debugging (first 200 chars)
+                            let preview_chars: String = response_text.chars().take(200).collect();
+                            let preview = if response_text.len() > 200 {
+                                format!("{}...", preview_chars)
+                            } else {
+                                preview_chars
+                            };
+
                             tracing::error!(
                                 endpoint_name = %endpoint.name(),
                                 current_length = response_text.len(),
                                 incoming_length = text_block.text.len(),
                                 max_allowed = MAX_ROUTER_RESPONSE,
+                                response_preview = %preview,
                                 attempt = attempt,
                                 max_retries = max_retries,
                                 "Router response exceeded size limit - LLM not following instructions (attempt {}/{})",
@@ -705,9 +726,11 @@ impl LlmBasedRouter {
                                 endpoint: endpoint.base_url().to_string(),
                                 reason: format!(
                                     "Router response exceeded {} bytes (expected ~10 bytes). \
-                                    LLM not following instructions - got {} bytes so far.",
+                                    LLM not following instructions - got {} bytes so far. \
+                                    Response preview (first 200 chars): '{}'",
                                     MAX_ROUTER_RESPONSE,
-                                    response_text.len()
+                                    response_text.len(),
+                                    preview
                                 ),
                             });
                         }

@@ -509,11 +509,21 @@ impl Config {
                 };
 
                 if router_tier_endpoints.is_empty() {
+                    let tier_name = format!("{:?}", self.routing.router_tier()).to_lowercase();
                     return Err(crate::error::AppError::Config(format!(
                         "Configuration error: routing.router_tier is '{:?}' but models.{:?} has no endpoints. \
-                        LLM/Hybrid routing requires at least one endpoint for the router tier.",
+                        LLM/Hybrid routing requires at least one endpoint for the router tier.\n\n\
+                        Example fix - add to config.toml:\n\
+                        [[models.{}]]\n\
+                        name = \"my-model\"\n\
+                        base_url = \"http://localhost:1234/v1\"\n\
+                        max_tokens = 4096\n\
+                        temperature = 0.7\n\
+                        weight = 1.0\n\
+                        priority = 1",
                         self.routing.router_tier(),
-                        self.routing.router_tier()
+                        self.routing.router_tier(),
+                        tier_name
                     )));
                 }
             }

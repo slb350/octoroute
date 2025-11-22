@@ -333,6 +333,7 @@ impl HealthChecker {
                 // Log only on transition to unhealthy
                 tracing::warn!(
                     endpoint_name = %health.name,
+                    endpoint_url = %health.base_url,
                     consecutive_failures = health.consecutive_failures,
                     "Endpoint marked as unhealthy after 3 consecutive failures"
                 );
@@ -341,6 +342,7 @@ impl HealthChecker {
         } else {
             tracing::debug!(
                 endpoint_name = %health.name,
+                endpoint_url = %health.base_url,
                 consecutive_failures = health.consecutive_failures,
                 "Endpoint failure recorded (still healthy)"
             );
@@ -388,11 +390,13 @@ impl HealthChecker {
             // Log recovery
             tracing::info!(
                 endpoint_name = %health.name,
+                endpoint_url = %health.base_url,
                 "Endpoint recovered to healthy state"
             );
         } else {
             tracing::debug!(
                 endpoint_name = %health.name,
+                endpoint_url = %health.base_url,
                 "Endpoint health check succeeded"
             );
         }
