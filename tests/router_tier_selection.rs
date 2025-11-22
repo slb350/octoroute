@@ -1,10 +1,14 @@
 //! Integration tests for router_tier tier selection
 //!
-//! This test file addresses PR #4 review critical issue #3:
-//! "Missing integration tests for Fast/Deep router tiers"
+//! Tests router behavior across all three router tier configurations:
+//! - **Fast tier (8B models)**: Tests low-latency routing with smaller models
+//! - **Balanced tier (30B models)**: Tests default routing configuration
+//! - **Deep tier (120B models)**: Tests high-accuracy routing with larger models
 //!
-//! Verifies that the system works end-to-end with different router_tier
-//! configurations: "fast", "balanced", and "deep".
+//! These tests ensure the routing system correctly uses the specified router_tier
+//! to make routing decisions, independent of which target tier is ultimately selected.
+//! This validates the critical distinction between "router tier" (decision maker)
+//! and "target tier" (request handler).
 
 use octoroute::config::Config;
 use octoroute::models::ModelSelector;

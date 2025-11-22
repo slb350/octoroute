@@ -319,6 +319,17 @@ impl LlmBasedRouter {
         );
 
         // Retry loop with request-scoped exclusion (similar to chat handler)
+        //
+        // SCOPE: The `failed_endpoints` exclusion set is request-scoped - it exists only
+        // for the duration of this function call and is discarded when the function returns.
+        // This means endpoints excluded during this request's retries will be available again
+        // for the next request.
+        //
+        // WHY REQUEST-SCOPED: If we permanently excluded endpoints after failures, a single
+        // transient network glitch could permanently remove a healthy endpoint from rotation.
+        // Request-scoped exclusions allow the health checker to independently track endpoint
+        // health and recover failed endpoints, while still preventing retry loops from
+        // hitting the same failed endpoint repeatedly within a single request.
         const MAX_ROUTER_RETRIES: usize = 2;
         let mut last_error = None;
         let mut failed_endpoints = ExclusionSet::new();
@@ -441,6 +452,22 @@ impl LlmBasedRouter {
                     // IMPORTANT: If health tracking fails, we LOG the error but DO NOT fail the request.
                     // Health tracking is auxiliary functionality - the routing decision succeeded and that's
                     // what matters. Failing the request would discard a valid routing decision.
+                    //
+                    // OPERATOR IMPACT: When health tracking fails, the system experiences degraded observability:
+                    //
+                    // - **Slower Recovery**: Failed endpoints won't be marked healthy immediately. The health
+                    //   checker's background polling will eventually recover them, but recovery time increases
+                    //   from immediate (on success) to the next health check interval (typically 30-60 seconds).
+                    //
+                    // - **Suboptimal Routing**: During the recovery delay, the router may avoid a perfectly
+                    //   healthy endpoint because health tracking couldn't update its status. This can lead to
+                    //   higher latency if the router uses slower endpoints or retries more frequently.
+                    //
+                    // - **Warning Surfaced**: The failure is surfaced to users as a warning in the response,
+                    //   alerting operators to investigate potential configuration issues, race conditions, or bugs.
+                    //
+                    // The request still succeeds, but operators should monitor health_tracking_failure metrics
+                    // to detect and fix underlying issues.
                     if let Err(e) = self
                         .selector
                         .health_checker()
