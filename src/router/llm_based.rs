@@ -47,15 +47,26 @@ pub enum LlmRouterError {
     ///
     /// Systemic error - indicates LLM malfunction or misconfiguration.
     /// Retrying with a different endpoint won't help.
-    #[error("Router LLM returned empty response")]
+    #[error(
+        "Router LLM returned empty response from {endpoint}. \
+         Expected response containing one of: FAST, BALANCED, or DEEP. \
+         Possible causes: safety filter activation, API failure, streaming error, or LLM misconfiguration."
+    )]
     EmptyResponse { endpoint: String },
 
     /// Router LLM returned unparseable response (no valid routing keyword found)
     ///
     /// Systemic error - indicates LLM not following instructions, safety filter activation,
     /// or misconfiguration. Retrying won't help.
-    #[error("Router LLM returned unparseable response: {response}")]
-    UnparseableResponse { endpoint: String, response: String },
+    ///
+    /// The `response` field contains a truncated preview (max 500 chars).
+    /// The `response_length` field contains the total original response length.
+    #[error("Router LLM returned unparseable response ({response_length} bytes): {response}")]
+    UnparseableResponse {
+        endpoint: String,
+        response: String,
+        response_length: usize,
+    },
 
     /// Router LLM returned refusal or error message
     ///
@@ -99,12 +110,16 @@ pub enum LlmRouterError {
     ///
     /// Transient error - endpoint may be overloaded or unreachable.
     /// Retrying with a different endpoint may succeed.
-    #[error("Router query timed out after {timeout_seconds}s (attempt {attempt}/{max_attempts})")]
+    #[error(
+        "Router query timed out after {timeout_seconds}s (attempt {attempt}/{max_attempts}) for {router_tier:?} tier. \
+         Remediation: Check endpoint health at {endpoint}, increase timeout in config, or try a faster tier."
+    )]
     Timeout {
         endpoint: String,
         timeout_seconds: u64,
         attempt: usize,
         max_attempts: usize,
+        router_tier: crate::router::TargetModel,
     },
 }
 
@@ -173,6 +188,7 @@ const MAX_ROUTER_RESPONSE: usize = 1024;
 /// The tier is chosen via `config.routing.router_tier` at construction time.
 pub struct LlmBasedRouter {
     selector: TierSelector,
+    router_tier: TargetModel,
     metrics: Arc<crate::metrics::Metrics>,
 }
 
@@ -206,6 +222,7 @@ impl LlmBasedRouter {
 
         Ok(Self {
             selector: tier_selector,
+            router_tier: tier,
             metrics,
         })
     }
@@ -632,19 +649,19 @@ impl LlmBasedRouter {
                     endpoint_name = %endpoint.name(),
                     endpoint_url = %endpoint.base_url(),
                     timeout_seconds = ROUTER_QUERY_TIMEOUT_SECS,
+                    router_tier = ?self.router_tier,
                     attempt = attempt,
                     max_retries = max_retries,
                     "Router query timeout - endpoint did not respond within {} seconds (attempt {}/{})",
                     ROUTER_QUERY_TIMEOUT_SECS, attempt, max_retries
                 );
-                AppError::ModelQueryFailed {
+                AppError::LlmRouting(LlmRouterError::Timeout {
                     endpoint: endpoint.base_url().to_string(),
-                    reason: format!(
-                        "Router query timeout after {} seconds (attempt {}/{}). \
-                         Endpoint may be overloaded or unreachable.",
-                        ROUTER_QUERY_TIMEOUT_SECS, attempt, max_retries
-                    ),
-                }
+                    timeout_seconds: ROUTER_QUERY_TIMEOUT_SECS,
+                    attempt,
+                    max_attempts: max_retries,
+                    router_tier: self.router_tier,
+                })
             })?
             .map_err(|e| {
                 tracing::error!(
@@ -855,10 +872,9 @@ impl LlmBasedRouter {
                 response = %response,
                 "Router LLM returned empty response - cannot determine routing decision"
             );
-            return Err(AppError::ModelQueryFailed {
+            return Err(AppError::LlmRouting(LlmRouterError::EmptyResponse {
                 endpoint: "router".to_string(),
-                reason: "Router LLM returned empty response".to_string(),
-            });
+            }));
         }
 
         // Check for refusal/error patterns BEFORE keyword matching
@@ -879,18 +895,21 @@ impl LlmBasedRouter {
                     refusal_pattern = pattern,
                     "Router LLM returned refusal or error response"
                 );
-                return Err(AppError::ModelQueryFailed {
+
+                // Truncate response to 500 chars for error message preview
+                let response_preview = if response.len() > 500 {
+                    format!("{}...", &response.chars().take(500).collect::<String>())
+                } else {
+                    response.to_string()
+                };
+
+                return Err(AppError::LlmRouting(LlmRouterError::Refusal {
                     endpoint: "router".to_string(),
-                    reason: format!(
+                    message: format!(
                         "Router LLM returned refusal/error response (contains '{}'): '{}'",
-                        pattern,
-                        if response.len() > 100 {
-                            format!("{}...", &response.chars().take(100).collect::<String>())
-                        } else {
-                            response.to_string()
-                        }
+                        pattern, response_preview
                     ),
-                });
+                }));
             }
         }
 
@@ -928,20 +947,22 @@ impl LlmBasedRouter {
             response_length = response.len(),
             "Router LLM returned unparseable response - cannot extract FAST, BALANCED, or DEEP"
         );
-        Err(AppError::ModelQueryFailed {
+
+        // Truncate response to 500 chars for error message preview
+        let response_preview = if response.len() > 500 {
+            format!(
+                "{}... [truncated]",
+                &response.chars().take(500).collect::<String>()
+            )
+        } else {
+            response.to_string()
+        };
+
+        Err(AppError::LlmRouting(LlmRouterError::UnparseableResponse {
             endpoint: "router".to_string(),
-            reason: format!(
-                "Router LLM returned unparseable response: '{}'",
-                if response.len() > 100 {
-                    format!(
-                        "{}... [truncated]",
-                        &response.chars().take(100).collect::<String>()
-                    )
-                } else {
-                    response.to_string()
-                }
-            ),
-        })
+            response: response_preview,
+            response_length: response.len(),
+        }))
     }
 }
 
@@ -1902,14 +1923,11 @@ router_tier = "balanced"
             "parse_routing_decision should fail on empty string"
         );
 
-        if let Err(AppError::ModelQueryFailed { reason, .. }) = result {
-            assert!(
-                reason.contains("empty response"),
-                "Error message should mention 'empty response', got: {}",
-                reason
-            );
-        } else {
-            panic!("Expected ModelQueryFailed error");
+        match result {
+            Err(AppError::LlmRouting(LlmRouterError::EmptyResponse { .. })) => {
+                // Error type is correct
+            }
+            other => panic!("Expected LlmRouting(EmptyResponse) error, got: {:?}", other),
         }
     }
 
@@ -2083,6 +2101,7 @@ router_tier = "balanced"
         let unparseable = LlmRouterError::UnparseableResponse {
             endpoint: "http://test:1234/v1".to_string(),
             response: "BAD RESPONSE".to_string(),
+            response_length: 12,
         };
         assert!(
             !unparseable.is_retryable(),
@@ -2137,6 +2156,7 @@ router_tier = "balanced"
             timeout_seconds: 30,
             attempt: 1,
             max_attempts: 3,
+            router_tier: TargetModel::Balanced,
         };
         assert!(
             timeout.is_retryable(),
@@ -2159,6 +2179,7 @@ router_tier = "balanced"
         let unparseable = LlmRouterError::UnparseableResponse {
             endpoint: "http://test:1234/v1".to_string(),
             response: "BREAKFAST".to_string(),
+            response_length: 9,
         };
         let msg = unparseable.to_string();
         assert!(
@@ -2182,6 +2203,7 @@ router_tier = "balanced"
             timeout_seconds: 30,
             attempt: 2,
             max_attempts: 3,
+            router_tier: TargetModel::Balanced,
         };
         let msg = timeout.to_string();
         assert!(
@@ -2200,15 +2222,21 @@ router_tier = "balanced"
         let router_error = LlmRouterError::UnparseableResponse {
             endpoint: "http://test:1234/v1".to_string(),
             response: "BAD".to_string(),
+            response_length: 3,
         };
 
         let app_error: AppError = router_error.into();
 
         match app_error {
             AppError::LlmRouting(e) => match e {
-                LlmRouterError::UnparseableResponse { endpoint, response } => {
+                LlmRouterError::UnparseableResponse {
+                    endpoint,
+                    response,
+                    response_length,
+                } => {
                     assert_eq!(endpoint, "http://test:1234/v1");
                     assert_eq!(response, "BAD");
+                    assert_eq!(response_length, 3);
                 }
                 _ => panic!("Expected UnparseableResponse variant"),
             },
