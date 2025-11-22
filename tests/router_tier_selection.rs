@@ -84,9 +84,9 @@ router_tier = "fast"  # Using Fast tier for routing decisions
         result.err()
     );
 
-    println!("✅ Verified LLM router works with router_tier='fast'");
-    println!("   - LlmBasedRouter construction succeeded");
-    println!("   - Fast tier used for routing decisions");
+    // Verified: LLM router construction succeeds with router_tier='fast'
+    // (Fast tier used for routing decisions)
+    let _router = result.unwrap(); // Consumes result, verifies Ok variant
 }
 
 #[tokio::test]
@@ -152,9 +152,9 @@ router_tier = "deep"  # Using Deep tier for LLM fallback routing
         result.err()
     );
 
-    println!("✅ Verified Hybrid router works with router_tier='deep'");
-    println!("   - HybridRouter construction succeeded");
-    println!("   - Deep tier used for LLM fallback routing");
+    // Verified: Hybrid router construction succeeds with router_tier='deep'
+    // (Deep tier used for LLM fallback routing)
+    let _router = result.unwrap(); // Consumes result, verifies Ok variant
 }
 
 #[tokio::test]
@@ -326,10 +326,8 @@ router_tier = "{}"
             router_tier
         );
 
-        println!(
-            "✅ Router construction passed for router_tier='{}'",
-            router_tier
-        );
+        // Verified: Router construction succeeds for this tier
+        let _router = result.unwrap(); // Consumes result, verifies Ok variant
     }
 }
 
