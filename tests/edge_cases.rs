@@ -93,8 +93,10 @@ name = "test-balanced"
 base_url = "http://localhost:9090/v1"
 max_tokens = 8192
 
-[models]
-deep = []
+[[models.deep]]
+name = "test-deep"
+base_url = "http://localhost:10000/v1"
+max_tokens = 16384
 
 [routing]
 strategy = "llm"
@@ -221,9 +223,15 @@ name = "test"
 base_url = "http://localhost:8080/v1"
 max_tokens = 4096
 
-[models]
-balanced = []
-deep = []
+[[models.balanced]]
+name = "test-balanced"
+base_url = "http://localhost:1234/v1"
+max_tokens = 8192
+
+[[models.deep]]
+name = "test-deep"
+base_url = "http://localhost:8081/v1"
+max_tokens = 16384
 
 [routing]
 strategy = "rule"
