@@ -227,6 +227,15 @@ impl LlmBasedRouter {
         })
     }
 
+    /// Get the tier this router uses for routing decisions
+    ///
+    /// Returns the tier configured via `router_tier` in config.toml.
+    /// This tier determines which model endpoints are queried when making
+    /// routing decisions.
+    pub fn tier(&self) -> TargetModel {
+        self.router_tier
+    }
+
     /// Classify error as retryable (transient) or non-retryable (systemic)
     ///
     /// Systemic errors indicate problems that won't be fixed by retrying with
