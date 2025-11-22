@@ -331,26 +331,29 @@ impl Config {
     pub fn from_file<P: AsRef<Path>>(path: P) -> crate::error::AppResult<Self> {
         let path_display = path.as_ref().display().to_string();
 
-        let content = std::fs::read_to_string(path.as_ref()).map_err(|e| {
-            crate::error::AppError::Config(format!(
-                "Failed to read config file '{}': {}",
-                path_display, e
-            ))
+        // Phase 1: Read file (preserves io::Error context)
+        let content = std::fs::read_to_string(path.as_ref()).map_err(|source| {
+            crate::error::AppError::ConfigFileRead {
+                path: path_display.clone(),
+                source,
+            }
         })?;
 
-        let config = Self::from_str(&content).map_err(|e| {
-            crate::error::AppError::Config(format!(
-                "Failed to parse config file '{}': {}",
-                path_display, e
-            ))
+        // Phase 2: Parse TOML (preserves toml::de::Error context)
+        let config: Self = toml::from_str(&content).map_err(|source| {
+            crate::error::AppError::ConfigParseFailed {
+                path: path_display.clone(),
+                source,
+            }
         })?;
 
-        config.validate().map_err(|e| {
-            crate::error::AppError::Config(format!(
-                "Config file '{}' validation failed: {}",
-                path_display, e
-            ))
-        })?;
+        // Phase 3: Validate parsed config (provides contextual reason)
+        config
+            .validate()
+            .map_err(|e| crate::error::AppError::ConfigValidationFailed {
+                path: path_display,
+                reason: e.to_string(),
+            })?;
 
         Ok(config)
     }
@@ -535,8 +538,10 @@ impl FromStr for Config {
     type Err = crate::error::AppError;
 
     fn from_str(toml_str: &str) -> Result<Self, Self::Err> {
-        toml::from_str(toml_str)
-            .map_err(|e| crate::error::AppError::Config(format!("Invalid TOML: {}", e)))
+        toml::from_str(toml_str).map_err(|source| crate::error::AppError::ConfigParseFailed {
+            path: "<string>".to_string(),
+            source,
+        })
     }
 }
 

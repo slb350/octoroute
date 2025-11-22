@@ -14,8 +14,29 @@ use crate::router::llm_based::LlmRouterError;
 /// Main error type for the application
 #[derive(Error, Debug)]
 pub enum AppError {
+    /// Generic configuration error (deprecated - use specific variants below)
     #[error("Configuration error: {0}")]
     Config(String),
+
+    /// Failed to read config file from filesystem
+    #[error("Failed to read config file '{path}': {source}")]
+    ConfigFileRead {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Failed to parse TOML configuration
+    #[error("Failed to parse config file '{path}': {source}")]
+    ConfigParseFailed {
+        path: String,
+        #[source]
+        source: toml::de::Error,
+    },
+
+    /// Config validation failed after successful parsing
+    #[error("Config validation failed for '{path}': {reason}")]
+    ConfigValidationFailed { path: String, reason: String },
 
     #[error("Invalid request: {0}")]
     Validation(String),
@@ -56,6 +77,11 @@ impl IntoResponse for AppError {
         let (status, message) = match &self {
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             Self::Config(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            Self::ConfigFileRead { .. } => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            Self::ConfigParseFailed { .. } => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            Self::ConfigValidationFailed { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
+            }
             Self::RoutingFailed(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             Self::StreamInterrupted { .. } => (StatusCode::BAD_GATEWAY, self.to_string()),
             Self::EndpointTimeout { .. } => (StatusCode::GATEWAY_TIMEOUT, self.to_string()),
