@@ -32,7 +32,7 @@ impl HybridRouter {
         metrics: Arc<crate::metrics::Metrics>,
     ) -> AppResult<Self> {
         // Router tier from config (serde validates format at deserialization time)
-        let router_tier = config.routing.router_tier;
+        let router_tier = config.routing.router_tier();
 
         let llm_router = LlmBasedRouter::new(selector.clone(), router_tier, metrics)?;
         Ok(Self {

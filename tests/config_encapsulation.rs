@@ -1,0 +1,215 @@
+//! Config encapsulation tests
+//!
+//! Tests that RoutingConfig.router_tier is private with accessor method,
+//! preventing post-validation mutation and enforcing encapsulation.
+//!
+//! Addresses PR #4 Type Design Issue: router_tier public field
+
+use octoroute::config::Config;
+use octoroute::router::TargetModel;
+
+/// Test that router_tier() accessor returns the correct value
+#[test]
+fn test_router_tier_accessor_returns_value() {
+    let config_toml = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "hybrid"
+default_importance = "normal"
+router_tier = "fast"
+"#;
+
+    let config: Config = toml::from_str(config_toml).expect("Should parse");
+
+    // Access via accessor method
+    assert_eq!(
+        config.routing.router_tier(),
+        TargetModel::Fast,
+        "router_tier() should return Fast"
+    );
+}
+
+/// Test that router_tier() accessor works for all tiers
+#[test]
+fn test_router_tier_accessor_all_tiers() {
+    for (tier_str, expected) in &[
+        ("fast", TargetModel::Fast),
+        ("balanced", TargetModel::Balanced),
+        ("deep", TargetModel::Deep),
+    ] {
+        let config_toml = format!(
+            r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "hybrid"
+default_importance = "normal"
+router_tier = "{}"
+"#,
+            tier_str
+        );
+
+        let config: Config = toml::from_str(&config_toml).expect("Should parse");
+
+        assert_eq!(
+            config.routing.router_tier(),
+            *expected,
+            "router_tier() should return {:?} for tier '{}'",
+            expected,
+            tier_str
+        );
+    }
+}
+
+/// Test that router_tier field is private (compile-time enforcement)
+///
+/// This test documents that direct field access should NOT compile.
+/// The old design allowed: config.routing.router_tier = TargetModel::Deep
+/// The new design makes this impossible, preventing post-validation mutation.
+#[test]
+fn test_router_tier_field_is_private() {
+    let config_toml = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "hybrid"
+default_importance = "normal"
+router_tier = "balanced"
+"#;
+
+    let config: Config = toml::from_str(config_toml).expect("Should parse");
+
+    // With the old design, this was possible (but wrong):
+    // config.routing.router_tier = TargetModel::Deep;  // Bypasses validation!
+
+    // With the new design, direct field access is impossible (compile error)
+    // Must use accessor: config.routing.router_tier()
+
+    // Verify the accessor works
+    assert_eq!(
+        config.routing.router_tier(),
+        TargetModel::Balanced,
+        "Accessor should return the configured value"
+    );
+
+    // Note: Attempting to write `config.routing.router_tier = TargetModel::Deep`
+    // will cause a compile error because the field is private
+}
+
+/// Test that default router_tier value is accessible via accessor
+#[test]
+fn test_default_router_tier_accessible() {
+    let config_toml = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "hybrid"
+default_importance = "normal"
+"#;
+
+    let config: Config = toml::from_str(config_toml).expect("Should parse");
+
+    // Default should be Balanced
+    assert_eq!(
+        config.routing.router_tier(),
+        TargetModel::Balanced,
+        "Default router_tier should be Balanced"
+    );
+}

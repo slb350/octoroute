@@ -69,7 +69,7 @@ impl AppState {
             RoutingStrategy::Llm => {
                 // LLM-only routing: router tier required
                 // Serde validates router_tier format at deserialization time
-                let router_tier = config.routing.router_tier;
+                let router_tier = config.routing.router_tier();
 
                 tracing::info!(
                     "Initializing LLM-based router with {:?} tier for routing decisions",
@@ -85,7 +85,7 @@ impl AppState {
                 // Serde validates router_tier format at deserialization time
                 tracing::info!(
                     "Initializing hybrid router (rule-based with LLM fallback using {:?} tier)",
-                    config.routing.router_tier
+                    config.routing.router_tier()
                 );
 
                 let hybrid_router =

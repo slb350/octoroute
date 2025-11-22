@@ -128,8 +128,23 @@ pub struct RoutingConfig {
     /// After deserialization, `Config::validate()` checks that the specified tier
     /// has at least one configured endpoint (see validation at lines 461-490).
     /// This ensures the router tier is not only valid in format but also usable.
+    ///
+    /// Field is private to prevent post-validation mutation. Use `router_tier()` accessor.
     #[serde(default)]
-    pub router_tier: TargetModel,
+    router_tier: TargetModel,
+}
+
+impl RoutingConfig {
+    /// Get the router tier for LLM-based routing decisions
+    ///
+    /// The router tier determines which model tier (Fast/Balanced/Deep) is used
+    /// to make routing decisions in LLM and Hybrid strategies.
+    ///
+    /// # Returns
+    /// The configured router tier (validated during config loading)
+    pub fn router_tier(&self) -> TargetModel {
+        self.router_tier
+    }
 }
 
 /// Routing strategy enum
@@ -487,7 +502,7 @@ impl Config {
         match self.routing.strategy {
             RoutingStrategy::Llm | RoutingStrategy::Hybrid => {
                 // Use TargetModel directly - no string matching needed
-                let router_tier_endpoints = match self.routing.router_tier {
+                let router_tier_endpoints = match self.routing.router_tier() {
                     TargetModel::Fast => &self.models.fast,
                     TargetModel::Balanced => &self.models.balanced,
                     TargetModel::Deep => &self.models.deep,
@@ -497,7 +512,8 @@ impl Config {
                     return Err(crate::error::AppError::Config(format!(
                         "Configuration error: routing.router_tier is '{:?}' but models.{:?} has no endpoints. \
                         LLM/Hybrid routing requires at least one endpoint for the router tier.",
-                        self.routing.router_tier, self.routing.router_tier
+                        self.routing.router_tier(),
+                        self.routing.router_tier()
                     )));
                 }
             }
@@ -505,7 +521,7 @@ impl Config {
                 // Rule/Tool routing doesn't use router_tier, but it must still be valid
                 // (serde validates format, we just log for debugging)
                 tracing::debug!(
-                    router_tier = ?self.routing.router_tier,
+                    router_tier = ?self.routing.router_tier(),
                     strategy = ?self.routing.strategy,
                     "router_tier is valid but not used by {:?} strategy",
                     self.routing.strategy
@@ -641,7 +657,7 @@ log_level = "info"
             config.routing.default_importance,
             crate::router::Importance::Normal
         );
-        assert_eq!(config.routing.router_tier, TargetModel::Balanced);
+        assert_eq!(config.routing.router_tier(), TargetModel::Balanced);
     }
 
     #[test]
@@ -763,14 +779,43 @@ router_tier = "invalid"
 
     #[test]
     fn test_config_validation_router_tier_with_no_endpoints_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        // Parse config with router_tier="deep" and LLM strategy
+        let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "llm"
+default_importance = "normal"
+router_tier = "deep"
+"#;
+        let mut config = Config::from_str(config_str).unwrap();
 
         // Clear deep endpoints to test validation
         config.models.deep.clear();
-
-        // Set router to use deep tier (which now has no endpoints)
-        config.routing.strategy = RoutingStrategy::Llm;
-        config.routing.router_tier = TargetModel::Deep;
 
         let result = config.validate();
         assert!(result.is_err());
@@ -818,7 +863,7 @@ strategy = "rule"
             toml::from_str(config_str).expect("should parse config without router_tier");
 
         assert_eq!(
-            config.routing.router_tier,
+            config.routing.router_tier(),
             TargetModel::Balanced,
             "router_tier should default to Balanced when omitted"
         );
@@ -827,11 +872,40 @@ strategy = "rule"
     #[test]
     fn test_config_validation_rule_strategy_allows_empty_router_tier() {
         // Verify that Rule strategy allows empty router_tier tier
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        // Parse config with router_tier="deep" and Rule strategy
+        let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
 
-        // Set to Rule strategy
-        config.routing.strategy = RoutingStrategy::Rule;
-        config.routing.router_tier = TargetModel::Deep;
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+default_importance = "normal"
+router_tier = "deep"
+"#;
+        let mut config = Config::from_str(config_str).unwrap();
 
         // Clear deep tier (this is OK for Rule strategy which doesn't use router_tier)
         config.models.deep.clear();
