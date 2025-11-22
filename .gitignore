@@ -3,6 +3,9 @@ CLAUDE.md
 agents.md
 .claude/
 
+# Working documents (keep local only)
+plan.md
+
 # Rust
 target/
 Cargo.lock
