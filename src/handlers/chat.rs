@@ -385,14 +385,14 @@ pub async fn handler(
     // - Request-scoped exclusion ensures no wasted retries on known-bad endpoints in THIS request
     // - Global health tracking prevents all requests from hitting persistently failing endpoints
     // - Without request-scoped: Could retry the same failed endpoint on attempts 1, 2, 3
-    //   (Example with **equal-weight** endpoints: With 2 endpoints where 1 is down, there's a
-    //   50% chance per attempt of selecting the broken one. Probability of hitting it on
-    //   all 3 attempts: 0.5³ = 12.5%.
     //
-    //   **IMPORTANT**: This probability changes dramatically with weighted selection. If one
-    //   endpoint has weight=10 and the other weight=1, the high-weight endpoint will be
-    //   selected ~91% of the time, making the failure probability much higher.
-    //   Request-scoped exclusion eliminates this waste by forcing different endpoints.)
+    //   Example with 2 endpoints (A, B) where B is down - probability of hitting B on all 3 attempts:
+    //   - Equal weights (A=1.0, B=1.0): 50% chance per attempt → 0.5³ = 12.5% failure probability
+    //   - Weighted (A=10.0, B=1.0): ~9% chance per attempt → 0.09³ = 0.07% failure probability
+    //   - **Worst case (A=1.0, B=10.0)**: ~91% chance per attempt → 0.91³ = 75% failure probability!
+    //
+    //   Request-scoped exclusion eliminates this waste entirely by forcing different endpoints
+    //   after the first failure, regardless of weights.
     // - Without global health: Every request would independently discover failing endpoints
     //
     // RETRY FLOW:
@@ -402,8 +402,8 @@ pub async fn handler(
     // 4. On failure: mark_failure() + add to exclusion set → try next endpoint
     // 5. After MAX_RETRIES attempts: return error to user
     //
-    // EXAMPLE WITH 2 ENDPOINTS (fast-1, fast-2) WHERE fast-1 IS DOWN:
-    // - Attempt 1: Select fast-1 (50% chance), fail → add to exclusion, mark_failure (1/3)
+    // EXAMPLE WITH 2 EQUAL-WEIGHT ENDPOINTS (fast-1, fast-2) WHERE fast-1 IS DOWN:
+    // - Attempt 1: Select fast-1 (50% chance with equal weights), fail → add to exclusion, mark_failure (1/3)
     // - Attempt 2: Select fast-2 (100% chance, fast-1 excluded), succeed → return response
     // - If fast-1 fails 2 more times across future requests → marked unhealthy globally
     // - All future requests will only see fast-2 until background health check recovers fast-1
