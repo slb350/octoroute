@@ -229,11 +229,12 @@ impl LlmBasedRouter {
     /// For non-LLM errors (ModelQueryFailed), falls back to string matching.
     fn is_retryable_error(error: &AppError) -> bool {
         match error {
-            // LLM routing errors use typed classification (no string matching needed)
+            // Type-safe error classification (no string matching!)
             AppError::LlmRouting(e) => e.is_retryable(),
+            AppError::ModelQuery(e) => e.is_retryable(),
 
-            // Non-LLM model query errors (from chat handler) use string matching
-            // TODO: Create typed error variants for chat handler to eliminate this
+            // Legacy string-based ModelQueryFailed (deprecated - being migrated to ModelQuery)
+            // TODO: Remove this variant once all call sites migrated to ModelQuery
             AppError::ModelQueryFailed { reason, .. } => {
                 // Explicit systemic patterns - these indicate LLM/config problems,
                 // not transient network/endpoint issues
@@ -251,10 +252,13 @@ impl LlmBasedRouter {
                 // Systemic errors are NOT retryable
                 !is_systemic
             }
-            AppError::Config(_) => {
-                // Configuration errors are systemic, not retryable
-                false
-            }
+
+            // Config errors are systemic, never retryable
+            AppError::Config(_)
+            | AppError::ConfigFileRead { .. }
+            | AppError::ConfigParseFailed { .. }
+            | AppError::ConfigValidationFailed { .. } => false,
+
             // Default: assume transient for unknown error types
             // Conservative approach - retry unless we know it's systemic
             _ => true,

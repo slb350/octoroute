@@ -11,6 +11,79 @@ use thiserror::Error;
 
 use crate::router::llm_based::LlmRouterError;
 
+/// Model query errors (chat completion, non-router queries)
+///
+/// Type-safe error variants for model query operations, replacing fragile
+/// string-based error classification. Each variant explicitly indicates
+/// whether the error is retryable (transient) or systemic.
+#[derive(Error, Debug, Clone)]
+pub enum ModelQueryError {
+    /// Model returned empty response (no content blocks)
+    ///
+    /// Systemic error - indicates model malfunction or misconfiguration.
+    /// Retrying with a different endpoint won't help.
+    #[error("Model returned empty response from {endpoint}")]
+    EmptyResponse { endpoint: String },
+
+    /// Model returned unparseable response
+    ///
+    /// Systemic error - indicates model not following expected format,
+    /// safety filter activation, or misconfiguration. Retrying won't help.
+    #[error("Model returned unparseable response from {endpoint}: {response}")]
+    UnparseableResponse { endpoint: String, response: String },
+
+    /// Stream error while receiving model response
+    ///
+    /// Transient error - network interruption, timeout, or connection loss mid-stream.
+    /// Retrying with a different endpoint may succeed.
+    #[error("Stream error from {endpoint} after {bytes_received} bytes received: {error_message}")]
+    StreamError {
+        endpoint: String,
+        bytes_received: usize,
+        error_message: String,
+    },
+
+    /// Query timeout waiting for model response
+    ///
+    /// Transient error - endpoint may be overloaded or unreachable.
+    /// Retrying with a different endpoint may succeed.
+    #[error(
+        "Model query timed out after {timeout_seconds}s (attempt {attempt}/{max_attempts}) for {endpoint}"
+    )]
+    Timeout {
+        endpoint: String,
+        timeout_seconds: u64,
+        attempt: usize,
+        max_attempts: usize,
+    },
+
+    /// Failed to configure AgentOptions for model query
+    ///
+    /// Systemic error - indicates configuration problem (invalid model name, base_url, etc.).
+    /// Retrying won't help.
+    #[error("Failed to configure AgentOptions for {endpoint}: {details}")]
+    AgentOptionsConfigError { endpoint: String, details: String },
+}
+
+impl ModelQueryError {
+    /// Returns true if this error is retryable (transient network/endpoint issue)
+    ///
+    /// Retryable errors:
+    /// - StreamError: Network interruption, may succeed with different endpoint
+    /// - Timeout: Endpoint overloaded, may succeed with different endpoint
+    ///
+    /// Non-retryable (systemic) errors:
+    /// - EmptyResponse: Model malfunction
+    /// - UnparseableResponse: Model not following expected format
+    /// - AgentOptionsConfigError: Configuration problem
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            ModelQueryError::StreamError { .. } | ModelQueryError::Timeout { .. }
+        )
+    }
+}
+
 /// Main error type for the application
 #[derive(Error, Debug)]
 pub enum AppError {
@@ -62,8 +135,13 @@ pub enum AppError {
     #[error("Health check failed for {endpoint}: {reason}")]
     HealthCheckFailed { endpoint: String, reason: String },
 
+    /// Model query error (deprecated - use ModelQuery variant instead)
     #[error("Failed to query model at {endpoint}: {reason}")]
     ModelQueryFailed { endpoint: String, reason: String },
+
+    /// Type-safe model query error (replaces string-based ModelQueryFailed)
+    #[error(transparent)]
+    ModelQuery(#[from] ModelQueryError),
 
     #[error(transparent)]
     LlmRouting(#[from] LlmRouterError),
@@ -87,6 +165,7 @@ impl IntoResponse for AppError {
             Self::EndpointTimeout { .. } => (StatusCode::GATEWAY_TIMEOUT, self.to_string()),
             Self::HealthCheckFailed { .. } => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::ModelQueryFailed { .. } => (StatusCode::BAD_GATEWAY, self.to_string()),
+            Self::ModelQuery(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             Self::LlmRouting(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
