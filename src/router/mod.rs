@@ -114,7 +114,7 @@ impl RoutingStrategy {
 /// (e.g., health tracking failures) that users should be aware of. Warnings
 /// are included in the response but don't prevent successful routing.
 ///
-/// Note: Not Copy because warnings is Vec<String>. Use clone() if needed.
+/// Note: Not Copy because warnings is `Vec<String>`. Use clone() if needed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RoutingDecision {
     /// Which model tier to use

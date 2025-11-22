@@ -1,12 +1,12 @@
 //! LLM-based router that uses an LLM to make intelligent routing decisions
 //!
 //! Uses a configurable tier (Fast/Balanced/Deep) via config.routing.router_tier to analyze
-//! requests and choose the optimal target model. Falls back when rule-based routing cannot
-//! determine the best model.
+//! requests and choose the optimal target model. This is a pure LLM routing strategy that
+//! always uses LLM analysis (not a fallback - see HybridRouter for rule+LLM fallback).
 //!
 //! ## Tier Selection for Routing
 //!
-//! See [`TierSelector`](crate::models::TierSelector) documentation for tier comparison,
+//! See [`TierSelector`] documentation for tier comparison,
 //! latency characteristics, and trade-offs when choosing a router tier.
 
 use crate::error::{AppError, AppResult};

@@ -126,7 +126,7 @@ pub struct RoutingConfig {
     ///
     /// **Phase 2 - Availability Validation (Config::validate)**:
     /// After deserialization, `Config::validate()` checks that the specified tier
-    /// has at least one configured endpoint (see validation at lines 461-490).
+    /// has at least one configured endpoint (see Config::validate implementation).
     /// This ensures the router tier is not only valid in format but also usable.
     ///
     /// Field is private to prevent post-validation mutation. Use `router_tier()` accessor.
@@ -179,7 +179,8 @@ fn default_log_level() -> String {
 /// Per-tier timeout overrides
 ///
 /// Allows configuring different timeouts for each model tier.
-/// If a tier timeout is None, the global `server.request_timeout_seconds` is used.
+/// If a tier timeout is not specified in the config file, the global
+/// `server.request_timeout_seconds` is used as the default.
 ///
 /// # Custom Deserialization
 ///
@@ -409,6 +410,15 @@ impl Config {
     /// This is called automatically by `from_file()`, but can also be called
     /// explicitly when constructing Config via other means (e.g., in tests).
     pub fn validate(&self) -> crate::error::AppResult<()> {
+        // ═══════════════════════════════════════════════════════════════════════
+        // Phase 1: Model Endpoint Field Validation
+        // ═══════════════════════════════════════════════════════════════════════
+        //
+        // Validates individual endpoint configuration fields across all tiers:
+        //   - max_tokens: must fit in u32, must have defensive upper bound
+        //   - base_url: must start with http:// or https://, must end with /v1
+        //   - temperature: must be finite number between 0.0 and 2.0
+        //
         // Validate ModelEndpoint fields across all tiers
         for (tier_name, endpoints) in [
             ("fast", &self.models.fast),

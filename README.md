@@ -76,7 +76,8 @@ base_url = "http://localhost:8080/v1"   # llama.cpp
 max_tokens = 16384
 
 [routing]
-strategy = "hybrid"  # rule, llm, hybrid
+strategy = "hybrid"     # rule, llm, hybrid
+router_tier = "balanced"  # fast, balanced, deep (default: balanced)
 ```
 
 ### Usage
@@ -305,7 +306,36 @@ See [Configuration Guide](docs/configuration.md) for full configuration options:
 - **Server settings**: Host, port, timeouts
 - **Model endpoints**: Names, URLs, token limits
 - **Routing strategy**: Rule, LLM, or hybrid
+- **Router tier**: Which model makes routing decisions
 - **Observability**: Log level, metrics
+
+### Router Tier vs Target Tier
+
+Understanding the difference between **router tier** and **target tier** is crucial for LLM and Hybrid strategies:
+
+- **Router Tier** (`router_tier`): Which model tier (fast/balanced/deep) makes the routing decision
+  - Used by LLM and Hybrid strategies only
+  - Analyzes the request and decides which target tier should handle it
+  - Default: `balanced` (good balance of speed and accuracy)
+  - Example: A Balanced tier model decides whether to route to Fast, Balanced, or Deep
+
+- **Target Tier**: Which model tier actually processes the user's request
+  - Determined by the routing decision
+  - Can be Fast (8B), Balanced (30B), or Deep (120B)
+  - The model that generates the final response to the user
+
+**Example Flow:**
+```
+User Request → Router Tier (balanced/30B) analyzes request
+           → Decides: "This is simple, use Fast tier"
+           → Target Tier (fast/8B) processes request
+           → Response to user
+```
+
+**Why separate them?**
+- Faster routing: Use Fast tier (8B) for routing decisions to minimize overhead
+- More accurate routing: Use Balanced tier (30B) for better routing decisions
+- Don't waste resources: Use Deep tier (120B) for processing, not routing
 
 ---
 
