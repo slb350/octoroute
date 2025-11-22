@@ -510,54 +510,73 @@ impl Config {
         }
 
         // ═══════════════════════════════════════════════════════════════════════
-        // Phase 2: Router Tier Availability Validation
+        // Phase 2: All-Tier Availability Validation
         // ═══════════════════════════════════════════════════════════════════════
         //
-        // This is the second phase of router_tier validation:
-        //   - Phase 1 (Deserialization): Serde validates FORMAT ("fast"/"balanced"/"deep")
-        //   - Phase 2 (Here): We validate AVAILABILITY (tier has configured endpoints)
+        // P1 FIX: Require ALL tiers (Fast/Balanced/Deep) to have at least one endpoint.
         //
-        // We only validate availability for strategies that use router_tier (LLM/Hybrid).
-        // Rule/Tool strategies don't use router_tier, so endpoint availability doesn't matter.
+        // RATIONALE: Both RuleBasedRouter and LlmBasedRouter can route to ANY tier:
+        //   - RuleBasedRouter routes CasualChat → Fast, High importance → Deep, etc.
+        //   - LlmBasedRouter can return any tier based on prompt analysis
+        //   - If a tier is empty and gets selected, request fails at runtime with
+        //     "No available healthy endpoints" instead of failing at startup validation.
         //
-        match self.routing.strategy {
-            RoutingStrategy::Llm | RoutingStrategy::Hybrid => {
-                // Use TargetModel directly - no string matching needed
-                let router_tier_endpoints = match self.routing.router_tier() {
-                    TargetModel::Fast => &self.models.fast,
-                    TargetModel::Balanced => &self.models.balanced,
-                    TargetModel::Deep => &self.models.deep,
-                };
+        // This validation ensures config errors are caught at startup, not runtime.
+        //
+        // Note: router_tier format is already validated during deserialization (Phase 1).
 
-                if router_tier_endpoints.is_empty() {
-                    let tier_name = format!("{:?}", self.routing.router_tier()).to_lowercase();
-                    return Err(crate::error::AppError::Config(format!(
-                        "Configuration error: routing.router_tier is '{:?}' but models.{:?} has no endpoints. \
-                        LLM/Hybrid routing requires at least one endpoint for the router tier.\n\n\
-                        Example fix - add to config.toml:\n\
-                        [[models.{}]]\n\
-                        name = \"my-model\"\n\
-                        base_url = \"http://localhost:1234/v1\"\n\
-                        max_tokens = 4096\n\
-                        temperature = 0.7\n\
-                        weight = 1.0\n\
-                        priority = 1",
-                        self.routing.router_tier(),
-                        self.routing.router_tier(),
-                        tier_name
-                    )));
-                }
-            }
-            RoutingStrategy::Rule | RoutingStrategy::Tool => {
-                // Rule/Tool routing doesn't use router_tier, but it must still be valid
-                // (serde validates format, we just log for debugging)
-                tracing::debug!(
-                    router_tier = ?self.routing.router_tier(),
-                    strategy = ?self.routing.strategy,
-                    "router_tier is valid but not used by {:?} strategy",
-                    self.routing.strategy
-                );
-            }
+        // Check Fast tier
+        if self.models.fast.is_empty() {
+            return Err(crate::error::AppError::Config(
+                "Configuration error: models.fast has no endpoints. \
+                All three tiers (fast, balanced, deep) must have at least one endpoint \
+                because routers can select any tier based on request characteristics.\n\n\
+                Example fix - add to config.toml:\n\
+                [[models.fast]]\n\
+                name = \"my-fast-model\"\n\
+                base_url = \"http://localhost:11434/v1\"\n\
+                max_tokens = 2048\n\
+                temperature = 0.7\n\
+                weight = 1.0\n\
+                priority = 1"
+                    .to_string(),
+            ));
+        }
+
+        // Check Balanced tier
+        if self.models.balanced.is_empty() {
+            return Err(crate::error::AppError::Config(
+                "Configuration error: models.balanced has no endpoints. \
+                All three tiers (fast, balanced, deep) must have at least one endpoint \
+                because routers can select any tier based on request characteristics.\n\n\
+                Example fix - add to config.toml:\n\
+                [[models.balanced]]\n\
+                name = \"my-balanced-model\"\n\
+                base_url = \"http://localhost:1234/v1\"\n\
+                max_tokens = 4096\n\
+                temperature = 0.7\n\
+                weight = 1.0\n\
+                priority = 1"
+                    .to_string(),
+            ));
+        }
+
+        // Check Deep tier
+        if self.models.deep.is_empty() {
+            return Err(crate::error::AppError::Config(
+                "Configuration error: models.deep has no endpoints. \
+                All three tiers (fast, balanced, deep) must have at least one endpoint \
+                because routers can select any tier based on request characteristics.\n\n\
+                Example fix - add to config.toml:\n\
+                [[models.deep]]\n\
+                name = \"my-deep-model\"\n\
+                base_url = \"http://localhost:8080/v1\"\n\
+                max_tokens = 8192\n\
+                temperature = 0.7\n\
+                weight = 1.0\n\
+                priority = 1"
+                    .to_string(),
+            ));
         }
 
         // Validate request timeout
@@ -585,10 +604,16 @@ impl FromStr for Config {
     type Err = crate::error::AppError;
 
     fn from_str(toml_str: &str) -> Result<Self, Self::Err> {
-        toml::from_str(toml_str).map_err(|source| crate::error::AppError::ConfigParseFailed {
-            path: "<string>".to_string(),
-            source,
-        })
+        let config: Config = toml::from_str(toml_str).map_err(|source| {
+            crate::error::AppError::ConfigParseFailed {
+                path: "<string>".to_string(),
+                source,
+            }
+        })?;
+
+        // Validate config before returning
+        config.validate()?;
+        Ok(config)
     }
 }
 
@@ -753,19 +778,10 @@ router_tier = "balanced"
         assert_eq!(config.models.fast[0].priority, 1);
     }
 
-    #[test]
-    fn test_config_validation_empty_fast_tier_allowed_for_non_router_tier() {
-        // With the new validation logic, empty tiers are allowed as long as they're not the router_tier tier
-        // TEST_CONFIG uses router_tier = "balanced", so clearing fast tier should be OK
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
-        config.models.fast.clear(); // Empty the fast tier
-
-        let result = config.validate();
-        assert!(
-            result.is_ok(),
-            "Fast tier can be empty when router_tier is 'balanced'"
-        );
-    }
+    // REMOVED: test_config_validation_empty_fast_tier_allowed_for_non_router_tier
+    // This test was validating the OLD buggy behavior where empty tiers were allowed.
+    // P1 FIX: All tiers must have endpoints because routers can select any tier.
+    // See tests/all_tier_validation.rs for new comprehensive validation tests.
 
     #[test]
     fn test_config_validation_invalid_router_tier_fails() {
@@ -900,54 +916,12 @@ strategy = "rule"
         );
     }
 
-    #[test]
-    fn test_config_validation_rule_strategy_allows_empty_router_tier() {
-        // Verify that Rule strategy allows empty router_tier tier
-        // Parse config with router_tier="deep" and Rule strategy
-        let config_str = r#"
-[server]
-host = "127.0.0.1"
-port = 3000
-request_timeout_seconds = 30
-
-[[models.fast]]
-name = "fast-1"
-base_url = "http://localhost:11434/v1"
-max_tokens = 2048
-weight = 1.0
-priority = 1
-
-[[models.balanced]]
-name = "balanced-1"
-base_url = "http://localhost:1234/v1"
-max_tokens = 4096
-weight = 1.0
-priority = 1
-
-[[models.deep]]
-name = "deep-1"
-base_url = "http://localhost:8080/v1"
-max_tokens = 8192
-weight = 1.0
-priority = 1
-
-[routing]
-strategy = "rule"
-default_importance = "normal"
-router_tier = "deep"
-"#;
-        let mut config = Config::from_str(config_str).unwrap();
-
-        // Clear deep tier (this is OK for Rule strategy which doesn't use router_tier)
-        config.models.deep.clear();
-
-        let result = config.validate();
-        assert!(
-            result.is_ok(),
-            "Rule strategy should allow empty router_tier tier since it doesn't use it, got: {:?}",
-            result.err()
-        );
-    }
+    // REMOVED: test_config_validation_rule_strategy_allows_empty_router_tier
+    // This test was validating the OLD buggy behavior where Rule strategy could have empty tiers.
+    // P1 FIX: RuleBasedRouter routes to ANY tier (Fast/Balanced/Deep), not just router_tier.
+    // Example: CasualChat routes to Fast, High importance routes to Deep.
+    // If those tiers are empty, requests fail at runtime with "No available healthy endpoints".
+    // See tests/all_tier_validation.rs for new comprehensive validation tests.
 
     #[test]
     fn test_config_validation_negative_weight_fails() {
