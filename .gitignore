@@ -5,6 +5,7 @@ agents.md
 
 # Working documents (keep local only)
 plan.md
+KICKSTART_PROMPT.md
 
 # Rust
 target/
