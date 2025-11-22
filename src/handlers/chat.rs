@@ -335,12 +335,16 @@ pub async fn handler(
         // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
         // Errors can only occur from Prometheus internal issues (registry problems, etc.).
         if let Err(e) = metrics.record_request(tier_enum, strategy_enum) {
+            // Track the failure for monitoring
+            metrics.metrics_recording_failure();
+
             tracing::error!(
                 request_id = %request_id,
                 error = %e,
                 tier = ?tier_enum,
                 strategy = ?strategy_enum,
-                "Metrics recording failed (non-fatal): {}. Request will continue. \
+                "Metrics recording failed (non-fatal) - incremented failure counter: {}. \
+                Request will continue. Check /health for metrics_recording_failures_total count. \
                 This indicates an internal Prometheus error (not a cardinality issue). \
                 Monitor this error - frequent occurrence requires investigation.",
                 e
@@ -349,12 +353,16 @@ pub async fn handler(
         }
 
         if let Err(e) = metrics.record_routing_duration(strategy_enum, routing_duration_ms) {
+            // Track the failure for monitoring
+            metrics.metrics_recording_failure();
+
             tracing::error!(
                 request_id = %request_id,
                 error = %e,
                 strategy = ?strategy_enum,
                 duration_ms = routing_duration_ms,
-                "Metrics recording failed (non-fatal): {}. Request will continue. \
+                "Metrics recording failed (non-fatal) - incremented failure counter: {}. \
+                Request will continue. Check /health for metrics_recording_failures_total count. \
                 This indicates an internal Prometheus error (not a cardinality issue). \
                 Monitor this error - frequent occurrence requires investigation.",
                 e
@@ -564,11 +572,15 @@ pub async fn handler(
                     // Log-and-continue on metrics recording errors (observability should never break requests)
                     // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
                     if let Err(e) = metrics.record_model_invocation(tier_enum) {
+                        // Track the failure for monitoring
+                        metrics.metrics_recording_failure();
+
                         tracing::error!(
                             request_id = %request_id,
                             error = %e,
                             tier = ?tier_enum,
-                            "Metrics recording failed (non-fatal): {}. Request will continue. \
+                            "Metrics recording failed (non-fatal) - incremented failure counter: {}. \
+                            Request will continue. Check /health for metrics_recording_failures_total count. \
                             This indicates an internal Prometheus error (not a cardinality issue). \
                             Monitor this error - frequent occurrence requires investigation.",
                             e

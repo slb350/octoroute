@@ -40,20 +40,30 @@ pub struct HealthResponse {
     status: HealthStatus,
     /// Health tracking status: operational or degraded
     health_tracking_status: HealthTrackingStatus,
+    /// Metrics recording status: operational or degraded
+    metrics_recording_status: HealthTrackingStatus,
 }
 
 impl HealthResponse {
-    /// Construct a new HealthResponse from health tracking failure count
+    /// Construct a new HealthResponse from failure counts
     ///
     /// # Arguments
     /// * `health_tracking_failures` - Number of health tracking failures (from metrics)
+    /// * `metrics_recording_failures` - Number of metrics recording failures (from metrics)
     ///
     /// # Returns
     /// A HealthResponse with:
     /// - status: Always HealthStatus::Ok
     /// - health_tracking_status: Degraded if failures > 0, otherwise Operational
-    pub fn new(health_tracking_failures: u64) -> Self {
+    /// - metrics_recording_status: Degraded if failures > 0, otherwise Operational
+    pub fn new(health_tracking_failures: u64, metrics_recording_failures: u64) -> Self {
         let health_tracking_status = if health_tracking_failures > 0 {
+            HealthTrackingStatus::Degraded
+        } else {
+            HealthTrackingStatus::Operational
+        };
+
+        let metrics_recording_status = if metrics_recording_failures > 0 {
             HealthTrackingStatus::Degraded
         } else {
             HealthTrackingStatus::Operational
@@ -62,20 +72,23 @@ impl HealthResponse {
         Self {
             status: HealthStatus::Ok,
             health_tracking_status,
+            metrics_recording_status,
         }
     }
 }
 
 /// Health check handler
 ///
-/// Returns 200 OK with health status and health tracking status.
+/// Returns 200 OK with health status, health tracking status, and metrics recording status.
 ///
-/// Health tracking status is "degraded" if any health tracking failures have occurred,
-/// otherwise "operational". This indicates whether mark_success/mark_failure operations
-/// are functioning correctly.
+/// - Health tracking status is "degraded" if any health tracking failures have occurred,
+///   indicating mark_success/mark_failure operations are failing.
+/// - Metrics recording status is "degraded" if any metrics recording failures have occurred,
+///   indicating Prometheus metrics recording is failing.
 pub async fn handler(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
     let health_tracking_failures = state.metrics().health_tracking_failures_count();
-    let response = HealthResponse::new(health_tracking_failures);
+    let metrics_recording_failures = state.metrics().metrics_recording_failures_count();
+    let response = HealthResponse::new(health_tracking_failures, metrics_recording_failures);
 
     (StatusCode::OK, Json(response))
 }
@@ -138,10 +151,11 @@ router_tier = "balanced"
         let json = serde_json::to_value(&response).expect("Should serialize");
         assert_eq!(json["status"], "OK");
         assert_eq!(json["health_tracking_status"], "operational");
+        assert_eq!(json["metrics_recording_status"], "operational");
     }
 
     #[tokio::test]
-    async fn test_health_handler_shows_degraded_when_failures_occur() {
+    async fn test_health_handler_shows_degraded_when_health_tracking_fails() {
         let state = create_test_state();
 
         // Increment health_tracking_failures metric
@@ -155,5 +169,43 @@ router_tier = "balanced"
         let json = serde_json::to_value(&response).expect("Should serialize");
         assert_eq!(json["status"], "OK");
         assert_eq!(json["health_tracking_status"], "degraded");
+        assert_eq!(json["metrics_recording_status"], "operational");
+    }
+
+    #[tokio::test]
+    async fn test_health_handler_shows_degraded_when_metrics_recording_fails() {
+        let state = create_test_state();
+
+        // Increment metrics_recording_failures metric
+        state.metrics().metrics_recording_failure();
+
+        let (status, Json(response)) = handler(State(state)).await;
+
+        assert_eq!(status, StatusCode::OK);
+
+        // Verify serialization produces expected JSON
+        let json = serde_json::to_value(&response).expect("Should serialize");
+        assert_eq!(json["status"], "OK");
+        assert_eq!(json["health_tracking_status"], "operational");
+        assert_eq!(json["metrics_recording_status"], "degraded");
+    }
+
+    #[tokio::test]
+    async fn test_health_handler_shows_both_degraded_when_both_fail() {
+        let state = create_test_state();
+
+        // Increment both failure metrics
+        state.metrics().health_tracking_failure();
+        state.metrics().metrics_recording_failure();
+
+        let (status, Json(response)) = handler(State(state)).await;
+
+        assert_eq!(status, StatusCode::OK);
+
+        // Verify serialization produces expected JSON
+        let json = serde_json::to_value(&response).expect("Should serialize");
+        assert_eq!(json["status"], "OK");
+        assert_eq!(json["health_tracking_status"], "degraded");
+        assert_eq!(json["metrics_recording_status"], "degraded");
     }
 }

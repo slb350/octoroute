@@ -117,6 +117,7 @@ pub struct Metrics {
     routing_duration: HistogramVec,
     model_invocations: CounterVec,
     health_tracking_failures: IntCounter,
+    metrics_recording_failures: IntCounter,
 }
 
 impl Metrics {
@@ -164,11 +165,19 @@ impl Metrics {
             "Total number of health tracking operation failures (mark_success/mark_failure errors)",
         )?;
 
+        // Counter: Metrics recording operation failures
+        let metrics_recording_failures = IntCounter::new(
+            "octoroute_metrics_recording_failures_total",
+            "Total number of metrics recording operation failures (record_request/record_routing_duration/record_model_invocation errors). \
+            Indicates Prometheus internal errors - frequent failures require investigation.",
+        )?;
+
         // Register all metrics
         registry.register(Box::new(requests_total.clone()))?;
         registry.register(Box::new(routing_duration.clone()))?;
         registry.register(Box::new(model_invocations.clone()))?;
         registry.register(Box::new(health_tracking_failures.clone()))?;
+        registry.register(Box::new(metrics_recording_failures.clone()))?;
 
         Ok(Self {
             registry: Arc::new(registry),
@@ -176,6 +185,7 @@ impl Metrics {
             routing_duration,
             model_invocations,
             health_tracking_failures,
+            metrics_recording_failures,
         })
     }
 
@@ -339,6 +349,46 @@ impl Metrics {
         self.health_tracking_failures.get()
     }
 
+    /// Record a metrics recording operation failure
+    ///
+    /// Increments the counter when record_request(), record_routing_duration(),
+    /// or record_model_invocation() operations fail (e.g., Prometheus internal errors).
+    ///
+    /// ## What This Metric Tracks
+    ///
+    /// This metric increments when metrics recording operations fail, specifically:
+    /// - `record_request()` fails (Prometheus registry error, label mismatch)
+    /// - `record_routing_duration()` fails (invalid duration, registry error)
+    /// - `record_model_invocation()` fails (registry error)
+    ///
+    /// ## Alerting Threshold
+    ///
+    /// **Recommended alert**: > 5 failures in 1 hour indicates a systemic issue:
+    /// - Prometheus registry corruption
+    /// - Metric registration failures
+    /// - Internal Prometheus errors
+    ///
+    /// Occasional failures (1-2 per hour) may indicate transient issues.
+    ///
+    /// ## Impact
+    ///
+    /// When metrics recording fails:
+    /// - Observability data is incomplete (gaps in metrics)
+    /// - Operators may not detect routing issues or performance degradation
+    /// - Request continues normally (metrics are non-critical to functionality)
+    /// - Failure is logged for investigation
+    pub fn metrics_recording_failure(&self) {
+        self.metrics_recording_failures.inc();
+    }
+
+    /// Get the current count of metrics recording failures
+    ///
+    /// Returns the total number of metrics recording operation failures since startup.
+    /// Used by the /health endpoint to report metrics system status.
+    pub fn metrics_recording_failures_count(&self) -> u64 {
+        self.metrics_recording_failures.get()
+    }
+
     /// Gather all metrics and encode them in Prometheus text format
     ///
     /// # Returns
@@ -413,10 +463,11 @@ mod tests {
             .unwrap();
         metrics.record_model_invocation(Tier::Fast).unwrap();
         metrics.health_tracking_failure(); // Increment health tracking failures
+        metrics.metrics_recording_failure(); // Increment metrics recording failures
 
         let metric_families = metrics.registry.gather();
-        // Should have 4 metric families: requests_total, routing_duration, model_invocations, health_tracking_failures
-        assert_eq!(metric_families.len(), 4, "Expected 4 metric families");
+        // Should have 5 metric families: requests_total, routing_duration, model_invocations, health_tracking_failures, metrics_recording_failures
+        assert_eq!(metric_families.len(), 5, "Expected 5 metric families");
 
         // Verify metric names
         let names: Vec<String> = metric_families
@@ -427,6 +478,7 @@ mod tests {
         assert!(names.contains(&"octoroute_routing_duration_ms".to_string()));
         assert!(names.contains(&"octoroute_model_invocations_total".to_string()));
         assert!(names.contains(&"octoroute_health_tracking_failures_total".to_string()));
+        assert!(names.contains(&"octoroute_metrics_recording_failures_total".to_string()));
     }
 
     #[test]
