@@ -170,6 +170,7 @@ const MAX_ROUTER_RESPONSE: usize = 1024;
 /// The tier is chosen via `config.routing.router_tier` at construction time.
 pub struct LlmBasedRouter {
     selector: TierSelector,
+    metrics: Arc<crate::metrics::Metrics>,
 }
 
 impl LlmBasedRouter {
@@ -180,6 +181,7 @@ impl LlmBasedRouter {
     /// # Arguments
     /// * `selector` - The underlying ModelSelector
     /// * `tier` - Which tier (Fast, Balanced, Deep) to use for routing decisions
+    /// * `metrics` - Metrics collector for observability
     ///
     /// # Tier Selection
     ///
@@ -191,12 +193,17 @@ impl LlmBasedRouter {
     ///
     /// The `TierSelector` validates tier availability at construction, ensuring
     /// at least one endpoint exists for the specified tier.
-    pub fn new(selector: Arc<ModelSelector>, tier: TargetModel) -> AppResult<Self> {
+    pub fn new(
+        selector: Arc<ModelSelector>,
+        tier: TargetModel,
+        metrics: Arc<crate::metrics::Metrics>,
+    ) -> AppResult<Self> {
         // TierSelector validates that the tier exists
         let tier_selector = TierSelector::new(selector, tier)?;
 
         Ok(Self {
             selector: tier_selector,
+            metrics,
         })
     }
 
@@ -407,6 +414,7 @@ impl LlmBasedRouter {
                         use crate::models::health::HealthError;
                         match e {
                             HealthError::UnknownEndpoint(ref name) => {
+                                self.metrics.health_tracking_failure();
                                 tracing::error!(
                                     endpoint_name = %endpoint.name(),
                                     unknown_name = %name,
@@ -420,6 +428,7 @@ impl LlmBasedRouter {
                                 );
                             }
                             HealthError::HttpClientCreationFailed(ref msg) => {
+                                self.metrics.health_tracking_failure();
                                 tracing::error!(
                                     endpoint_name = %endpoint.name(),
                                     error = %msg,
@@ -484,6 +493,7 @@ impl LlmBasedRouter {
                         use crate::models::health::HealthError;
                         match health_err {
                             HealthError::UnknownEndpoint(ref name) => {
+                                self.metrics.health_tracking_failure();
                                 tracing::error!(
                                     endpoint_name = %endpoint.name(),
                                     unknown_name = %name,
@@ -496,6 +506,7 @@ impl LlmBasedRouter {
                                 );
                             }
                             HealthError::HttpClientCreationFailed(ref msg) => {
+                                self.metrics.health_tracking_failure();
                                 tracing::error!(
                                     endpoint_name = %endpoint.name(),
                                     error = %msg,
@@ -916,6 +927,10 @@ impl LlmRouter for LlmBasedRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mock_metrics() -> Arc<crate::metrics::Metrics> {
+        Arc::new(crate::metrics::Metrics::new().unwrap())
+    }
 
     // ========================================================================
     // parse_routing_decision tests
@@ -1617,7 +1632,7 @@ router_tier = "balanced"
         assert_eq!(selector.endpoint_count(TargetModel::Balanced), 1);
 
         // Construction should succeed
-        let result = LlmBasedRouter::new(selector, TargetModel::Balanced);
+        let result = LlmBasedRouter::new(selector, TargetModel::Balanced, mock_metrics());
         assert!(
             result.is_ok(),
             "LlmBasedRouter::new() should succeed with balanced tier"
@@ -1701,7 +1716,7 @@ router_tier = "balanced"
         let selector = Arc::new(ModelSelector::new(config.clone()));
 
         // This should succeed because there is a balanced tier endpoint
-        let result = LlmBasedRouter::new(selector, TargetModel::Balanced);
+        let result = LlmBasedRouter::new(selector, TargetModel::Balanced, mock_metrics());
         assert!(
             result.is_ok(),
             "LlmBasedRouter::new() should succeed with balanced tier present"

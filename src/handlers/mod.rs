@@ -51,6 +51,14 @@ impl AppState {
     pub fn new(config: Arc<Config>) -> AppResult<Self> {
         let selector = Arc::new(ModelSelector::new(config.clone()));
 
+        // Initialize metrics first so we can pass them to routers
+        let metrics = {
+            let m = crate::metrics::Metrics::new()
+                .map_err(|e| AppError::Internal(format!("Failed to initialize metrics: {}", e)))?;
+            tracing::info!("Metrics collection enabled");
+            Arc::new(m)
+        };
+
         // Construct router based on config.routing.strategy
         let router = match config.routing.strategy {
             RoutingStrategy::Rule => {
@@ -68,7 +76,8 @@ impl AppState {
                     router_tier
                 );
 
-                let llm_router = LlmBasedRouter::new(selector.clone(), router_tier)?;
+                let llm_router =
+                    LlmBasedRouter::new(selector.clone(), router_tier, metrics.clone())?;
                 Arc::new(Router::Llm(llm_router))
             }
             RoutingStrategy::Hybrid => {
@@ -79,7 +88,8 @@ impl AppState {
                     config.routing.router_tier
                 );
 
-                let hybrid_router = HybridRouter::new(config.clone(), selector.clone())?;
+                let hybrid_router =
+                    HybridRouter::new(config.clone(), selector.clone(), metrics.clone())?;
                 Arc::new(Router::Hybrid(hybrid_router))
             }
             RoutingStrategy::Tool => {
@@ -88,13 +98,6 @@ impl AppState {
                         .to_string(),
                 ));
             }
-        };
-
-        let metrics = {
-            let m = crate::metrics::Metrics::new()
-                .map_err(|e| AppError::Internal(format!("Failed to initialize metrics: {}", e)))?;
-            tracing::info!("Metrics collection enabled");
-            Arc::new(m)
         };
 
         Ok(Self {

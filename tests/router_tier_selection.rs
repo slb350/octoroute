@@ -72,7 +72,11 @@ router_tier = "fast"  # Using Fast tier for routing decisions
     let selector = Arc::new(ModelSelector::new(config.clone()));
 
     // Should succeed with fast tier
-    let result = LlmBasedRouter::new(selector.clone(), octoroute::router::TargetModel::Fast);
+    let result = LlmBasedRouter::new(
+        selector.clone(),
+        octoroute::router::TargetModel::Fast,
+        Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+    );
 
     assert!(
         result.is_ok(),
@@ -136,7 +140,11 @@ router_tier = "deep"  # Using Deep tier for LLM fallback routing
     let selector = Arc::new(ModelSelector::new(config.clone()));
 
     // Should succeed with deep tier
-    let result = HybridRouter::new(config.clone(), selector.clone());
+    let result = HybridRouter::new(
+        config.clone(),
+        selector.clone(),
+        Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+    );
 
     assert!(
         result.is_ok(),
@@ -191,8 +199,12 @@ router_tier = "deep"  # Using Deep tier for LLM fallback
     let config = Arc::new(config);
     let selector = Arc::new(ModelSelector::new(config.clone()));
 
-    let router = HybridRouter::new(config.clone(), selector.clone())
-        .expect("should create HybridRouter with Deep tier");
+    let router = HybridRouter::new(
+        config.clone(),
+        selector.clone(),
+        Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+    )
+    .expect("should create HybridRouter with Deep tier");
 
     // Create metadata that doesn't match any rules (triggers LLM fallback)
     let meta = RouteMetadata {
@@ -301,6 +313,7 @@ router_tier = "{}"
                 "deep" => octoroute::router::TargetModel::Deep,
                 _ => panic!("Invalid router_tier in test"),
             },
+            Arc::new(octoroute::metrics::Metrics::new().unwrap()),
         );
 
         assert!(
@@ -417,8 +430,12 @@ router_tier = "fast"
     let config = Arc::new(config);
 
     let selector = Arc::new(ModelSelector::new(config.clone()));
-    let router = LlmBasedRouter::new(selector, octoroute::router::TargetModel::Fast)
-        .expect("should create LlmBasedRouter");
+    let router = LlmBasedRouter::new(
+        selector,
+        octoroute::router::TargetModel::Fast,
+        Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+    )
+    .expect("should create LlmBasedRouter");
 
     let metadata = RouteMetadata {
         token_estimate: 100,
@@ -657,8 +674,12 @@ router_tier = "fast"  # Router uses Fast tier, which will be exhausted
     let selector = Arc::new(ModelSelector::new(config.clone()));
 
     // Create LLM router with Fast tier
-    let router = LlmBasedRouter::new(selector.clone(), octoroute::router::TargetModel::Fast)
-        .expect("should construct router");
+    let router = LlmBasedRouter::new(
+        selector.clone(),
+        octoroute::router::TargetModel::Fast,
+        Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+    )
+    .expect("should construct router");
 
     // Mark ALL Fast tier endpoints as unhealthy (simulating complete tier failure)
     for endpoint_name in ["fast-1", "fast-2"] {

@@ -26,11 +26,15 @@ impl HybridRouter {
     /// (e.g., no endpoints configured for the router tier).
     ///
     /// The router tier is determined by `config.routing.router_tier`.
-    pub fn new(config: Arc<Config>, selector: Arc<ModelSelector>) -> AppResult<Self> {
+    pub fn new(
+        config: Arc<Config>,
+        selector: Arc<ModelSelector>,
+        metrics: Arc<crate::metrics::Metrics>,
+    ) -> AppResult<Self> {
         // Router tier from config (serde validates format at deserialization time)
         let router_tier = config.routing.router_tier;
 
-        let llm_router = LlmBasedRouter::new(selector.clone(), router_tier)?;
+        let llm_router = LlmBasedRouter::new(selector.clone(), router_tier, metrics)?;
         Ok(Self {
             rule_router: RuleBasedRouter::new(),
             llm_router: Arc::new(llm_router),
@@ -139,6 +143,10 @@ impl HybridRouter {
 
 #[cfg(test)]
 mod tests {
+
+    fn mock_metrics() -> Arc<crate::metrics::Metrics> {
+        Arc::new(crate::metrics::Metrics::new().unwrap())
+    }
     use super::*;
     use crate::config::Config;
     use crate::models::selector::ModelSelector;
@@ -229,7 +237,7 @@ mod tests {
     async fn test_hybrid_router_creation() {
         let config = test_config();
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let _router = HybridRouter::new(config, selector)
+        let _router = HybridRouter::new(config, selector, mock_metrics())
             .expect("HybridRouter::new should succeed with balanced tier");
         // If we get here without panic, creation succeeded
     }
@@ -238,7 +246,8 @@ mod tests {
     async fn test_hybrid_router_uses_rule_when_matched() {
         let config = test_config();
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
+        let router = HybridRouter::new(config, selector, mock_metrics())
+            .expect("HybridRouter::new should succeed");
 
         // Simple casual chat should match rule-based routing
         let meta = RouteMetadata {
@@ -259,7 +268,8 @@ mod tests {
     async fn test_hybrid_router_uses_rule_for_code() {
         let config = test_config();
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
+        let router = HybridRouter::new(config, selector, mock_metrics())
+            .expect("HybridRouter::new should succeed");
 
         // Short code task should match rule-based routing
         let meta = RouteMetadata {
@@ -280,7 +290,8 @@ mod tests {
     async fn test_hybrid_router_uses_rule_for_high_importance() {
         let config = test_config();
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
+        let router = HybridRouter::new(config, selector, mock_metrics())
+            .expect("HybridRouter::new should succeed");
 
         // High importance should match rule-based routing
         let meta = RouteMetadata {
@@ -305,7 +316,8 @@ mod tests {
     async fn test_hybrid_router_has_both_routers() {
         let config = test_config();
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
+        let router = HybridRouter::new(config, selector, mock_metrics())
+            .expect("HybridRouter::new should succeed");
 
         // Verify router has both components (indirectly via compilation)
         // If this compiles and creates, both routers were constructed successfully
@@ -317,8 +329,8 @@ mod tests {
     async fn test_hybrid_router_both_rule_and_llm_fail() {
         let config = test_config();
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router =
-            HybridRouter::new(config, selector.clone()).expect("HybridRouter::new should succeed");
+        let router = HybridRouter::new(config, selector.clone(), mock_metrics())
+            .expect("HybridRouter::new should succeed");
 
         // 1. Create metadata that triggers LLM fallback (no rule match)
         // CasualChat + High importance is explicitly ambiguous (see rule_based.rs line 103)
@@ -435,7 +447,8 @@ mod tests {
         // Verify that when a rule DOES match, LLM is NOT called (fast path works)
         let config = test_config();
         let selector = Arc::new(ModelSelector::new(config.clone()));
-        let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
+        let router = HybridRouter::new(config, selector, mock_metrics())
+            .expect("HybridRouter::new should succeed");
 
         // CasualChat + Low + <256 tokens matches Rule 1 → Fast
         let meta = RouteMetadata {

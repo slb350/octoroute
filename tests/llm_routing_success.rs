@@ -54,8 +54,12 @@ router_tier = "balanced"
     let config: Config = toml::from_str(config_toml).expect("should parse config");
     let config = Arc::new(config);
     let selector = Arc::new(ModelSelector::new(config.clone()));
-    let router =
-        HybridRouter::new(config, selector.clone()).expect("HybridRouter::new should succeed");
+    let router = HybridRouter::new(
+        config,
+        selector.clone(),
+        Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+    )
+    .expect("HybridRouter::new should succeed");
 
     // Mark all non-balanced endpoints as unhealthy to force LLM fallback
     // With the new design, rule router tries default_tier() if no rule matches
@@ -152,7 +156,12 @@ router_tier = "balanced"
     let config: Config = toml::from_str(config_toml).expect("should parse config");
     let config = Arc::new(config);
     let selector = Arc::new(ModelSelector::new(config.clone()));
-    let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
+    let router = HybridRouter::new(
+        config,
+        selector,
+        Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+    )
+    .expect("HybridRouter::new should succeed");
 
     // Create metadata that MATCHES a rule
     // (casual_chat + low importance + small tokens → Fast tier)
@@ -281,7 +290,12 @@ router_tier = "balanced"
     assert!(!health_checker.is_healthy("balanced-1").await);
     assert!(!health_checker.is_healthy("balanced-2").await);
 
-    let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
+    let router = HybridRouter::new(
+        config,
+        selector,
+        Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+    )
+    .expect("HybridRouter::new should succeed");
 
     // Create metadata that triggers LLM fallback
     let metadata = RouteMetadata {
@@ -391,7 +405,12 @@ router_tier = "balanced"
     assert!(!health_checker.is_healthy("balanced-unhealthy").await);
     assert!(health_checker.is_healthy("balanced-healthy").await);
 
-    let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
+    let router = HybridRouter::new(
+        config,
+        selector,
+        Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+    )
+    .expect("HybridRouter::new should succeed");
 
     // Create metadata that triggers LLM fallback (no rule match)
     let metadata = RouteMetadata {

@@ -56,7 +56,14 @@ async fn test_concurrent_routing_requests_same_metadata() {
 
     let config = test_config();
     let selector = Arc::new(ModelSelector::new(config.clone()));
-    let router = Arc::new(HybridRouter::new(config, selector).expect("should create router"));
+    let router = Arc::new(
+        HybridRouter::new(
+            config,
+            selector,
+            Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+        )
+        .expect("should create router"),
+    );
 
     // Metadata that will match rule-based routing (casual chat -> Fast)
     let meta = RouteMetadata {
@@ -111,7 +118,14 @@ async fn test_concurrent_routing_requests_different_metadata() {
 
     let config = test_config();
     let selector = Arc::new(ModelSelector::new(config.clone()));
-    let router = Arc::new(HybridRouter::new(config, selector).expect("should create router"));
+    let router = Arc::new(
+        HybridRouter::new(
+            config,
+            selector,
+            Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+        )
+        .expect("should create router"),
+    );
 
     // Create different metadata profiles
     let metadata_profiles = [
@@ -183,7 +197,14 @@ async fn test_concurrent_routing_high_load() {
 
     let config = test_config();
     let selector = Arc::new(ModelSelector::new(config.clone()));
-    let router = Arc::new(HybridRouter::new(config, selector).expect("should create router"));
+    let router = Arc::new(
+        HybridRouter::new(
+            config,
+            selector,
+            Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+        )
+        .expect("should create router"),
+    );
 
     let meta = RouteMetadata {
         token_estimate: 256,
@@ -230,8 +251,14 @@ async fn test_concurrent_llm_routing_with_health_updates() {
 
     let config = test_config();
     let selector = Arc::new(ModelSelector::new(config.clone()));
-    let router =
-        Arc::new(HybridRouter::new(config, selector.clone()).expect("should create router"));
+    let router = Arc::new(
+        HybridRouter::new(
+            config,
+            selector.clone(),
+            Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+        )
+        .expect("should create router"),
+    );
 
     // Metadata that triggers LLM fallback (CasualChat + High is ambiguous)
     // This ensures concurrent LLM queries, not just rule-based routing

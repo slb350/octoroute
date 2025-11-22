@@ -312,8 +312,12 @@ router_tier = "balanced"
     let selector = Arc::new(ModelSelector::new(config.clone()));
 
     let router = Arc::new(
-        LlmBasedRouter::new(selector.clone(), TargetModel::Balanced)
-            .expect("should construct LLM router"),
+        LlmBasedRouter::new(
+            selector.clone(),
+            TargetModel::Balanced,
+            Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+        )
+        .expect("should construct LLM router"),
     );
 
     // Spawn 10 concurrent routing requests
