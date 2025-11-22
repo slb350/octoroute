@@ -152,11 +152,7 @@ pub enum AppError {
     #[error("Health check failed for {endpoint}: {reason}")]
     HealthCheckFailed { endpoint: String, reason: String },
 
-    /// Model query error (deprecated - use ModelQuery variant instead)
-    #[error("Failed to query model at {endpoint}: {reason}")]
-    ModelQueryFailed { endpoint: String, reason: String },
-
-    /// Type-safe model query error (replaces string-based ModelQueryFailed)
+    /// Type-safe model query error
     #[error(transparent)]
     ModelQuery(#[from] ModelQueryError),
 
@@ -184,7 +180,6 @@ impl IntoResponse for AppError {
             Self::StreamInterrupted { .. } => (StatusCode::BAD_GATEWAY, self.to_string()),
             Self::EndpointTimeout { .. } => (StatusCode::GATEWAY_TIMEOUT, self.to_string()),
             Self::HealthCheckFailed { .. } => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-            Self::ModelQueryFailed { .. } => (StatusCode::BAD_GATEWAY, self.to_string()),
             Self::ModelQuery(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             Self::LlmRouting(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
@@ -287,11 +282,12 @@ mod tests {
     }
 
     #[test]
-    fn test_model_query_failed_error_returns_502_bad_gateway() {
-        let err = AppError::ModelQueryFailed {
+    fn test_model_query_error_returns_502_bad_gateway() {
+        let err = AppError::ModelQuery(ModelQueryError::StreamError {
             endpoint: "http://localhost:1234/v1".to_string(),
-            reason: "connection refused".to_string(),
-        };
+            bytes_received: 0,
+            error_message: "connection refused".to_string(),
+        });
         let response = err.into_response();
         assert_eq!(
             response.status(),

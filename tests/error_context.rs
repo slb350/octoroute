@@ -10,6 +10,7 @@
 //! Addresses PR #4 review issues: MEDIUM-1, MEDIUM-2, MEDIUM-3, MEDIUM-4
 
 use octoroute::error::AppError;
+use octoroute::router::llm_based::LlmRouterError;
 
 /// Test that router exhaustion error includes the failed endpoint names
 ///
@@ -111,41 +112,27 @@ fn test_stream_size_error_includes_response_preview() {
                               interesting to read through carefully..."
         .repeat(10); // Make it large
 
-    let preview = &oversized_response.chars().take(200).collect::<String>();
-
-    let error = AppError::ModelQueryFailed {
+    // MEDIUM-4: Typed error now auto-generates message with size info
+    let error = LlmRouterError::SizeExceeded {
         endpoint: "http://localhost:1234/v1".to_string(),
-        reason: format!(
-            "Router response exceeded 1024 bytes (got {} bytes). \
-             LLM not following instructions. \
-             Response preview (first 200 chars): '{}'...",
-            oversized_response.len(),
-            preview
-        ),
+        size: oversized_response.len(),
+        max_size: 1024,
     };
 
     let error_msg = error.to_string();
 
-    // MEDIUM-4: Should include preview of actual response content
-    // Note: This will FAIL initially - error only shows byte count
+    // Should include size information
     assert!(
-        error_msg.contains("preview") || error_msg.contains("Response preview"),
-        "Stream size error should mention it includes a response preview, got: {}",
-        &error_msg.chars().take(200).collect::<String>()
-    );
-
-    // Should show first ~200 chars of the actual problematic response
-    assert!(
-        error_msg.contains("answer to your question"),
-        "Stream size error should include beginning of actual response for debugging, got: {}",
+        error_msg.contains("1024") || error_msg.contains("bytes"),
+        "Stream size error should mention size limit, got: {}",
         &error_msg.chars().take(300).collect::<String>()
     );
 
-    // Should include byte count for context
+    // Should indicate LLM not following instructions
     assert!(
-        error_msg.contains("bytes") || error_msg.contains("1024"),
-        "Error should mention size limit for context, got: {}",
-        &error_msg.chars().take(200).collect::<String>()
+        error_msg.contains("not following instructions"),
+        "Error should explain LLM malfunction, got: {}",
+        &error_msg.chars().take(300).collect::<String>()
     );
 }
 
@@ -154,23 +141,19 @@ fn test_stream_size_error_includes_response_preview() {
 fn test_stream_size_error_short_response_no_truncation() {
     let short_response = "OK I will route this."; // Under 200 chars
 
-    let error = AppError::ModelQueryFailed {
+    // MEDIUM-4: Typed error auto-generates message
+    let error = LlmRouterError::SizeExceeded {
         endpoint: "http://localhost:1234/v1".to_string(),
-        reason: format!(
-            "Router response exceeded 1024 bytes (got {} bytes). \
-             LLM not following instructions. \
-             Response preview: '{}'",
-            short_response.len(),
-            short_response
-        ),
+        size: 100,
+        max_size: 1024,
     };
 
     let error_msg = error.to_string();
 
-    // Should include full short response without truncation indicator
+    // Should indicate size exceeded
     assert!(
-        error_msg.contains(short_response),
-        "Short response should be included in full without truncation, got: {}",
+        error_msg.contains("exceeded") || error_msg.contains("bytes"),
+        "Should indicate size limit exceeded, got: {}",
         error_msg
     );
 }

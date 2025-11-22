@@ -697,10 +697,10 @@ async fn try_query_model(
                 error = %e,
                 "Failed to build AgentOptions from endpoint configuration"
             );
-            AppError::ModelQueryFailed {
+            AppError::ModelQuery(crate::error::ModelQueryError::AgentOptionsConfigError {
                 endpoint: endpoint.base_url().to_string(),
-                reason: format!("Failed to configure AgentOptions: {}", e),
-            }
+                details: format!("{}", e),
+            })
         })?;
 
     tracing::debug!(
@@ -747,10 +747,11 @@ async fn try_query_model(
                         error = %e,
                         "Failed to query model"
                     );
-                    AppError::ModelQueryFailed {
+                    AppError::ModelQuery(crate::error::ModelQueryError::StreamError {
                         endpoint: endpoint.base_url().to_string(),
-                        reason: format!("{}", e),
-                    }
+                        bytes_received: 0,
+                        error_message: format!("{}", e),
+                    })
                 })?;
 
             // Collect response from stream

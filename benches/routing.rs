@@ -89,7 +89,6 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_tier = "balanced"
 "#;
 
     c.bench_function("config_parsing", |b| {

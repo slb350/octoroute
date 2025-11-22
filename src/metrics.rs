@@ -298,10 +298,35 @@ impl Metrics {
     /// Increments the counter when mark_success() or mark_failure() operations
     /// fail (e.g., unknown endpoint name, internal errors).
     ///
-    /// This metric helps operators detect:
-    /// - Configuration mismatches (endpoint names in routing logic don't match config)
-    /// - Internal errors in health tracking (lock failures, etc.)
-    /// - Degraded observability (if tracking fails, routing decisions lack health data)
+    /// ## What This Metric Tracks
+    ///
+    /// This metric increments when health tracking operations fail, specifically:
+    /// - `mark_success()` fails after successful routing (endpoint name mismatch)
+    /// - `mark_failure()` fails after failed routing (endpoint name mismatch)
+    /// - Internal errors in health tracking system (lock failures, HTTP client creation)
+    ///
+    /// ## What This Metric Does NOT Track
+    ///
+    /// This metric does NOT increment for:
+    /// - Normal endpoint failures (those are tracked by health checker itself)
+    /// - Routing failures (tracked separately by routing metrics)
+    /// - Request failures (tracked by requests_total with status labels)
+    ///
+    /// ## Alerting Threshold
+    ///
+    /// **Recommended alert**: > 5 failures in 1 hour indicates a systemic issue:
+    /// - Configuration mismatch between routing logic and config file
+    /// - Race condition in endpoint registration/deregistration
+    /// - Internal bug in health tracking system
+    ///
+    /// Occasional failures (1-2 per hour) may be transient and acceptable.
+    ///
+    /// ## Impact
+    ///
+    /// When health tracking fails:
+    /// - Endpoint recovery is delayed (30-60s background polling vs immediate)
+    /// - Routing may be suboptimal (avoiding healthy endpoints)
+    /// - Warnings are surfaced to users in responses
     pub fn health_tracking_failure(&self) {
         self.health_tracking_failures.inc();
     }
