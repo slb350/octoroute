@@ -59,10 +59,7 @@ fn test_config_reload_not_supported_by_design() {
     // 3. New config loaded at startup via Config::from_file()
     //
     // This test documents that this is intentional design, not a missing feature.
-    assert!(
-        true,
-        "Config reload intentionally not supported - restart required for config changes"
-    );
+    // Test passes to confirm documentation is reviewed.
 }
 
 /// Test router tier exhaustion with healthy target tiers

@@ -139,7 +139,7 @@ fn test_stream_size_error_includes_response_preview() {
 /// Test that stream size error handles short responses without truncation message
 #[test]
 fn test_stream_size_error_short_response_no_truncation() {
-    let short_response = "OK I will route this."; // Under 200 chars
+    let _short_response = "OK I will route this."; // Under 200 chars (unused, for documentation)
 
     // MEDIUM-4: Typed error auto-generates message
     let error = LlmRouterError::SizeExceeded {
