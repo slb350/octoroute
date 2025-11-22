@@ -116,6 +116,11 @@ impl From<crate::router::TargetModel> for ModelTier {
 ///
 /// Fields are private to enforce construction through the validated `new()` constructor.
 /// This ensures `model_name` always matches an actual endpoint from configuration.
+///
+/// ## Warnings
+///
+/// The `warnings` field surfaces non-fatal issues (e.g., health tracking failures)
+/// to users. Warnings are omitted from JSON if empty.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatResponse {
     /// Model's response content
@@ -126,6 +131,9 @@ pub struct ChatResponse {
     model_name: String,
     /// Which routing strategy made the decision (Rule or Llm)
     routing_strategy: RoutingStrategy,
+    /// Non-fatal warnings encountered during routing (omitted if empty)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
 }
 
 impl ChatResponse {
@@ -150,6 +158,33 @@ impl ChatResponse {
             model_tier: tier.into(),
             model_name: endpoint.name().to_string(),
             routing_strategy,
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Create a new ChatResponse with warnings
+    ///
+    /// Like `new()` but includes warnings collected during routing (e.g., health tracking failures).
+    ///
+    /// # Arguments
+    /// * `content` - The model's response text
+    /// * `endpoint` - The endpoint that generated the response (guarantees valid model_name)
+    /// * `tier` - The tier used for routing (fast, balanced, deep)
+    /// * `routing_strategy` - Which routing strategy was used (Rule or Llm)
+    /// * `warnings` - Non-fatal warnings to surface to the user
+    pub fn new_with_warnings(
+        content: String,
+        endpoint: &ModelEndpoint,
+        tier: TargetModel,
+        routing_strategy: RoutingStrategy,
+        warnings: Vec<String>,
+    ) -> Self {
+        Self {
+            content,
+            model_tier: tier.into(),
+            model_name: endpoint.name().to_string(),
+            routing_strategy,
+            warnings,
         }
     }
 
@@ -172,6 +207,11 @@ impl ChatResponse {
     pub fn routing_strategy(&self) -> RoutingStrategy {
         self.routing_strategy
     }
+
+    /// Get the warnings collected during routing
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
 }
 
 /// Custom Deserialize implementation for ChatResponse that validates fields
@@ -189,6 +229,8 @@ impl<'de> Deserialize<'de> for ChatResponse {
             model_tier: ModelTier,
             model_name: String,
             routing_strategy: RoutingStrategy,
+            #[serde(default)]
+            warnings: Vec<String>,
         }
 
         let raw = RawChatResponse::deserialize(deserializer)?;
@@ -208,6 +250,7 @@ impl<'de> Deserialize<'de> for ChatResponse {
             model_tier: raw.model_tier,
             model_name: raw.model_name,
             routing_strategy: raw.routing_strategy,
+            warnings: raw.warnings,
         })
     }
 }
@@ -484,15 +527,27 @@ pub async fn handler(
                     response_length = response_text.len(),
                     model_tier = ?decision.target(),
                     attempt = attempt,
+                    warnings_count = decision.warnings().len(),
                     "Request completed successfully"
                 );
 
-                let response = ChatResponse::new(
-                    response_text,
-                    &endpoint,
-                    decision.target(),
-                    decision.strategy(),
-                );
+                // Propagate warnings from routing decision to response
+                let response = if decision.warnings().is_empty() {
+                    ChatResponse::new(
+                        response_text,
+                        &endpoint,
+                        decision.target(),
+                        decision.strategy(),
+                    )
+                } else {
+                    ChatResponse::new_with_warnings(
+                        response_text,
+                        &endpoint,
+                        decision.target(),
+                        decision.strategy(),
+                        decision.warnings().to_vec(),
+                    )
+                };
 
                 // Record successful model invocation
                 // NOTE: This is only recorded on SUCCESS, unlike record_request() which is

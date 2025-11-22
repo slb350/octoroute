@@ -105,20 +105,35 @@ impl RoutingStrategy {
 /// than returning a tuple.
 ///
 /// Fields are private to enable future validation logic and maintain
-/// encapsulation. Use accessor methods `target()` and `strategy()` to
-/// read the values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// encapsulation. Use accessor methods `target()`, `strategy()`, and
+/// `warnings()` to read the values.
+///
+/// ## Warnings
+///
+/// The `warnings` field surfaces non-fatal issues encountered during routing
+/// (e.g., health tracking failures) that users should be aware of. Warnings
+/// are included in the response but don't prevent successful routing.
+///
+/// Note: Not Copy because warnings is Vec<String>. Use clone() if needed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RoutingDecision {
     /// Which model tier to use
     target: TargetModel,
     /// Which routing strategy made the decision
     strategy: RoutingStrategy,
+    /// Non-fatal warnings encountered during routing (omitted if empty)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
 }
 
 impl RoutingDecision {
-    /// Create a new routing decision
+    /// Create a new routing decision with no warnings
     pub fn new(target: TargetModel, strategy: RoutingStrategy) -> Self {
-        Self { target, strategy }
+        Self {
+            target,
+            strategy,
+            warnings: Vec::new(),
+        }
     }
 
     /// Get the target model tier for this routing decision
@@ -129,6 +144,26 @@ impl RoutingDecision {
     /// Get the routing strategy that made this decision
     pub fn strategy(&self) -> RoutingStrategy {
         self.strategy
+    }
+
+    /// Get the warnings collected during routing
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// Add a warning to this routing decision (builder pattern)
+    ///
+    /// Warnings surface non-fatal issues (like health tracking failures)
+    /// to users while still allowing the request to succeed.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let decision = RoutingDecision::new(TargetModel::Fast, RoutingStrategy::Rule)
+    ///     .with_warning("Health tracking degraded".to_string());
+    /// ```
+    pub fn with_warning(mut self, warning: String) -> Self {
+        self.warnings.push(warning);
+        self
     }
 }
 

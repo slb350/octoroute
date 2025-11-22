@@ -301,6 +301,7 @@ impl LlmBasedRouter {
         const MAX_ROUTER_RETRIES: usize = 2;
         let mut last_error = None;
         let mut failed_endpoints = ExclusionSet::new();
+        let mut warnings = Vec::new(); // Collect health tracking failures to surface to user
 
         for attempt in 1..=MAX_ROUTER_RETRIES {
             // Select endpoint from router tier (with health filtering + exclusions)
@@ -415,7 +416,7 @@ impl LlmBasedRouter {
                         .await
                     {
                         use crate::models::health::HealthError;
-                        match e {
+                        let warning_msg = match e {
                             HealthError::UnknownEndpoint(ref name) => {
                                 self.metrics.health_tracking_failure();
                                 tracing::error!(
@@ -429,6 +430,10 @@ impl LlmBasedRouter {
                                     reload during request). Continuing with routing decision but endpoint \
                                     won't be marked healthy (health tracking degraded)."
                                 );
+                                format!(
+                                    "Health tracking failure: UnknownEndpoint '{}'. Endpoint recovery may be impaired.",
+                                    name
+                                )
                             }
                             HealthError::HttpClientCreationFailed(ref msg) => {
                                 self.metrics.health_tracking_failure();
@@ -441,8 +446,13 @@ impl LlmBasedRouter {
                                     This indicates a systemic issue (TLS configuration, resource exhaustion). \
                                     Continuing with routing decision but health tracking is degraded."
                                 );
+                                format!(
+                                    "Health tracking failure: HTTP client creation failed ({}). Health monitoring degraded.",
+                                    msg
+                                )
                             }
-                        }
+                        };
+                        warnings.push(warning_msg);
                         // DO NOT return error - we have a valid routing decision
                     }
 
@@ -450,10 +460,16 @@ impl LlmBasedRouter {
                         endpoint_name = %endpoint.name(),
                         target_model = ?target_model,
                         attempt = attempt,
+                        warnings_count = warnings.len(),
                         "Router LLM successfully determined target model"
                     );
 
-                    return Ok(RoutingDecision::new(target_model, RoutingStrategy::Llm));
+                    // Return routing decision with any collected warnings
+                    let mut decision = RoutingDecision::new(target_model, RoutingStrategy::Llm);
+                    for warning in warnings {
+                        decision = decision.with_warning(warning);
+                    }
+                    return Ok(decision);
                 }
                 Err(e) => {
                     // Classify error as retryable or systemic
@@ -494,7 +510,7 @@ impl LlmBasedRouter {
                         .await
                     {
                         use crate::models::health::HealthError;
-                        match health_err {
+                        let warning_msg = match health_err {
                             HealthError::UnknownEndpoint(ref name) => {
                                 self.metrics.health_tracking_failure();
                                 tracing::error!(
@@ -507,6 +523,10 @@ impl LlmBasedRouter {
                                     which only returns valid endpoints. This indicates a serious bug (race \
                                     condition or naming mismatch). Continuing with retry (health tracking degraded)."
                                 );
+                                format!(
+                                    "Health tracking failure: UnknownEndpoint '{}' during failure marking. Endpoint recovery may be impaired.",
+                                    name
+                                )
                             }
                             HealthError::HttpClientCreationFailed(ref msg) => {
                                 self.metrics.health_tracking_failure();
@@ -518,8 +538,13 @@ impl LlmBasedRouter {
                                     This indicates a systemic issue (TLS configuration, resource exhaustion). \
                                     Continuing with retry but health tracking is degraded."
                                 );
+                                format!(
+                                    "Health tracking failure: HTTP client creation failed ({}) during failure marking. Health monitoring degraded.",
+                                    msg
+                                )
                             }
-                        }
+                        };
+                        warnings.push(warning_msg);
                         // DO NOT return error - continue with retry logic
                     }
 
