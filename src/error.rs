@@ -117,6 +117,23 @@ pub enum AppError {
     #[error("Routing failed: {0}")]
     RoutingFailed(String),
 
+    /// Hybrid routing failed after LLM fallback
+    ///
+    /// Preserves context about the hybrid routing attempt including the
+    /// prompt, metadata, and the original LLM routing error.
+    #[error(
+        "Hybrid routing failed (no rule match, LLM fallback failed) - \
+         task_type: {task_type:?}, importance: {importance:?}, \
+         prompt_preview: {prompt_preview}"
+    )]
+    HybridRoutingFailed {
+        prompt_preview: String,
+        task_type: crate::router::TaskType,
+        importance: crate::router::Importance,
+        #[source]
+        source: Box<AppError>,
+    },
+
     #[error(
         "Stream interrupted from {endpoint} after receiving {bytes_received} bytes ({blocks_received} blocks)"
     )]
@@ -161,6 +178,9 @@ impl IntoResponse for AppError {
                 (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
             }
             Self::RoutingFailed(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            Self::HybridRoutingFailed { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
+            }
             Self::StreamInterrupted { .. } => (StatusCode::BAD_GATEWAY, self.to_string()),
             Self::EndpointTimeout { .. } => (StatusCode::GATEWAY_TIMEOUT, self.to_string()),
             Self::HealthCheckFailed { .. } => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),

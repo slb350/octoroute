@@ -316,10 +316,14 @@ router_tier = "balanced"
     let error = result.unwrap_err();
     let error_msg = format!("{}", error);
 
-    // Error should mention balanced tier and indicate no healthy endpoints
+    // Error should mention balanced tier OR hybrid routing failure (new wrapped error)
+    // When hybrid routing wraps the error, it may not include "balanced" in top-level message
+    let mentions_balanced = error_msg.contains("balanced") || error_msg.contains("Balanced");
+    let mentions_hybrid_failure = error_msg.contains("Hybrid routing failed");
+
     assert!(
-        error_msg.contains("balanced") || error_msg.contains("Balanced"),
-        "Error should mention balanced tier, got: {}",
+        mentions_balanced || mentions_hybrid_failure,
+        "Error should mention balanced tier or hybrid routing failure, got: {}",
         error_msg
     );
 

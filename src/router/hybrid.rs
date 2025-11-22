@@ -117,13 +117,20 @@ impl HybridRouter {
                     .map_err(|e| {
                         tracing::error!(
                             error = %e,
-                            user_prompt_preview = &user_prompt.chars().take(100).collect::<String>(),
+                            user_prompt = user_prompt,  // Full prompt, no truncation
                             task_type = ?meta.task_type,
                             importance = ?meta.importance,
                             token_estimate = meta.token_estimate,
-                            "LLM router failed after no rule match"
+                            "LLM router failed after no rule match (hybrid routing fallback failed)"
                         );
-                        e
+
+                        // Wrap error with hybrid routing context for better debugging
+                        crate::error::AppError::HybridRoutingFailed {
+                            prompt_preview: user_prompt.to_string(),
+                            task_type: meta.task_type,
+                            importance: meta.importance,
+                            source: Box::new(e),
+                        }
                     })?;
 
                 tracing::info!(
