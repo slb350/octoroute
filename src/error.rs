@@ -152,6 +152,14 @@ pub enum AppError {
     #[error("Health check failed for {endpoint}: {reason}")]
     HealthCheckFailed { endpoint: String, reason: String },
 
+    /// Health tracking error (mark_success/mark_failure failures)
+    ///
+    /// Preserves the original HealthError type instead of converting to string,
+    /// enabling proper error handling and debugging. The #[from] attribute
+    /// automatically implements From<HealthError> for AppError.
+    #[error(transparent)]
+    HealthTracking(#[from] crate::models::health::HealthError),
+
     /// Type-safe model query error
     #[error(transparent)]
     ModelQuery(#[from] ModelQueryError),
@@ -180,6 +188,7 @@ impl IntoResponse for AppError {
             Self::StreamInterrupted { .. } => (StatusCode::BAD_GATEWAY, self.to_string()),
             Self::EndpointTimeout { .. } => (StatusCode::GATEWAY_TIMEOUT, self.to_string()),
             Self::HealthCheckFailed { .. } => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            Self::HealthTracking(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::ModelQuery(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             Self::LlmRouting(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),

@@ -495,8 +495,9 @@ pub async fn handler(
                     .await
                     .map_err(|e| {
                         use crate::models::health::HealthError;
-                        match e {
-                            HealthError::UnknownEndpoint(ref name) => {
+                        // Log detailed context while preserving error type
+                        match &e {
+                            HealthError::UnknownEndpoint(name) => {
                                 tracing::error!(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
@@ -509,7 +510,7 @@ pub async fn handler(
                                     reload during request). Failing request to expose issue."
                                 );
                             }
-                            HealthError::HttpClientCreationFailed(ref msg) => {
+                            HealthError::HttpClientCreationFailed(msg) => {
                                 tracing::error!(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
@@ -523,10 +524,8 @@ pub async fn handler(
                                 );
                             }
                         }
-                        AppError::HealthCheckFailed {
-                            endpoint: endpoint.name().to_string(),
-                            reason: format!("mark_success failed: {}. This should not happen.", e),
-                        }
+                        // Preserve error type instead of converting to string
+                        AppError::HealthTracking(e)
                     })?;
 
                 tracing::info!(
@@ -620,8 +619,9 @@ pub async fn handler(
                     .await
                     .map_err(|e| {
                         use crate::models::health::HealthError;
-                        match e {
-                            HealthError::UnknownEndpoint(ref name) => {
+                        // Log detailed context while preserving error type
+                        match &e {
+                            HealthError::UnknownEndpoint(name) => {
                                 tracing::error!(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
@@ -635,7 +635,7 @@ pub async fn handler(
                                     Failing request to expose issue."
                                 );
                             }
-                            HealthError::HttpClientCreationFailed(ref msg) => {
+                            HealthError::HttpClientCreationFailed(msg) => {
                                 tracing::error!(
                                     request_id = %request_id,
                                     endpoint_name = %endpoint.name(),
@@ -649,10 +649,8 @@ pub async fn handler(
                                 );
                             }
                         }
-                        AppError::HealthCheckFailed {
-                            endpoint: endpoint.name().to_string(),
-                            reason: format!("mark_failure failed: {}. This should not happen.", e),
-                        }
+                        // Preserve error type instead of converting to string
+                        AppError::HealthTracking(e)
                     })?;
 
                 // Exclude this endpoint from subsequent retry attempts in THIS REQUEST ONLY.

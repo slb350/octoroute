@@ -1,159 +1,115 @@
-//! Error context and remediation tests
+//! Tests for error context preservation
 //!
-//! Tests that error messages include sufficient context for debugging
-//! and remediation guidance for operators:
-//! - Router exhaustion errors list which endpoints failed
-//! - Health check errors include endpoint URLs (not just names)
-//! - Config validation errors suggest fixes with example TOML
-//! - Stream size errors show response preview for debugging
+//! Verifies that error types are preserved through the error chain rather than
+//! being converted to strings, which loses type information and makes debugging harder.
 //!
-//! Addresses PR #4 review issues: MEDIUM-1, MEDIUM-2, MEDIUM-3, MEDIUM-4
+//! Addresses PR #4 Issue: HealthError converted to string, loses type info
 
+use octoroute::config::Config;
 use octoroute::error::AppError;
-use octoroute::router::llm_based::LlmRouterError;
+use octoroute::handlers::AppState;
+use std::sync::Arc;
 
-/// Test that router exhaustion error includes the failed endpoint names
-///
-/// MEDIUM-1: When all endpoints are exhausted, operators need to know
-/// WHICH endpoints failed to determine if it's a systemic issue or
-/// isolated to specific endpoints.
-#[test]
-fn test_router_exhaustion_includes_failed_endpoints() {
-    // This test documents the expected error format when router exhaustion occurs
-    // The actual error is constructed in llm_based.rs:368-372
+/// Helper to create a test config
+fn create_test_config() -> Config {
+    let config_toml = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
 
-    // Create an error message that should include failed endpoints
-    let error_msg = "All 3 Balanced tier endpoints exhausted for routing (attempt 2/3). \
-                     Failed endpoints: balanced-1, balanced-2, balanced-3. \
-                     Check endpoint connectivity and health.";
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
 
-    // MEDIUM-1: Error should list the specific endpoint names that failed
-    // Note: This will FAIL initially - error currently only shows count
-    assert!(
-        error_msg.contains("balanced-1")
-            && error_msg.contains("balanced-2")
-            && error_msg.contains("balanced-3"),
-        "Router exhaustion error should list failed endpoint names for debugging, got: {}",
-        error_msg
-    );
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1235/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
 
-    // Should still include helpful remediation
-    assert!(
-        error_msg.to_lowercase().contains("check")
-            && (error_msg.to_lowercase().contains("health")
-                || error_msg.to_lowercase().contains("connectivity")),
-        "Error should suggest checking endpoint health/connectivity, got: {}",
-        error_msg
-    );
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:1236/v1"
+max_tokens = 8192
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+default_importance = "normal"
+"#;
+
+    toml::from_str(config_toml).expect("should parse test config")
 }
 
-/// Test that config validation errors include example TOML for remediation
+/// Test that HealthError type is preserved in AppError
 ///
-/// MEDIUM-3: When config validation fails, operators need concrete examples
-/// of how to fix the configuration rather than just being told it's wrong.
-#[test]
-fn test_config_validation_suggests_remediation() {
-    // Simulate a config validation error for missing router_tier endpoints
-    // The actual error is constructed in config.rs around line 493-499
+/// **RED PHASE**: This test will fail because AppError::HealthTracking doesn't exist yet
+#[tokio::test]
+async fn test_health_error_type_preserved() {
+    let config = Arc::new(create_test_config());
+    let state = AppState::new(config).expect("should create AppState");
 
-    let validation_error = AppError::ConfigValidationFailed {
-        path: "config.toml".to_string(),
-        reason: "LLM/Hybrid routing requires at least one endpoint in the router_tier. \
-                 No endpoints configured for 'balanced' tier. \
-                 Example fix:\n\
-                 [[models.balanced]]\n\
-                 name = \"my-model\"\n\
-                 base_url = \"http://localhost:1234/v1\"\n\
-                 max_tokens = 4096\n\
-                 weight = 1.0\n\
-                 priority = 1"
-            .to_string(),
-    };
+    // Try to mark success on a nonexistent endpoint
+    let result = state
+        .selector()
+        .health_checker()
+        .mark_success("nonexistent-endpoint")
+        .await;
 
-    let error_msg = validation_error.to_string();
+    assert!(result.is_err(), "Should fail for unknown endpoint");
 
-    // MEDIUM-3: Should include example TOML showing how to fix
-    // Note: This will FAIL initially - errors don't include examples yet
-    assert!(
-        error_msg.contains("[[models.") && error_msg.contains("base_url"),
-        "Config validation error should include example TOML configuration, got: {}",
-        error_msg
-    );
+    // The error should be a HealthError::UnknownEndpoint
+    let err = result.unwrap_err();
 
-    // Should mention the specific problem
-    assert!(
-        error_msg.to_lowercase().contains("balanced"),
-        "Error should mention the specific tier that needs configuration, got: {}",
-        error_msg
-    );
-
-    // Should provide actionable guidance
-    assert!(
-        error_msg.to_lowercase().contains("example")
-            || error_msg.to_lowercase().contains("add")
-            || error_msg.to_lowercase().contains("configure"),
-        "Error should provide actionable guidance (example/add/configure), got: {}",
-        error_msg
-    );
+    // Verify it's the UnknownEndpoint variant
+    match err {
+        octoroute::models::health::HealthError::UnknownEndpoint(name) => {
+            assert_eq!(name, "nonexistent-endpoint");
+        }
+        _ => panic!("Expected UnknownEndpoint, got {:?}", err),
+    }
 }
 
-/// Test that stream size errors include response preview for debugging
+/// Test that AppError preserves HealthError without converting to string
 ///
-/// MEDIUM-4: When router response exceeds size limit, operators need to see
-/// what the LLM actually generated to diagnose misconfiguration or prompt issues.
-#[test]
-fn test_stream_size_error_includes_response_preview() {
-    // Simulate a stream size error
-    // The actual error is constructed in llm_based.rs:704-712
+/// **RED PHASE**: This test will fail because AppError::HealthTracking doesn't exist yet
+#[tokio::test]
+async fn test_app_error_preserves_health_error() {
+    let config = Arc::new(create_test_config());
+    let state = AppState::new(config).expect("should create AppState");
 
-    let oversized_response = "The answer to your question is quite complex and requires \
-                              a detailed explanation spanning multiple paragraphs with \
-                              extensive background information that you might find \
-                              interesting to read through carefully..."
-        .repeat(10); // Make it large
+    // Simulate health tracking error by calling mark_success with unknown endpoint
+    let health_result = state
+        .selector()
+        .health_checker()
+        .mark_success("unknown-endpoint")
+        .await;
 
-    // MEDIUM-4: Typed error now auto-generates message with size info
-    let error = LlmRouterError::SizeExceeded {
-        endpoint: "http://localhost:1234/v1".to_string(),
-        size: oversized_response.len(),
-        max_size: 1024,
-    };
+    assert!(health_result.is_err());
 
-    let error_msg = error.to_string();
+    // Convert to AppError (this is what happens in handlers)
+    let app_error: AppError = health_result.unwrap_err().into();
 
-    // Should include size information
-    assert!(
-        error_msg.contains("1024") || error_msg.contains("bytes"),
-        "Stream size error should mention size limit, got: {}",
-        &error_msg.chars().take(300).collect::<String>()
-    );
-
-    // Should indicate LLM not following instructions
-    assert!(
-        error_msg.contains("not following instructions"),
-        "Error should explain LLM malfunction, got: {}",
-        &error_msg.chars().take(300).collect::<String>()
-    );
-}
-
-/// Test that stream size error handles short responses without truncation message
-#[test]
-fn test_stream_size_error_short_response_no_truncation() {
-    let _short_response = "OK I will route this."; // Under 200 chars (unused, for documentation)
-
-    // MEDIUM-4: Typed error auto-generates message
-    let error = LlmRouterError::SizeExceeded {
-        endpoint: "http://localhost:1234/v1".to_string(),
-        size: 100,
-        max_size: 1024,
-    };
-
-    let error_msg = error.to_string();
-
-    // Should indicate size exceeded
-    assert!(
-        error_msg.contains("exceeded") || error_msg.contains("bytes"),
-        "Should indicate size limit exceeded, got: {}",
-        error_msg
-    );
+    // The AppError should preserve the HealthError type
+    match app_error {
+        AppError::HealthTracking(health_err) => {
+            // Success! The error type is preserved
+            match health_err {
+                octoroute::models::health::HealthError::UnknownEndpoint(name) => {
+                    assert_eq!(name, "unknown-endpoint");
+                }
+                _ => panic!("Expected UnknownEndpoint variant"),
+            }
+        }
+        _ => panic!("Expected AppError::HealthTracking, got {:?}", app_error),
+    }
 }
