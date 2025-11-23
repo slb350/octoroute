@@ -535,19 +535,19 @@ impl LlmBasedRouter {
         );
 
         Err(last_error.unwrap_or_else(|| {
-            // DEFENSIVE: This should never happen - indicates logic bug
-            // The retry loop should ALWAYS set last_error when it fails.
-            // If we hit this, it means the retry logic has a bug.
+            // DEFENSIVE BUG DETECTION: Retry loop exhausted without recording an error
+            // The retry loop MUST set last_error on every failure path.
+            // Reaching this code indicates a missing error assignment in retry logic.
             tracing::error!(
                 tier = ?self.router_tier,
                 max_retries = MAX_ROUTER_RETRIES,
                 "DEFENSIVE BUG: Retry loop exhausted but last_error is None. \
-                This should never happen - indicates logic error in retry loop."
+                The retry loop has a missing error assignment path."
             );
 
             AppError::Internal(format!(
                 "DEFENSIVE: All {} router retry attempts exhausted but no error recorded. \
-                This indicates a bug in retry logic. Please report this.",
+                Indicates missing error assignment in retry logic. Please report this bug.",
                 MAX_ROUTER_RETRIES
             ))
         }))

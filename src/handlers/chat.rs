@@ -685,14 +685,16 @@ pub async fn handler(
     );
 
     Err(last_error.unwrap_or_else(|| {
-        // DEFENSIVE BUG DETECTION: This should never happen
+        // DEFENSIVE BUG DETECTION: Retry loop exhausted without recording an error
+        // The retry loop MUST set last_error on every failure path.
+        // Reaching this code indicates a missing error assignment in retry logic.
         tracing::error!(
             request_id = %request_id,
             tier = ?decision.target(),
             max_retries = MAX_RETRIES,
             excluded_endpoints = ?failed_endpoints,
             "BUG: Retry loop exhausted but last_error is None. \
-            This indicates a logic error in retry handling."
+            The retry loop has a missing error assignment path."
         );
 
         // In debug mode, panic to catch bugs during development
@@ -700,14 +702,14 @@ pub async fn handler(
         if cfg!(debug_assertions) {
             panic!(
                 "BUG: Retry loop exhausted with last_error = None. \
-                This should never happen - fix retry logic."
+                Indicates missing error assignment in retry logic - fix immediately."
             );
         }
 
         AppError::Internal(format!(
             "DEFENSIVE: All {} retry attempts exhausted but no error recorded. \
             Tier: {:?}, Failed endpoints: {:?}. \
-            This indicates a bug - please report.",
+            Indicates missing error assignment in retry logic - please report this bug.",
             MAX_RETRIES,
             decision.target(),
             failed_endpoints
