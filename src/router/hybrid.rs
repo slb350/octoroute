@@ -102,12 +102,19 @@ impl HybridRouter {
                 Ok(decision)
             }
             None => {
-                // No rule matched - fall back to LLM router (this is the fix!)
+                // No rule matched - fall back to LLM router
+                // Log why rules didn't match to help operators tune rule thresholds
                 tracing::info!(
                     token_estimate = meta.token_estimate,
                     importance = ?meta.importance,
                     task_type = ?meta.task_type,
-                    "No rule matched, delegating to LLM router for intelligent routing"
+                    "No rule matched (token_estimate={}, task_type={:?}, importance={:?}), \
+                     delegating to LLM router for intelligent routing. \
+                     Rules evaluated: CasualChat+low_tokens → Fast, Code+medium_tokens → Balanced, \
+                     DeepAnalysis/CreativeWriting/HighImportance → Deep",
+                    meta.token_estimate,
+                    meta.task_type,
+                    meta.importance
                 );
 
                 let decision = self

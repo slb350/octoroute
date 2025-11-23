@@ -219,17 +219,19 @@ impl TimeoutsConfig {
     ///
     /// Returns an error if any timeout is zero or exceeds 300 seconds.
     ///
-    /// # Defense-in-Depth
+    /// # Defensive Validation (Sanity Bounds)
     ///
-    /// The upper bound check (timeout > 300) provides defense-in-depth validation:
-    /// Even if serde validation passes (which only checks type correctness), this
-    /// rejects unreasonable values (>5 minutes) that could indicate:
+    /// The upper bound check (timeout > 300) provides additional validation beyond
+    /// Serde's type checking. Even if deserialization succeeds (value is u64), this
+    /// rejects unreasonable values (>5 minutes) that likely indicate:
     /// - Config errors (typo: user meant 30 but typed 3000)
-    /// - Unit confusion (user thought it was milliseconds, not seconds)
-    /// - Integer overflow risk when converting to milliseconds (u64 multiplication)
+    /// - Unit confusion (user thought milliseconds, not seconds)
+    /// - Arithmetic overflow risk (u64 seconds → milliseconds multiplication)
     ///
     /// Extreme values like `u64::MAX` (18446744073709551615) would also fail this check,
     /// preventing arithmetic overflow in downstream timeout calculations.
+    ///
+    /// This is defensive programming, not defense-in-depth security layering.
     pub fn new(
         fast: Option<u64>,
         balanced: Option<u64>,

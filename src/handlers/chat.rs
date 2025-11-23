@@ -400,9 +400,15 @@ pub async fn handler(
     // - Without request-scoped: Could retry the same failed endpoint on attempts 1, 2, 3
     //
     //   Example with 2 endpoints (A, B) where B is down - probability of hitting B on all 3 attempts:
-    //   - Equal weights (A=1.0, B=1.0): 50% chance per attempt → 0.5³ = 12.5% failure probability
-    //   - Weighted (A=10.0, B=1.0): ~9% chance per attempt → 0.09³ = 0.07% failure probability
-    //   - **Worst case (A=1.0, B=10.0)**: ~91% chance per attempt → 0.91³ = 75% failure probability!
+    //
+    //   Formula: Given weights w_A and w_B, probability of selecting B is:
+    //     p_B = w_B / (w_A + w_B)
+    //
+    //   Probability of hitting B on k consecutive attempts: (p_B)^k
+    //
+    //   - Equal weights (w_A = w_B): p_B = 0.5, so (0.5)³ = 12.5% failure probability
+    //   - Weighted (w_A = 10×w_B): p_B = 1/11 ≈ 0.09, so (0.09)³ ≈ 0.07% failure probability
+    //   - **Worst case (w_B = 10×w_A)**: p_B = 10/11 ≈ 0.91, so (0.91)³ ≈ 75% failure probability!
     //
     //   Request-scoped exclusion eliminates this waste entirely by forcing different endpoints
     //   after the first failure, regardless of weights.
