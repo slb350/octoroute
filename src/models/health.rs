@@ -149,9 +149,10 @@ impl HealthMetrics {
             }
             true // Recent successful check - system is healthy
         } else {
-            // No successful check yet - cannot verify health
-            // Return false to avoid false positive (reporting healthy before any verification)
-            false
+            // No successful check yet - system starting up
+            // If background task is Running, assume healthy during warmup period
+            // This prevents false negatives during startup before first health check completes
+            state.background_task_status == BackgroundTaskStatus::Running
         }
     }
 }
@@ -1051,11 +1052,12 @@ router_tier = "balanced"
     async fn test_health_metrics_is_healthy_when_running() {
         let metrics = HealthMetrics::new();
 
-        // Should be UNHEALTHY initially (no checks completed yet)
-        // This prevents false positive - we haven't verified health yet
-        assert!(!metrics.is_background_task_healthy().await);
+        // Should be HEALTHY during startup warmup (background task is Running)
+        // This prevents false negatives that would cause load balancers to mark
+        // the server as DOWN during normal startup
+        assert!(metrics.is_background_task_healthy().await);
 
-        // Should be healthy after successful check
+        // Should remain healthy after successful check
         metrics.record_successful_check().await;
         assert!(metrics.is_background_task_healthy().await);
     }
@@ -1092,25 +1094,27 @@ router_tier = "balanced"
         assert!(metrics.is_background_task_healthy().await);
     }
 
-    /// Test that health returns false when no successful checks have completed yet
+    /// Test that health returns true during startup warmup when background task is Running
     ///
-    /// **RED PHASE**: This test will fail because is_background_task_healthy()
-    /// currently returns true when the task is Running but no checks have completed.
+    /// During startup, before the first health check completes, we should return true
+    /// if the background task is Running. This prevents false negatives that would cause:
+    /// - Load balancers marking server as DOWN during startup
+    /// - K8s readiness probes failing and preventing traffic
+    /// - Spurious monitoring alerts during deployments
     ///
-    /// **Issue**: False positive - system reports healthy before any actual health
-    /// verification has occurred.
+    /// Once the first check completes, we switch to staleness-based health verification.
     #[tokio::test]
-    async fn test_health_returns_false_when_no_checks_yet() {
+    async fn test_health_returns_true_during_startup_warmup() {
         let metrics = HealthMetrics::new();
 
-        // Initially, task is Running but no checks have completed
+        // Initially, task is Running but no checks have completed yet
         assert_eq!(metrics.status().await, BackgroundTaskStatus::Running);
 
-        // Should return false because we haven't verified health yet
-        // (last_successful_check is None)
+        // Should return true during startup warmup (background task is Running)
+        // This prevents false negatives before first health check completes
         assert!(
-            !metrics.is_background_task_healthy().await,
-            "Should return false when no successful checks have completed yet"
+            metrics.is_background_task_healthy().await,
+            "Should return true during startup warmup when background task is Running"
         );
     }
 }
