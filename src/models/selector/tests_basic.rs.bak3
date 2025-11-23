@@ -4,11 +4,6 @@
 //! empty tiers, and concurrency safety.
 
 use super::*;
-
-/// Helper to create test metrics
-fn test_metrics() -> Arc<crate::metrics::Metrics> {
-    Arc::new(crate::metrics::Metrics::new().expect("should create metrics"))
-}
 use crate::models::endpoint_name::ExclusionSet;
 use crate::models::selector::ModelSelector;
 use crate::router::TargetModel;
@@ -109,7 +104,7 @@ strategy = "rule"
 router_tier = "balanced"
 "#;
     let config: Config = toml::from_str(toml_config).expect("should parse TOML");
-    let selector = ModelSelector::new(Arc::new(config), test_metrics());
+    let selector = ModelSelector::new(Arc::new(config));
 
     let no_exclude = ExclusionSet::new();
     let result = selector.select(TargetModel::Fast, &no_exclude).await;

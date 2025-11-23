@@ -9,6 +9,11 @@ use octoroute::router::hybrid::HybridRouter;
 use octoroute::router::{Importance, RouteMetadata, TaskType};
 use std::sync::Arc;
 
+/// Helper to create test metrics
+fn test_metrics() -> Arc<octoroute::metrics::Metrics> {
+    Arc::new(octoroute::metrics::Metrics::new().expect("should create metrics"))
+}
+
 fn test_config() -> Arc<Config> {
     let config_toml = r#"
 [server]
@@ -55,7 +60,7 @@ async fn test_concurrent_routing_requests_same_metadata() {
     // All should succeed and return the same routing decision.
 
     let config = test_config();
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
     let router = Arc::new(
         HybridRouter::new(
             config,
@@ -117,7 +122,7 @@ async fn test_concurrent_routing_requests_different_metadata() {
     // that the router correctly handles different routing decisions concurrently.
 
     let config = test_config();
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
     let router = Arc::new(
         HybridRouter::new(
             config,
@@ -196,7 +201,7 @@ async fn test_concurrent_routing_high_load() {
     // the router handles high concurrency without panics or deadlocks.
 
     let config = test_config();
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
     let router = Arc::new(
         HybridRouter::new(
             config,
@@ -250,7 +255,7 @@ async fn test_concurrent_llm_routing_with_health_updates() {
     // triggers LLM fallback (CasualChat + High importance is ambiguous).
 
     let config = test_config();
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
     let router = Arc::new(
         HybridRouter::new(
             config,

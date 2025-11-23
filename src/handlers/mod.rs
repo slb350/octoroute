@@ -49,15 +49,16 @@ impl AppState {
     /// - Llm/Hybrid strategy is selected but no balanced tier endpoints are configured
     /// - Router construction fails for any other reason
     pub fn new(config: Arc<Config>) -> AppResult<Self> {
-        let selector = Arc::new(ModelSelector::new(config.clone()));
-
-        // Initialize metrics first so we can pass them to routers
+        // Initialize metrics first so we can pass them to health checker and routers
         let metrics = {
             let m = crate::metrics::Metrics::new()
                 .map_err(|e| AppError::Internal(format!("Failed to initialize metrics: {}", e)))?;
             tracing::info!("Metrics collection enabled");
             Arc::new(m)
         };
+
+        // Create selector with metrics integration for health tracking
+        let selector = Arc::new(ModelSelector::new(config.clone(), metrics.clone()));
 
         // Construct router based on config.routing.strategy
         let router = match config.routing.strategy {

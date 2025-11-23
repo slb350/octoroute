@@ -243,7 +243,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_router_creation() {
         let config = test_config();
-        let selector = Arc::new(ModelSelector::new(config.clone()));
+        let selector = Arc::new(ModelSelector::new(config.clone(), mock_metrics()));
         let _router = HybridRouter::new(config, selector, mock_metrics())
             .expect("HybridRouter::new should succeed with balanced tier");
         // If we get here without panic, creation succeeded
@@ -252,7 +252,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_router_uses_rule_when_matched() {
         let config = test_config();
-        let selector = Arc::new(ModelSelector::new(config.clone()));
+        let selector = Arc::new(ModelSelector::new(config.clone(), mock_metrics()));
         let router = HybridRouter::new(config, selector, mock_metrics())
             .expect("HybridRouter::new should succeed");
 
@@ -274,7 +274,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_router_uses_rule_for_code() {
         let config = test_config();
-        let selector = Arc::new(ModelSelector::new(config.clone()));
+        let selector = Arc::new(ModelSelector::new(config.clone(), mock_metrics()));
         let router = HybridRouter::new(config, selector, mock_metrics())
             .expect("HybridRouter::new should succeed");
 
@@ -296,7 +296,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_router_uses_rule_for_high_importance() {
         let config = test_config();
-        let selector = Arc::new(ModelSelector::new(config.clone()));
+        let selector = Arc::new(ModelSelector::new(config.clone(), mock_metrics()));
         let router = HybridRouter::new(config, selector, mock_metrics())
             .expect("HybridRouter::new should succeed");
 
@@ -322,7 +322,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_router_has_both_routers() {
         let config = test_config();
-        let selector = Arc::new(ModelSelector::new(config.clone()));
+        let selector = Arc::new(ModelSelector::new(config.clone(), mock_metrics()));
         let router = HybridRouter::new(config, selector, mock_metrics())
             .expect("HybridRouter::new should succeed");
 
@@ -335,7 +335,7 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_router_both_rule_and_llm_fail() {
         let config = test_config();
-        let selector = Arc::new(ModelSelector::new(config.clone()));
+        let selector = Arc::new(ModelSelector::new(config.clone(), mock_metrics()));
         let router = HybridRouter::new(config, selector.clone(), mock_metrics())
             .expect("HybridRouter::new should succeed");
 
@@ -402,7 +402,7 @@ mod tests {
         // FIX: Use MockLlmRouter to avoid network calls and panics during testing.
 
         let config = test_config();
-        let selector = Arc::new(ModelSelector::new(config.clone()));
+        let selector = Arc::new(ModelSelector::new(config.clone(), mock_metrics()));
 
         // Create mock LLM router that returns Balanced tier
         let mock_llm_router = Arc::new(MockLlmRouter::new(TargetModel::Balanced));
@@ -453,7 +453,7 @@ mod tests {
     async fn test_hybrid_router_rule_match_skips_llm() {
         // Verify that when a rule DOES match, LLM is NOT called (fast path works)
         let config = test_config();
-        let selector = Arc::new(ModelSelector::new(config.clone()));
+        let selector = Arc::new(ModelSelector::new(config.clone(), mock_metrics()));
         let router = HybridRouter::new(config, selector, mock_metrics())
             .expect("HybridRouter::new should succeed");
 

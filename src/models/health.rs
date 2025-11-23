@@ -217,6 +217,8 @@ pub struct HealthChecker {
     health_status: Arc<RwLock<HashMap<String, EndpointHealth>>>,
     config: Arc<Config>,
     metrics: Arc<HealthMetrics>,
+    /// Reference to application-wide Prometheus metrics for surfacing health tracking failures
+    app_metrics: Option<Arc<crate::metrics::Metrics>>,
     /// Background health checking task handle for graceful shutdown
     background_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -227,6 +229,14 @@ impl std::fmt::Debug for HealthChecker {
             .field("health_status", &"<RwLock<HashMap>>")
             .field("config", &"<Config>")
             .field("metrics", &"<HealthMetrics>")
+            .field(
+                "app_metrics",
+                &if self.app_metrics.is_some() {
+                    "<Some(Metrics)>"
+                } else {
+                    "<None>"
+                },
+            )
             .field("background_task", &"<Mutex<JoinHandle>>")
             .finish()
     }
@@ -270,6 +280,70 @@ impl HealthChecker {
             health_status: Arc::new(RwLock::new(health_status)),
             config,
             metrics: Arc::new(HealthMetrics::new()),
+            app_metrics: None,
+            background_task: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Create a new HealthChecker with Prometheus metrics integration
+    ///
+    /// This constructor enables surfacing of health tracking failures to operators
+    /// via the `/health` endpoint and Prometheus metrics. When mark_success or
+    /// mark_failure operations fail in the background health checking task, the
+    /// failure is incremented in `health_tracking_failures_total`.
+    ///
+    /// # Arguments
+    /// * `config` - Application configuration with model endpoints
+    /// * `app_metrics` - Prometheus metrics collector for surfacing failures
+    ///
+    /// # Example
+    /// ```ignore
+    /// let config = Arc::new(Config::load()?);
+    /// let metrics = Arc::new(Metrics::new()?);
+    /// let checker = Arc::new(HealthChecker::new_with_metrics(config, metrics));
+    /// checker.start_background_checks();
+    /// ```
+    pub fn new_with_metrics(
+        config: Arc<Config>,
+        app_metrics: Arc<crate::metrics::Metrics>,
+    ) -> Self {
+        let mut health_status = HashMap::new();
+
+        // Initialize all fast endpoints
+        for endpoint in &config.models.fast {
+            health_status.insert(
+                endpoint.name().to_string(),
+                EndpointHealth::new(endpoint.name().to_string(), endpoint.base_url().to_string()),
+            );
+        }
+
+        // Initialize all balanced endpoints
+        for endpoint in &config.models.balanced {
+            health_status.insert(
+                endpoint.name().to_string(),
+                EndpointHealth::new(endpoint.name().to_string(), endpoint.base_url().to_string()),
+            );
+        }
+
+        // Initialize all deep endpoints
+        for endpoint in &config.models.deep {
+            health_status.insert(
+                endpoint.name().to_string(),
+                EndpointHealth::new(endpoint.name().to_string(), endpoint.base_url().to_string()),
+            );
+        }
+
+        tracing::info!(
+            total_endpoints = health_status.len(),
+            has_metrics = true,
+            "HealthChecker initialized with Prometheus metrics integration"
+        );
+
+        Self {
+            health_status: Arc::new(RwLock::new(health_status)),
+            config,
+            metrics: Arc::new(HealthMetrics::new()),
+            app_metrics: Some(app_metrics),
             background_task: Arc::new(Mutex::new(None)),
         }
     }
@@ -478,20 +552,32 @@ impl HealthChecker {
                 Ok(true) => {
                     // Endpoint is healthy
                     if let Err(e) = self.mark_success(endpoint.name()).await {
+                        // Surface the failure via Prometheus metrics if available
+                        if let Some(ref app_metrics) = self.app_metrics {
+                            app_metrics.health_tracking_failure();
+                        }
                         tracing::error!(
                             endpoint_name = %endpoint.name(),
                             error = %e,
-                            "Failed to update health status - this should never happen"
+                            has_metrics = self.app_metrics.is_some(),
+                            "Failed to update health status - this should never happen. \
+                            Failure surfaced via metrics if available."
                         );
                     }
                 }
                 Ok(false) => {
                     // Endpoint is unhealthy
                     if let Err(e) = self.mark_failure(endpoint.name()).await {
+                        // Surface the failure via Prometheus metrics if available
+                        if let Some(ref app_metrics) = self.app_metrics {
+                            app_metrics.health_tracking_failure();
+                        }
                         tracing::error!(
                             endpoint_name = %endpoint.name(),
                             error = %e,
-                            "Failed to update health status - this should never happen"
+                            has_metrics = self.app_metrics.is_some(),
+                            "Failed to update health status - this should never happen. \
+                            Failure surfaced via metrics if available."
                         );
                     }
                 }

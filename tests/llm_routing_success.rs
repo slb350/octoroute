@@ -12,6 +12,11 @@ use octoroute::models::ModelSelector;
 use octoroute::router::{HybridRouter, Importance, RouteMetadata, RoutingStrategy, TaskType};
 use std::sync::Arc;
 
+/// Helper to create test metrics
+fn test_metrics() -> Arc<octoroute::metrics::Metrics> {
+    Arc::new(octoroute::metrics::Metrics::new().expect("should create metrics"))
+}
+
 #[tokio::test]
 async fn test_hybrid_router_uses_llm_strategy_on_fallback() {
     // This test verifies that when rule-based routing returns None,
@@ -53,7 +58,7 @@ router_tier = "balanced"
 
     let config: Config = toml::from_str(config_toml).expect("should parse config");
     let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
     let router = HybridRouter::new(
         config,
         selector.clone(),
@@ -155,7 +160,7 @@ router_tier = "balanced"
 
     let config: Config = toml::from_str(config_toml).expect("should parse config");
     let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
     let router = HybridRouter::new(
         config,
         selector,
@@ -267,7 +272,7 @@ router_tier = "balanced"
 
     let config: Config = toml::from_str(config_toml).expect("should parse config");
     let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
 
     // Mark Fast and Deep endpoints as unhealthy to force LLM fallback
     // (Rule router will try default_tier() and fail if only Balanced is healthy)
@@ -385,7 +390,7 @@ router_tier = "balanced"
 
     let config: Config = toml::from_str(config_toml).expect("should parse config");
     let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
 
     // Mark Fast and Deep endpoints as unhealthy to force LLM fallback
     let health_checker = selector.health_checker();

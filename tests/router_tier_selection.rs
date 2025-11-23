@@ -15,6 +15,11 @@ use octoroute::models::ModelSelector;
 use octoroute::router::{HybridRouter, Importance, LlmBasedRouter, RouteMetadata, TaskType};
 use std::sync::Arc;
 
+/// Helper to create test metrics
+fn test_metrics() -> Arc<octoroute::metrics::Metrics> {
+    Arc::new(octoroute::metrics::Metrics::new().expect("should create metrics"))
+}
+
 /// Helper function to parse and validate config from TOML
 ///
 /// This ensures all tests properly validate configuration before use,
@@ -73,7 +78,7 @@ router_tier = "fast"  # Using Fast tier for routing decisions
     let config = validated_config_from_toml(config_toml);
     let config = Arc::new(config);
 
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
 
     // Should succeed with fast tier
     let result = LlmBasedRouter::new(
@@ -141,7 +146,7 @@ router_tier = "deep"  # Using Deep tier for LLM fallback routing
     let config = validated_config_from_toml(config_toml);
     let config = Arc::new(config);
 
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
 
     // Should succeed with deep tier
     let result = HybridRouter::new(
@@ -201,7 +206,7 @@ router_tier = "deep"  # Using Deep tier for LLM fallback
 
     let config = validated_config_from_toml(config_toml);
     let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
 
     let router = HybridRouter::new(
         config.clone(),
@@ -310,7 +315,7 @@ router_tier = "{}"
 
         let config = validated_config_from_toml(&config_toml);
         let config = Arc::new(config);
-        let selector = Arc::new(ModelSelector::new(config.clone()));
+        let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
 
         // Test that router construction succeeds with this tier
         let result = LlmBasedRouter::new(
@@ -435,7 +440,7 @@ router_tier = "fast"
     let config = validated_config_from_toml(config_toml);
     let config = Arc::new(config);
 
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
     let router = LlmBasedRouter::new(
         selector,
         octoroute::router::TargetModel::Fast,
@@ -677,7 +682,7 @@ router_tier = "fast"  # Router uses Fast tier, which will be exhausted
 
     let config = validated_config_from_toml(config_toml);
     let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
 
     // Create LLM router with Fast tier
     let router = LlmBasedRouter::new(

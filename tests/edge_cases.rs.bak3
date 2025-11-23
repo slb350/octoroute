@@ -13,11 +13,6 @@ use octoroute::models::ModelSelector;
 use octoroute::router::{LlmBasedRouter, RouteMetadata, TargetModel};
 use std::sync::Arc;
 
-/// Helper to create test metrics
-fn test_metrics() -> Arc<Metrics> {
-    Arc::new(Metrics::new().expect("should create metrics"))
-}
-
 /// Test documenting that config reload is NOT supported
 ///
 /// **Design Decision**: Configuration reload requires server restart

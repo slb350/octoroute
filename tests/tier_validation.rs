@@ -8,6 +8,12 @@ use octoroute::models::selector::ModelSelector;
 use octoroute::router::llm_based::LlmBasedRouter;
 use std::sync::Arc;
 
+/// Helper to create test metrics
+#[allow(dead_code)]
+fn test_metrics() -> Arc<octoroute::metrics::Metrics> {
+    Arc::new(octoroute::metrics::Metrics::new().expect("should create metrics"))
+}
+
 /// Test that uppercase "FAST" is rejected during deserialization
 #[test]
 fn test_uppercase_fast_tier_rejected() {
@@ -434,8 +440,8 @@ router_tier = "balanced"
 
     let config: Config = toml::from_str(config_toml).expect("Config should parse");
     let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
     let metrics = Arc::new(octoroute::metrics::Metrics::new().unwrap());
+    let selector = Arc::new(ModelSelector::new(config.clone(), metrics.clone()));
 
     // Spawn 3 concurrent tasks, each creating a router with different tier
     let handles = vec![

@@ -112,13 +112,14 @@ impl RuleBasedRouter {
 }
 
 #[cfg(test)]
+
+/// Helper to create test metrics
+fn test_metrics() -> Arc<crate::metrics::Metrics> {
+    Arc::new(crate::metrics::Metrics::new().expect("should create metrics"))
+}
+
 mod tests {
     use super::*;
-
-    /// Helper to create test metrics
-    fn test_metrics() -> Arc<crate::metrics::Metrics> {
-        Arc::new(crate::metrics::Metrics::new().expect("should create metrics"))
-    }
     use crate::config::Config;
     use std::sync::Arc;
 

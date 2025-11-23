@@ -54,7 +54,7 @@ router_tier = "balanced"
 
     let config: Config = toml::from_str(config_toml).expect("should parse config");
     let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), mock_metrics()));
 
     // Verify selector has balanced endpoints
     assert_eq!(selector.endpoint_count(TargetModel::Balanced), 1);
@@ -140,7 +140,7 @@ router_tier = "balanced"
 
     let config: crate::config::Config = toml::from_str(config_toml).expect("should parse config");
     let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), mock_metrics()));
 
     // This should succeed because there is a balanced tier endpoint
     let result = LlmBasedRouter::new(selector, TargetModel::Balanced, mock_metrics());

@@ -12,6 +12,11 @@ use octoroute::{
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Helper to create test metrics
+fn test_metrics() -> Arc<octoroute::metrics::Metrics> {
+    Arc::new(octoroute::metrics::Metrics::new().expect("should create metrics"))
+}
+
 fn create_test_config() -> Config {
     // ModelEndpoint fields are private - use TOML deserialization
     let toml = r#"
@@ -309,7 +314,7 @@ router_tier = "balanced"
 
     let config: Config = toml::from_str(config_toml).expect("should parse config");
     let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
 
     let router = Arc::new(
         LlmBasedRouter::new(

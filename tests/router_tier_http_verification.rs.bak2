@@ -90,12 +90,9 @@ async fn test_router_tier_fast_creates_fast_router() {
         "Config should parse router_tier='fast' as TargetModel::Fast"
     );
 
-    // Create Metrics and ModelSelector for router construction
+    // Create ModelSelector and Metrics for router construction
+    let selector = Arc::new(ModelSelector::new(Arc::new(config.clone()), metrics.clone()));
     let metrics = Arc::new(Metrics::new().expect("should create Metrics"));
-    let selector = Arc::new(ModelSelector::new(
-        Arc::new(config.clone()),
-        metrics.clone(),
-    ));
 
     // Construct LlmBasedRouter with Fast tier
     let router = LlmBasedRouter::new(selector, TargetModel::Fast, metrics)
@@ -123,12 +120,9 @@ async fn test_router_tier_balanced_creates_balanced_router() {
         "Config should parse router_tier='balanced' as TargetModel::Balanced"
     );
 
-    // Create Metrics and ModelSelector for router construction
+    // Create ModelSelector and Metrics for router construction
+    let selector = Arc::new(ModelSelector::new(Arc::new(config.clone()), metrics.clone()));
     let metrics = Arc::new(Metrics::new().expect("should create Metrics"));
-    let selector = Arc::new(ModelSelector::new(
-        Arc::new(config.clone()),
-        metrics.clone(),
-    ));
 
     // Construct LlmBasedRouter with Balanced tier
     let router = LlmBasedRouter::new(selector, TargetModel::Balanced, metrics)
@@ -156,12 +150,9 @@ async fn test_router_tier_deep_creates_deep_router() {
         "Config should parse router_tier='deep' as TargetModel::Deep"
     );
 
-    // Create Metrics and ModelSelector for router construction
+    // Create ModelSelector and Metrics for router construction
+    let selector = Arc::new(ModelSelector::new(Arc::new(config.clone()), metrics.clone()));
     let metrics = Arc::new(Metrics::new().expect("should create Metrics"));
-    let selector = Arc::new(ModelSelector::new(
-        Arc::new(config.clone()),
-        metrics.clone(),
-    ));
 
     // Construct LlmBasedRouter with Deep tier
     let router = LlmBasedRouter::new(selector, TargetModel::Deep, metrics)
@@ -237,8 +228,8 @@ async fn test_end_to_end_config_to_router_tier_deep() {
 #[tokio::test]
 async fn test_router_tier_is_immutable() {
     let config = create_config_with_router_tier("fast");
+    let selector = Arc::new(ModelSelector::new(Arc::new(config)));
     let metrics = Arc::new(Metrics::new().expect("should create Metrics"));
-    let selector = Arc::new(ModelSelector::new(Arc::new(config), metrics.clone()));
 
     let router =
         LlmBasedRouter::new(selector, TargetModel::Fast, metrics).expect("should create router");

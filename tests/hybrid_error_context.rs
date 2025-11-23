@@ -16,6 +16,11 @@ use octoroute::models::selector::ModelSelector;
 use octoroute::router::{HybridRouter, Importance, RouteMetadata, TaskType};
 use std::sync::Arc;
 
+/// Helper to create test metrics
+fn test_metrics() -> Arc<octoroute::metrics::Metrics> {
+    Arc::new(octoroute::metrics::Metrics::new().expect("should create metrics"))
+}
+
 fn test_config() -> Arc<Config> {
     let config_str = r#"
         [server]
@@ -74,7 +79,7 @@ async fn test_hybrid_router_error_preserves_llm_error_chain() {
     // context about hybrid routing fallback, preserving the original error.
 
     let config = test_config();
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
     let router = HybridRouter::new(config, selector.clone(), mock_metrics())
         .expect("Router creation should succeed");
 
@@ -132,7 +137,7 @@ async fn test_hybrid_router_error_includes_full_prompt_in_context() {
     // for debugging production issues.
 
     let config = test_config();
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
     let router = HybridRouter::new(config, selector.clone(), mock_metrics())
         .expect("Router creation should succeed");
 
@@ -189,7 +194,7 @@ async fn test_hybrid_routing_failed_error_has_source() {
     // Verify error chain is accessible for debugging.
 
     let config = test_config();
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
     let router = HybridRouter::new(config, selector.clone(), mock_metrics())
         .expect("Router creation should succeed");
 

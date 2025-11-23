@@ -39,9 +39,13 @@ pub struct ModelSelector {
 impl ModelSelector {
     /// Create a new ModelSelector from configuration
     ///
-    /// Automatically creates and starts background health checking.
-    pub fn new(config: Arc<Config>) -> Self {
-        let health_checker = Arc::new(HealthChecker::new(config.clone()));
+    /// Automatically creates and starts background health checking with metrics integration.
+    ///
+    /// # Arguments
+    /// * `config` - Application configuration
+    /// * `metrics` - Prometheus metrics for surfacing health tracking failures
+    pub fn new(config: Arc<Config>, metrics: Arc<crate::metrics::Metrics>) -> Self {
+        let health_checker = Arc::new(HealthChecker::new_with_metrics(config.clone(), metrics));
 
         // Start background health checking
         health_checker.clone().start_background_checks();
