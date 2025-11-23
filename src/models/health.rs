@@ -362,6 +362,8 @@ impl HealthChecker {
 
     /// Check if an endpoint is currently healthy
     ///
+    /// Returns `false` for unknown endpoints (with warning logged).
+    ///
     /// # Performance
     /// - **Time complexity**: O(1) HashMap lookup
     /// - **Space complexity**: O(1)
@@ -369,10 +371,23 @@ impl HealthChecker {
     /// - **Expected latency**: <1μs
     pub async fn is_healthy(&self, endpoint_name: &str) -> bool {
         let status = self.health_status.read().await;
-        status
-            .get(endpoint_name)
-            .map(|h| h.healthy)
-            .unwrap_or(false)
+
+        match status.get(endpoint_name) {
+            Some(h) => h.healthy,
+            None => {
+                // DEFENSIVE: Log unknown endpoint checks
+                // This catches typos, race conditions (config reload mid-request),
+                // or stale endpoint references from calling code.
+                tracing::warn!(
+                    endpoint_name = %endpoint_name,
+                    available_endpoints = ?status.keys().collect::<Vec<_>>(),
+                    "Unknown endpoint checked for health - returning false. \
+                    This may indicate a typo in endpoint name, config reload race condition, \
+                    or stale endpoint reference."
+                );
+                false
+            }
+        }
     }
 
     /// Mark an endpoint as having failed
