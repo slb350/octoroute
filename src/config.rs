@@ -644,8 +644,18 @@ impl FromStr for Config {
 
     fn from_str(toml_str: &str) -> Result<Self, Self::Err> {
         let config: Config = toml::from_str(toml_str).map_err(|source| {
+            // Provide context about where parsing failed
+            // The source error already contains line/column information from toml crate
+            // We enhance the path field to indicate this is from string parsing and
+            // provide size information to help identify which config string failed
+            let path_with_context = format!(
+                "<string> ({} bytes, {} lines)",
+                toml_str.len(),
+                toml_str.lines().count()
+            );
+
             crate::error::AppError::ConfigParseFailed {
-                path: "<string>".to_string(),
+                path: path_with_context,
                 source,
             }
         })?;
