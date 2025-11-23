@@ -116,7 +116,15 @@ impl HealthMetrics {
     ///
     /// Returns false if:
     /// - Task is permanently failed
-    /// - More than 60 seconds since last successful check (2x the 30s interval)
+    /// - No successful health checks have completed yet (prevents false positive)
+    /// - Last successful check is stale (>60 seconds old, 2x the 30s check interval)
+    ///
+    /// ## Staleness Detection
+    ///
+    /// Health data is considered stale if more than `HEALTH_CHECK_STALE_THRESHOLD_SECS`
+    /// (60 seconds) have elapsed since the last successful check. This is 2x the check
+    /// interval (`HEALTH_CHECK_INTERVAL_SECS` = 30s), allowing one missed check before
+    /// marking the background task as unhealthy.
     pub async fn is_background_task_healthy(&self) -> bool {
         let state = self.state.read().await;
 
