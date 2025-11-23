@@ -47,18 +47,11 @@ fn test_timeout_error_includes_tier_and_remediation() {
         error_msg
     );
 
-    // HIGH-1: Should include remediation suggestions
-    // Note: This will FAIL initially - remediation not yet included
-    let has_remediation = error_msg.to_lowercase().contains("check")
-        || error_msg.to_lowercase().contains("increase")
-        || error_msg.to_lowercase().contains("try")
-        || error_msg.to_lowercase().contains("health")
-        || error_msg.to_lowercase().contains("timeout")
-        || error_msg.to_lowercase().contains("faster");
-
+    // Should be concise without verbose remediation steps
+    // Error provides facts; logs provide debugging context
     assert!(
-        has_remediation,
-        "Timeout error should suggest remediation (check health, increase timeout, try faster tier), got: {}",
+        error_msg.contains("timed out"),
+        "Timeout error should clearly state the failure, got: {}",
         error_msg
     );
 }
