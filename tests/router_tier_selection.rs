@@ -468,22 +468,21 @@ router_tier = "fast"
     // STRENGTHENED: Require BOTH tier identification AND action indication
     // to prevent false positives from generic error messages
 
-    // Part 1: Verify error mentions Fast tier (proves correct tier was used)
-    assert!(
-        error_msg.to_lowercase().contains("fast") || error_msg.contains("192.0.2.1"),
-        "Error should mention Fast tier or fast endpoint IP to prove correct tier was queried, got: {}",
-        error_msg
-    );
+    // Combined assertion: Must mention both tier AND action (using AND logic, not OR)
+    let mentions_tier =
+        error_msg.to_lowercase().contains("fast") || error_msg.contains("192.0.2.1");
+    let mentions_action = error_msg.contains("query")
+        || error_msg.contains("routing")
+        || error_msg.contains("endpoint")
+        || error_msg.contains("timeout")
+        || error_msg.contains("request");
 
-    // Part 2: Error should indicate what action was attempted
-    // (prevents false positive from message like "fast forward failed")
     assert!(
-        error_msg.contains("query")
-            || error_msg.contains("routing")
-            || error_msg.contains("endpoint")
-            || error_msg.contains("timeout")
-            || error_msg.contains("request"),
-        "Error should indicate what routing action was attempted, got: {}",
+        mentions_tier && mentions_action,
+        "Error must mention BOTH Fast tier AND routing action (prevents false positives). \
+        Tier mentioned: {}, Action mentioned: {}, Error: {}",
+        mentions_tier,
+        mentions_action,
         error_msg
     );
 

@@ -162,9 +162,19 @@ async fn test_hybrid_router_error_provides_meaningful_context() {
     let err_string = format!("{}", err);
 
     // Should contain key diagnostic information (endpoint availability, tier info, etc.)
+    // Strengthened: Require BOTH mentions to prevent false positives
+    let mentions_tier =
+        err_string.contains("Balanced") || err_string.to_lowercase().contains("balanced");
+    let mentions_endpoint_or_routing = err_string.contains("endpoint")
+        || err_string.contains("routing")
+        || err_string.contains("available");
+
     assert!(
-        err_string.contains("Balanced") || err_string.contains("endpoint"),
-        "Error should contain diagnostic information about endpoint/tier, got: {}",
+        mentions_tier && mentions_endpoint_or_routing,
+        "Error must mention BOTH tier (Balanced) AND routing/endpoint info (prevents false positives). \
+        Tier mentioned: {}, Routing mentioned: {}, Error: {}",
+        mentions_tier,
+        mentions_endpoint_or_routing,
         err_string
     );
 

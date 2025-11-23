@@ -247,3 +247,159 @@ strategy = "rule"
     assert_eq!(config.models.fast.len(), 1);
     assert_eq!(config.models.fast[0].max_tokens(), 4096);
 }
+
+/// Test concurrent requests during router tier exhaustion
+///
+/// Addresses PR #4 Medium Priority Issue #15.
+///
+/// **Scenario**: 100 concurrent requests all try to route while ALL router tier
+/// endpoints are down (Balanced tier exhausted).
+///
+/// **Verifies**:
+/// 1. All requests fail fast (no hangs)
+/// 2. Failure time is bounded (<10s total, not 100 * timeout)
+/// 3. No panics from concurrent health tracker updates
+/// 4. No deadlocks from multiple threads accessing the same locks
+///
+/// **Why Important**: Production scenario where router tier goes down under high load
+/// could cause thundering herd, port exhaustion, or deadlocks if not handled properly.
+#[tokio::test]
+async fn test_concurrent_requests_during_router_tier_exhaustion() {
+    use tokio::time::{Duration, Instant, timeout};
+
+    // Create config with LLM routing (uses Balanced tier for routing)
+    let toml = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[[models.fast]]
+name = "test-fast"
+base_url = "http://192.0.2.1:8080/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "test-balanced-1"
+base_url = "http://192.0.2.10:9090/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "test-balanced-2"
+base_url = "http://192.0.2.11:9091/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "test-deep"
+base_url = "http://192.0.2.20:10000/v1"
+max_tokens = 16384
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "llm"
+router_tier = "balanced"
+"#;
+
+    let config: Config = toml::from_str(toml).expect("should parse");
+    config.validate().expect("should validate");
+    let config = Arc::new(config);
+
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
+
+    // Mark ALL Balanced tier endpoints as unhealthy (3 failures each)
+    for endpoint_name in ["test-balanced-1", "test-balanced-2"] {
+        for _ in 0..3 {
+            selector
+                .health_checker()
+                .mark_failure(endpoint_name)
+                .await
+                .expect("should mark failure");
+        }
+    }
+
+    // Verify Balanced tier is exhausted
+    assert!(
+        !selector
+            .health_checker()
+            .is_healthy("test-balanced-1")
+            .await,
+        "test-balanced-1 should be unhealthy"
+    );
+    assert!(
+        !selector
+            .health_checker()
+            .is_healthy("test-balanced-2")
+            .await,
+        "test-balanced-2 should be unhealthy"
+    );
+
+    // Create LLM router using exhausted Balanced tier
+    let metrics = Arc::new(Metrics::new().expect("should create metrics"));
+    let router = Arc::new(
+        LlmBasedRouter::new(selector.clone(), TargetModel::Balanced, metrics)
+            .expect("should create router"),
+    );
+
+    let start = Instant::now();
+
+    // Spawn 100 concurrent routing requests
+    let handles: Vec<_> = (0..100)
+        .map(|i| {
+            let router = Arc::clone(&router);
+            let meta = RouteMetadata::new(100);
+
+            tokio::spawn(async move {
+                // Each request should fail (router tier exhausted)
+                router.route(&format!("Test message {}", i), &meta).await
+            })
+        })
+        .collect();
+
+    // Wait for all requests with 10s timeout (should finish much faster)
+    let results_future = async {
+        let mut results = Vec::new();
+        for handle in handles {
+            results.push(handle.await.expect("Task should not panic"));
+        }
+        results
+    };
+
+    let results = timeout(Duration::from_secs(10), results_future)
+        .await
+        .expect("All requests should complete within 10s (no hangs)");
+
+    let elapsed = start.elapsed();
+
+    // CRITICAL ASSERTION 1: All requests should fail (router tier exhausted)
+    let failure_count = results.iter().filter(|r| r.is_err()).count();
+    assert_eq!(
+        failure_count, 100,
+        "All 100 requests should fail when router tier is exhausted"
+    );
+
+    // CRITICAL ASSERTION 2: Total time should be bounded
+    // Each request has ~1s timeout, but concurrent execution means total time << 100s
+    // Expect: <10s total (allowing for some overhead)
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "100 concurrent requests should complete in <10s, got {:?}. \
+        This indicates no hangs or deadlocks.",
+        elapsed
+    );
+
+    // CRITICAL ASSERTION 3: No panics occurred (verified by .expect("Task should not panic"))
+    // If concurrent health tracker updates caused panics, tokio::spawn would have panicked
+
+    // Verify health tracker still works (no corruption from concurrent access)
+    let statuses = selector.health_checker().get_all_statuses().await;
+    assert!(
+        !statuses.is_empty(),
+        "Health tracker should still function after concurrent stress"
+    );
+}
