@@ -220,9 +220,15 @@ impl TimeoutsConfig {
     ///
     /// # Defense-in-Depth
     ///
-    /// The upper bound check (timeout > 300) also handles extreme values like `u64::MAX`
-    /// (18446744073709551615), which would fail this check. This prevents arithmetic
-    /// overflow in timeout calculations and ensures reasonable timeout values.
+    /// The upper bound check (timeout > 300) provides defense-in-depth validation:
+    /// Even if serde validation passes (which only checks type correctness), this
+    /// rejects unreasonable values (>5 minutes) that could indicate:
+    /// - Config errors (typo: user meant 30 but typed 3000)
+    /// - Unit confusion (user thought it was milliseconds, not seconds)
+    /// - Integer overflow risk when converting to milliseconds (u64 multiplication)
+    ///
+    /// Extreme values like `u64::MAX` (18446744073709551615) would also fail this check,
+    /// preventing arithmetic overflow in downstream timeout calculations.
     pub fn new(
         fast: Option<u64>,
         balanced: Option<u64>,
