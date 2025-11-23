@@ -298,7 +298,6 @@ impl LlmBasedRouter {
         const MAX_ROUTER_RETRIES: usize = 2;
         let mut last_error = None;
         let mut failed_endpoints = ExclusionSet::new();
-        let mut warnings = Vec::new(); // Collect health tracking failures to surface to user
 
         for attempt in 1..=MAX_ROUTER_RETRIES {
             // Select endpoint from router tier (with health filtering + exclusions)
@@ -414,86 +413,49 @@ impl LlmBasedRouter {
                     // names come from ModelSelector which only returns valid endpoints. However, we check
                     // explicitly to catch rare edge cases (race conditions, config reload mid-request, or bugs).
                     //
-                    // IMPORTANT: If health tracking fails, we LOG the error but DO NOT fail the request.
-                    // Health tracking is auxiliary functionality - the routing decision succeeded and that's
-                    // what matters. Failing the request would discard a valid routing decision.
-                    //
-                    // OPERATOR IMPACT: When health tracking fails, the system experiences degraded observability:
-                    //
-                    // - **Slower Recovery**: Failed endpoints won't be marked healthy immediately. The health
-                    //   checker's background polling will eventually recover them, but recovery time increases
-                    //   from immediate (on success) to the next health check interval (typically 30-60 seconds).
-                    //
-                    // - **Suboptimal Routing**: During the recovery delay, the router may avoid a perfectly
-                    //   healthy endpoint because health tracking couldn't update its status. This can lead to
-                    //   higher latency if the router uses slower endpoints or retries more frequently.
-                    //
-                    // - **Warning Surfaced**: The failure is surfaced to users as a warning in the response,
-                    //   alerting operators to investigate potential configuration issues, race conditions, or bugs.
-                    //
-                    // The request still succeeds, but operators should monitor health_tracking_failure metrics
-                    // to detect and fix underlying issues.
-                    if let Err(e) = self
-                        .selector
+                    // If health tracking fails, we propagate the error to expose the issue immediately.
+                    // This matches the chat handler's behavior (fail-fast on health tracking errors).
+                    use crate::models::health::HealthError;
+                    self.selector
                         .health_checker()
                         .mark_success(endpoint.name())
                         .await
-                    {
-                        use crate::models::health::HealthError;
-                        let warning_msg = match e {
-                            HealthError::UnknownEndpoint(ref name) => {
-                                self.metrics.health_tracking_failure();
-                                tracing::error!(
-                                    endpoint_name = %endpoint.name(),
-                                    unknown_name = %name,
-                                    target_model = ?target_model,
-                                    attempt = attempt,
-                                    "DEFENSIVE: mark_success failed with unknown endpoint. \
-                                    Endpoint names come from ModelSelector which only returns valid endpoints. \
-                                    This indicates a serious bug (race condition, naming mismatch, or config \
-                                    reload during request). Continuing with routing decision but endpoint \
-                                    won't be marked healthy (health tracking degraded)."
-                                );
-                                format!(
-                                    "Health tracking failure: UnknownEndpoint '{}'. Endpoint recovery may be impaired.",
-                                    name
-                                )
+                        .map_err(|e| {
+                            self.metrics.health_tracking_failure();
+
+                            match &e {
+                                HealthError::UnknownEndpoint(name) => {
+                                    tracing::error!(
+                                        endpoint_name = %endpoint.name(),
+                                        unknown_name = %name,
+                                        target_model = ?target_model,
+                                        attempt = attempt,
+                                        "DEFENSIVE: mark_success failed in LLM router - failing to expose issue"
+                                    );
+                                }
+                                HealthError::HttpClientCreationFailed(msg) => {
+                                    tracing::error!(
+                                        endpoint_name = %endpoint.name(),
+                                        error = %msg,
+                                        target_model = ?target_model,
+                                        attempt = attempt,
+                                        "SYSTEMIC: HTTP client creation failed in LLM router - failing to expose issue"
+                                    );
+                                }
                             }
-                            HealthError::HttpClientCreationFailed(ref msg) => {
-                                self.metrics.health_tracking_failure();
-                                tracing::error!(
-                                    endpoint_name = %endpoint.name(),
-                                    error = %msg,
-                                    target_model = ?target_model,
-                                    attempt = attempt,
-                                    "DEFENSIVE: HTTP client creation failed during health tracking. \
-                                    This indicates a systemic issue (TLS configuration, resource exhaustion). \
-                                    Continuing with routing decision but health tracking is degraded."
-                                );
-                                format!(
-                                    "Health tracking failure: HTTP client creation failed ({}). Health monitoring degraded.",
-                                    msg
-                                )
-                            }
-                        };
-                        warnings.push(warning_msg);
-                        // DO NOT return error - we have a valid routing decision
-                    }
+
+                            AppError::HealthTracking(e)
+                        })?;
 
                     tracing::info!(
                         endpoint_name = %endpoint.name(),
                         target_model = ?target_model,
                         attempt = attempt,
-                        warnings_count = warnings.len(),
                         "Router LLM successfully determined target model"
                     );
 
-                    // Return routing decision with any collected warnings
-                    let mut decision = RoutingDecision::new(target_model, RoutingStrategy::Llm);
-                    for warning in warnings {
-                        decision = decision.with_warning(warning);
-                    }
-                    return Ok(decision);
+                    // Return routing decision (no warnings - health tracking errors now fail fast)
+                    return Ok(RoutingDecision::new(target_model, RoutingStrategy::Llm));
                 }
                 Err(e) => {
                     // Classify error as retryable or systemic
@@ -524,53 +486,37 @@ impl LlmBasedRouter {
                     // names come from ModelSelector which only returns valid endpoints. However, we check
                     // explicitly to catch rare edge cases (race conditions, config reload mid-request, or bugs).
                     //
-                    // IMPORTANT: If health tracking fails, we LOG the error but DO NOT fail the request.
-                    // The endpoint won't be marked unhealthy (health tracking degraded), but we continue
-                    // with retry logic using the exclusion set (which still prevents immediate retry).
-                    if let Err(health_err) = self
-                        .selector
+                    // If health tracking fails, we propagate the error to expose the issue immediately.
+                    // This matches the chat handler's behavior (fail-fast on health tracking errors).
+                    use crate::models::health::HealthError;
+                    self.selector
                         .health_checker()
                         .mark_failure(endpoint.name())
                         .await
-                    {
-                        use crate::models::health::HealthError;
-                        let warning_msg = match health_err {
-                            HealthError::UnknownEndpoint(ref name) => {
-                                self.metrics.health_tracking_failure();
-                                tracing::error!(
-                                    endpoint_name = %endpoint.name(),
-                                    unknown_name = %name,
-                                    attempt = attempt,
-                                    "DEFENSIVE: mark_failure failed with unknown endpoint. \
-                                    Endpoint won't be marked unhealthy globally but will still be excluded \
-                                    from THIS request via exclusion set. Endpoint names come from ModelSelector \
-                                    which only returns valid endpoints. This indicates a serious bug (race \
-                                    condition or naming mismatch). Continuing with retry (health tracking degraded)."
-                                );
-                                format!(
-                                    "Health tracking failure: UnknownEndpoint '{}' during failure marking. Endpoint recovery may be impaired.",
-                                    name
-                                )
+                        .map_err(|health_err| {
+                            self.metrics.health_tracking_failure();
+
+                            match &health_err {
+                                HealthError::UnknownEndpoint(name) => {
+                                    tracing::error!(
+                                        endpoint_name = %endpoint.name(),
+                                        unknown_name = %name,
+                                        attempt = attempt,
+                                        "DEFENSIVE: mark_failure failed in LLM router - failing to expose issue"
+                                    );
+                                }
+                                HealthError::HttpClientCreationFailed(msg) => {
+                                    tracing::error!(
+                                        endpoint_name = %endpoint.name(),
+                                        error = %msg,
+                                        attempt = attempt,
+                                        "SYSTEMIC: HTTP client creation failed in LLM router - failing to expose issue"
+                                    );
+                                }
                             }
-                            HealthError::HttpClientCreationFailed(ref msg) => {
-                                self.metrics.health_tracking_failure();
-                                tracing::error!(
-                                    endpoint_name = %endpoint.name(),
-                                    error = %msg,
-                                    attempt = attempt,
-                                    "DEFENSIVE: HTTP client creation failed during health tracking. \
-                                    This indicates a systemic issue (TLS configuration, resource exhaustion). \
-                                    Continuing with retry but health tracking is degraded."
-                                );
-                                format!(
-                                    "Health tracking failure: HTTP client creation failed ({}) during failure marking. Health monitoring degraded.",
-                                    msg
-                                )
-                            }
-                        };
-                        warnings.push(warning_msg);
-                        // DO NOT return error - continue with retry logic
-                    }
+
+                            AppError::HealthTracking(health_err)
+                        })?;
 
                     // Add to exclusion set to prevent retry on same endpoint
                     use crate::models::EndpointName;
