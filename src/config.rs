@@ -127,11 +127,12 @@ pub struct RoutingConfig {
     ///   rejected immediately with clear serde deserialization errors.
     ///
     /// **Phase 2 - Availability Validation (Router Construction Time)**:
-    /// - **When**: During `LlmBasedRouter::new()` call
+    /// - **When**: During router construction (`LlmBasedRouter::new()` or `HybridRouter::new()`)
     /// - **Who**: `TierSelector::new()` validation logic
     /// - **What**: Verifies at least one endpoint exists for the specified tier.
     ///   Prevents runtime failures by catching misconfiguration (e.g., router_tier="deep"
     ///   but no [[models.deep]] endpoints) at router construction time.
+    /// - **Note**: Applies to both LLM and Hybrid routing strategies (both use TierSelector)
     ///
     /// Field is private to prevent post-validation mutation. Use `router_tier()` accessor.
     #[serde(default)]

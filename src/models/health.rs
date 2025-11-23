@@ -150,6 +150,10 @@ impl HealthMetrics {
 /// Errors that can occur during health checking operations
 #[derive(Error, Debug)]
 pub enum HealthError {
+    /// Endpoint name not found in configuration
+    ///
+    /// Indicates a programming error (endpoint name mismatch) or race condition
+    /// (config reloaded during request). Should never occur under normal operation.
     #[error("Unknown endpoint: {0}")]
     UnknownEndpoint(String),
 

@@ -746,10 +746,13 @@ async fn try_query_model(
     // The timeout wraps the ENTIRE operation per attempt: connection establishment,
     // query initiation, and streaming all response chunks.
     //
-    // **BILLING IMPACT**: When timeout triggers, Tokio cancels the Future, which drops the HTTP
-    // stream and closes the connection to the endpoint. However, the endpoint may continue processing
-    // the request (we don't send HTTP cancellation signals), so timeouts are billed as full requests
-    // by most LLM APIs.
+    // **BILLING IMPACT & RESPONSE HANDLING**:
+    // - Tokio cancels the Future, drops the HTTP stream, and closes the connection
+    // - **Partial responses are discarded** - users never receive incomplete/corrupted responses
+    // - **Endpoint continues processing** (no HTTP cancellation signal sent)
+    // - **Timeouts are billed as full requests** by most LLM APIs
+    // - **Health tracking**: Timeout counts as a failure (mark_failure called)
+    // - **Total worst-case cost**: 3 retries × 30s timeout = 90s of API time billed
     //
     // Users pay for 90 seconds of API time in worst-case (3 timeouts × 30s), even though each attempt
     // only consumed ~5 seconds before timing out. If you're seeing frequent timeouts, consider
