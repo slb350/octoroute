@@ -631,6 +631,7 @@ impl HealthChecker {
                                     unknown_name = %name,
                                     "Health tracking failed: unknown endpoint (may be config reload race)"
                                 );
+                                continue; // Skip to next endpoint instead of panicking
                             }
                         }
                     }
@@ -664,6 +665,7 @@ impl HealthChecker {
                                     unknown_name = %name,
                                     "Health tracking failed: unknown endpoint (may be config reload race)"
                                 );
+                                continue; // Skip to next endpoint instead of panicking
                             }
                         }
                     }
