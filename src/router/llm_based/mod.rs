@@ -296,6 +296,7 @@ impl LlmBasedRouter {
         // health and recover failed endpoints, while still preventing retry loops from
         // hitting the same failed endpoint repeatedly within a single request.
         const MAX_ROUTER_RETRIES: usize = 2;
+        const RETRY_BACKOFF_MS: u64 = 100; // Base backoff: 100ms, doubles each retry
         let mut last_error = None;
         let mut failed_endpoints = ExclusionSet::new();
 
@@ -326,6 +327,13 @@ impl LlmBasedRouter {
                             Add at least one endpoint to [[models.{:?}]] in config.toml.",
                             router_tier, router_tier
                         )));
+
+                        // Add exponential backoff before retry
+                        if attempt < MAX_ROUTER_RETRIES {
+                            let backoff_ms = RETRY_BACKOFF_MS * (2_u64.pow(attempt as u32 - 1));
+                            tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms))
+                                .await;
+                        }
                         continue;
                     } else if excluded_count == total_configured {
                         // COMPLETE EXHAUSTION: All configured endpoints tried and failed
@@ -356,6 +364,13 @@ impl LlmBasedRouter {
                             MAX_ROUTER_RETRIES,
                             failed_names_str
                         )));
+
+                        // Add exponential backoff before retry
+                        if attempt < MAX_ROUTER_RETRIES {
+                            let backoff_ms = RETRY_BACKOFF_MS * (2_u64.pow(attempt as u32 - 1));
+                            tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms))
+                                .await;
+                        }
                         continue;
                     } else {
                         // TRANSIENT FAILURE: Some endpoints exist but are unhealthy, waiting for recovery
@@ -385,6 +400,13 @@ impl LlmBasedRouter {
                             attempt,
                             MAX_ROUTER_RETRIES
                         )));
+
+                        // Add exponential backoff before retry
+                        if attempt < MAX_ROUTER_RETRIES {
+                            let backoff_ms = RETRY_BACKOFF_MS * (2_u64.pow(attempt as u32 - 1));
+                            tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms))
+                                .await;
+                        }
                         continue;
                     }
                 }
@@ -522,6 +544,12 @@ impl LlmBasedRouter {
                     use crate::models::EndpointName;
                     failed_endpoints.insert(EndpointName::from(&endpoint));
                     last_error = Some(e);
+
+                    // Add exponential backoff before retry
+                    if attempt < MAX_ROUTER_RETRIES {
+                        let backoff_ms = RETRY_BACKOFF_MS * (2_u64.pow(attempt as u32 - 1));
+                        tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                    }
                     continue; // Try next endpoint
                 }
             }
