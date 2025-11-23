@@ -50,24 +50,8 @@ impl Tier {
 /// Prevents cardinality explosion by restricting strategy values to
 /// exactly three valid options at compile time.
 ///
-/// # Important: Hybrid is a Meta-Strategy
-///
-/// **NOTE**: `Strategy::Hybrid` is intentionally NOT recorded in metrics.
-/// HybridRouter is a meta-strategy that delegates to either RuleBasedRouter
-/// or LlmBasedRouter. Metrics record which **actual path** was taken (Rule or Llm),
-/// not the meta-strategy configuration.
-///
-/// **Why this design?**
-/// - Metrics track the leaf routing decision (what actually happened)
-/// - Config uses Hybrid to select HybridRouter (how it was configured)
-/// - This provides more actionable observability (e.g., "70% of requests hit rule fast path")
-///
-/// **Cardinality**: 3 tiers × 2 strategies (Rule, Llm) = **6 time series** (not 9)
-///
-/// Note: While `Strategy::Hybrid` exists in the enum (for configuration), it returns
-/// `None` from `metric_label()` and is not recorded in metrics. Tests may call
-/// `record_request(_, Strategy::Hybrid)` to verify suppression behavior, but this
-/// does not create additional time series.
+/// **NOTE**: `Strategy::Hybrid` exists but is intentionally NOT recorded in metrics.
+/// See `requests_total` metric definition for details on Hybrid suppression rationale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strategy {
     /// Rule-based routing
@@ -132,6 +116,17 @@ impl Metrics {
         let registry = Registry::new();
 
         // Counter: Total requests by tier and routing strategy
+        //
+        // NOTE: Hybrid Strategy Suppression
+        // While Strategy::Hybrid exists in the enum (for configuration), it is
+        // intentionally NOT recorded in metrics. HybridRouter delegates to either
+        // RuleBasedRouter or LlmBasedRouter, and metrics record which **actual path**
+        // was taken (Rule or Llm), not the meta-strategy configuration.
+        //
+        // This design provides more actionable observability (e.g., "70% of requests
+        // hit rule fast path") while preventing cardinality inflation.
+        //
+        // Cardinality: 3 tiers × 2 strategies (Rule, Llm) = 6 time series (not 9)
         let requests_total = CounterVec::new(
             Opts::new(
                 "octoroute_requests_total",
