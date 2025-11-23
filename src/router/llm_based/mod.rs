@@ -87,8 +87,7 @@ pub enum LlmRouterError {
 
     /// Router query timeout (transient - retry allowed)
     #[error(
-        "Router query timed out after {timeout_seconds}s (attempt {attempt}/{max_attempts}) for {router_tier:?} tier. \
-         Remediation: Check endpoint health at {endpoint}, increase timeout in config, or try a faster tier."
+        "Router query to {endpoint} timed out after {timeout_seconds}s (tier: {router_tier:?}, attempt {attempt}/{max_attempts})"
     )]
     Timeout {
         endpoint: String,
@@ -208,11 +207,7 @@ impl LlmBasedRouter {
         })
     }
 
-    /// Get the tier this router uses for routing decisions
-    ///
-    /// Returns the tier configured via `router_tier` in config.toml.
-    /// This tier determines which model endpoints are queried when making
-    /// routing decisions.
+    /// Returns the configured router tier
     pub fn tier(&self) -> TargetModel {
         self.router_tier
     }
