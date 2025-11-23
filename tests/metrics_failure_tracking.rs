@@ -218,6 +218,7 @@ fn test_metrics_cardinality_bounded_by_enums() {
 /// This test documents the cardinality explosion risk and how to avoid it.
 /// If error recording is added in the future, this test serves as a reference.
 #[test]
+#[ignore = "TODO: Implement when error metrics are added"]
 fn test_documentation_error_metrics_must_use_bounded_labels() {
     // This test doesn't execute code - it documents the pattern
     //
@@ -249,9 +250,9 @@ fn test_documentation_error_metrics_must_use_bounded_labels() {
     // let error_series_count = count_unique_series(&output, "errors_total");
     // assert!(error_series_count <= 10, "Error metrics must have <=10 series");
 
-    // For now, this test passes trivially to document the requirement
-    assert!(
-        true,
-        "Error metrics (if added) must use bounded enum labels, not unbounded error messages"
+    // This test is a placeholder for future implementation when error metrics are added
+    // TODO: Implement this test when error metrics are added to ensure cardinality safety
+    todo!(
+        "Implement when error metrics are added - ensure bounded enum labels, not unbounded error messages"
     );
 }

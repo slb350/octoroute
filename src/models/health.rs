@@ -570,21 +570,33 @@ impl HealthChecker {
                 HealthError::HttpClientCreationFailed(e.to_string())
             })?;
 
-        // IMPORTANT: Health check URL construction (fixed bug in commit 64c913d)
-        // base_url already includes /v1 (e.g., "http://host:port/v1")
-        // We append "/models" to get "http://host:port/v1/models"
-        // DO NOT append "/v1/models" - that would create "http://host:port/v1/v1/models" (404!)
-        // Historical note: This bug previously caused all endpoints to fail after 90 seconds.
+        // IMPORTANT: Health check URL construction
+        // Config validation (config.rs:523-534) ENFORCES that base_url ends with "/v1"
+        // (e.g., "http://host:port/v1"). We append "/models" to get "http://host:port/v1/models"
+        // DO NOT append "/v1/models" - config validation prevents this but historically
+        // this bug caused all endpoints to fail after 90 seconds.
+        //
+        // HISTORICAL BUG (Jan 2025): base_url without /v1 suffix caused "/models" → 404
+        // FIX: Config validation now enforces base_url ends with /v1 (config.rs:527-534)
+        // This prevents double-/v1 bug that caused endpoints to fail after 90 seconds.
 
-        // Validate base_url doesn't contain query params or fragments
-        // These would create malformed URLs and cause cryptic health check failures
+        // Validate base_url is a properly formatted URL
+        // This catches malformed URLs and URLs with unwanted components
         let base_url = endpoint.base_url();
-        if base_url.contains('?') || base_url.contains('#') {
+        let parsed_url =
+            reqwest::Url::parse(base_url).map_err(|e| HealthError::InvalidEndpointUrl {
+                endpoint: endpoint.name().to_string(),
+                base_url: base_url.to_string(),
+                details: format!("Invalid URL format: {}", e),
+            })?;
+
+        // Check for unwanted URL components (query params, fragments)
+        // These would create malformed health check URLs and cause cryptic failures
+        if parsed_url.query().is_some() || parsed_url.fragment().is_some() {
             return Err(HealthError::InvalidEndpointUrl {
                 endpoint: endpoint.name().to_string(),
                 base_url: base_url.to_string(),
-                details: "base_url should not contain query parameters (?) or fragments (#)"
-                    .to_string(),
+                details: "base_url should not contain query parameters or fragments".to_string(),
             });
         }
 
@@ -637,17 +649,17 @@ impl HealthChecker {
 
                         match &e {
                             HealthError::HttpClientCreationFailed(msg) => {
-                                // SYSTEMIC FAILURE: Panic to force operator intervention
+                                // NOTE: This code path should be unreachable as mark_success
+                                // only returns UnknownEndpoint errors. However, for defensive
+                                // programming, log and continue instead of panicking.
                                 tracing::error!(
+                                    endpoint_name = %endpoint.name(),
                                     error = %msg,
-                                    "FATAL: HTTP client creation failed during health tracking. \
-                                    Cannot continue background health checks. Panicking."
+                                    "HTTP client creation failed during health tracking. \
+                                    This error path should be unreachable - mark_success doesn't return this error. \
+                                    Continuing to check other endpoints."
                                 );
-                                panic!(
-                                    "Background health checking cannot continue: HTTP client creation failed. \
-                                    This indicates TLS config error or resource exhaustion: {}",
-                                    msg
-                                );
+                                continue;
                             }
                             HealthError::UnknownEndpoint(name) => {
                                 // TRANSIENT: Log and continue (may be config reload race)
@@ -685,17 +697,17 @@ impl HealthChecker {
 
                         match &e {
                             HealthError::HttpClientCreationFailed(msg) => {
-                                // SYSTEMIC FAILURE: Panic to force operator intervention
+                                // NOTE: This code path should be unreachable as mark_failure
+                                // only returns UnknownEndpoint errors. However, for defensive
+                                // programming, log and continue instead of panicking.
                                 tracing::error!(
+                                    endpoint_name = %endpoint.name(),
                                     error = %msg,
-                                    "FATAL: HTTP client creation failed during health tracking. \
-                                    Cannot continue background health checks. Panicking."
+                                    "HTTP client creation failed during health tracking. \
+                                    This error path should be unreachable - mark_failure doesn't return this error. \
+                                    Continuing to check other endpoints."
                                 );
-                                panic!(
-                                    "Background health checking cannot continue: HTTP client creation failed. \
-                                    This indicates TLS config error or resource exhaustion: {}",
-                                    msg
-                                );
+                                continue;
                             }
                             HealthError::UnknownEndpoint(name) => {
                                 // TRANSIENT: Log and continue (may be config reload race)
@@ -724,20 +736,29 @@ impl HealthChecker {
                     }
                 }
                 Err(HealthError::HttpClientCreationFailed(msg)) => {
-                    // SYSTEMIC FAILURE: HTTP client creation failed
-                    // This will affect ALL endpoints. Panic to force operator intervention.
+                    // SYSTEMIC ERROR: HTTP client creation failed
+                    // This indicates TLS config error or resource exhaustion, but we should
+                    // mark the endpoint unhealthy and continue checking other endpoints
+                    // instead of panicking and crashing the server.
                     tracing::error!(
+                        endpoint_name = %endpoint.name(),
                         error = %msg,
-                        "FATAL: HTTP client creation failed during endpoint health check. \
-                        All subsequent health checks will fail. This is a systemic issue, \
-                        not an endpoint-specific problem. Background health checking cannot continue. \
-                        Panicking."
+                        "HTTP client creation failed during endpoint health check. \
+                        Marking endpoint unhealthy until resolved. This indicates a systemic issue \
+                        (TLS config error, resource exhaustion). Continuing to check other endpoints."
                     );
-                    panic!(
-                        "Background health checking cannot continue: HTTP client creation failed. \
-                        This indicates TLS config error or resource exhaustion: {}",
-                        msg
-                    );
+
+                    // Mark endpoint as unhealthy
+                    if let Err(e) = self.mark_failure(endpoint.name()).await {
+                        tracing::error!(
+                            endpoint_name = %endpoint.name(),
+                            error = %e,
+                            "Failed to mark endpoint unhealthy after HTTP client creation failure"
+                        );
+                    }
+
+                    // Continue checking other endpoints
+                    continue;
                 }
                 Err(e) => {
                     // Other errors (currently none, but future-proofing)

@@ -457,7 +457,8 @@ pub async fn handler(
 
                 // Add exponential backoff before retry
                 if attempt < MAX_RETRIES {
-                    let backoff_ms = RETRY_BACKOFF_MS * (2_u64.pow(attempt as u32 - 1));
+                    let backoff_ms = RETRY_BACKOFF_MS
+                        .saturating_mul(2_u64.saturating_pow((attempt as u32).saturating_sub(1)));
                     tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
                 }
                 continue; // Try again (may have different healthy endpoints)
@@ -489,60 +490,32 @@ pub async fn handler(
             Ok(response_text) => {
                 // Success! Mark endpoint as healthy to enable immediate recovery
                 //
-                // DEFENSIVE CHECK: mark_success should never fail in normal operation because endpoint
-                // names come from ModelSelector which only returns valid endpoints. However, we check
-                // explicitly to catch rare edge cases (race conditions, config reload mid-request, or bugs).
-                // If it fails, propagate the error to expose the issue immediately rather than silently
-                // continuing with inconsistent health state.
-                state
+                // Health tracking failures are non-fatal - we already have a valid response
+                // from the LLM. Log warnings for operator visibility but don't fail the request.
+                // This ensures observability issues don't impact user-facing requests.
+                if let Err(e) = state
                     .selector()
                     .health_checker()
                     .mark_success(endpoint.name())
                     .await
-                    .map_err(|e| {
-                        use crate::models::health::HealthError;
-                        // Log detailed context while preserving error type
-                        match &e {
-                            HealthError::UnknownEndpoint(name) => {
-                                tracing::error!(
-                                    request_id = %request_id,
-                                    endpoint_name = %endpoint.name(),
-                                    unknown_name = %name,
-                                    selected_tier = ?decision.target(),
-                                    attempt = attempt,
-                                    "DEFENSIVE ERROR: mark_success called with unknown endpoint name. \
-                                    Endpoint names come from ModelSelector which only returns valid endpoints. \
-                                    This indicates a serious bug (race condition, naming mismatch, or config \
-                                    reload during request). Failing request to expose issue."
-                                );
-                            }
-                            HealthError::HttpClientCreationFailed(msg) => {
-                                tracing::error!(
-                                    request_id = %request_id,
-                                    endpoint_name = %endpoint.name(),
-                                    error = %msg,
-                                    selected_tier = ?decision.target(),
-                                    attempt = attempt,
-                                    "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
-                                    This indicates a systemic issue (TLS configuration, resource exhaustion) \
-                                    affecting ALL endpoints, not an individual endpoint problem. \
-                                    Failing request to expose issue."
-                                );
-                            }
-                            HealthError::InvalidEndpointUrl { endpoint, base_url, details } => {
-                                tracing::error!(
-                                    request_id = %request_id,
-                                    endpoint = %endpoint,
-                                    base_url = %base_url,
-                                    details = %details,
-                                    attempt = attempt,
-                                    "CONFIGURATION ERROR: Endpoint URL is invalid. Failing request to expose issue."
-                                );
-                            }
-                        }
-                        // Preserve error type instead of converting to string
-                        AppError::HealthTracking(e)
-                    })?;
+                {
+                    // Log error for operator visibility with detailed context
+                    tracing::warn!(
+                        request_id = %request_id,
+                        endpoint_name = %endpoint.name(),
+                        error = %e,
+                        selected_tier = ?decision.target(),
+                        attempt = attempt,
+                        "Health tracking skipped: {} (request continues with successful response)",
+                        e
+                    );
+
+                    // Record health tracking failure in metrics for monitoring
+                    state.metrics().health_tracking_failure();
+
+                    // DON'T fail the request - we already have a valid LLM response
+                    // Users should receive their response even if health tracking fails
+                }
 
                 tracing::info!(
                     request_id = %request_id,
@@ -569,28 +542,28 @@ pub async fn handler(
                         TargetModel::Deep => crate::metrics::Tier::Deep,
                     };
 
-                    // Fail fast on metrics recording errors (Prometheus corruption)
-                    // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
-                    // Errors can only occur from Prometheus internal issues (registry corruption, etc.).
-                    metrics.record_model_invocation(tier_enum).map_err(|e| {
+                    // Metrics recording failures are non-fatal - they're for operator observability
+                    // and should not impact user-facing requests. Log warnings for monitoring but
+                    // don't fail requests when observability systems have issues.
+                    if let Err(e) = metrics.record_model_invocation(tier_enum) {
+                        // Record the metrics failure itself
                         metrics.metrics_recording_failure();
+
+                        // Log error for operator visibility
                         tracing::error!(
                             request_id = %request_id,
                             error = %e,
                             tier = ?tier_enum,
-                            "CRITICAL: Metrics recording failed (Prometheus internal error). \
-                            Failing request to expose issue."
+                            "Metrics recording failed (Prometheus internal error). \
+                            Observability degraded but request continues."
                         );
-                        AppError::Internal(format!(
-                            "Metrics recording failed (Prometheus corruption): {}. \
-                                Observability system degraded - operator intervention required.",
-                            e
-                        ))
-                    })?;
+
+                        // DON'T fail the request - metrics are for operators, not users
+                        // Users should receive their valid LLM response even if metrics fail
+                    }
                 }
 
                 // Collect warnings from routing decision
-                // NOTE: Metrics recording failures now fail fast (no longer treated as warnings)
                 let all_warnings: Vec<String> = decision.warnings().to_vec();
 
                 let response = if all_warnings.is_empty() {
@@ -629,63 +602,33 @@ pub async fn handler(
                 // After 3 consecutive failures (across all requests), endpoint becomes unhealthy
                 // and won't be selected by ANY request until it recovers.
                 //
-                // DEFENSIVE CHECK: mark_failure should never fail in normal operation because endpoint
-                // names come from ModelSelector which only returns valid endpoints. However, we check
-                // explicitly to catch rare edge cases (race conditions, config reload mid-request, or bugs).
-                // If it fails, propagate the error to expose the issue immediately rather than silently
-                // continuing with inconsistent health state.
-                state
+                // Health tracking failures are non-fatal - the request can still continue
+                // to retry with other endpoints. Log warnings for operator visibility but
+                // don't fail the request. This ensures observability issues don't prevent
+                // request retries and recovery.
+                if let Err(e) = state
                     .selector()
                     .health_checker()
                     .mark_failure(endpoint.name())
                     .await
-                    .map_err(|e| {
-                        use crate::models::health::HealthError;
-                        // Log detailed context while preserving error type
-                        match &e {
-                            HealthError::UnknownEndpoint(name) => {
-                                tracing::error!(
-                                    request_id = %request_id,
-                                    endpoint_name = %endpoint.name(),
-                                    unknown_name = %name,
-                                    selected_tier = ?decision.target(),
-                                    attempt = attempt,
-                                    "DEFENSIVE ERROR: mark_failure called with unknown endpoint name. \
-                                    Endpoint won't be marked unhealthy and will continue receiving traffic. \
-                                    Endpoint names come from ModelSelector which only returns valid endpoints. \
-                                    This indicates a serious bug (race condition or naming mismatch). \
-                                    Failing request to expose issue."
-                                );
-                            }
-                            HealthError::HttpClientCreationFailed(msg) => {
-                                tracing::error!(
-                                    request_id = %request_id,
-                                    endpoint_name = %endpoint.name(),
-                                    error = %msg,
-                                    selected_tier = ?decision.target(),
-                                    attempt = attempt,
-                                    "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
-                                    This indicates a systemic issue (TLS configuration, resource exhaustion) \
-                                    affecting ALL endpoints, not an individual endpoint problem. \
-                                    Failing request to expose issue."
-                                );
-                            }
-                            HealthError::InvalidEndpointUrl { endpoint, base_url, details } => {
-                                tracing::error!(
-                                    request_id = %request_id,
-                                    endpoint = %endpoint,
-                                    base_url = %base_url,
-                                    details = %details,
-                                    attempt = attempt,
-                                    "CONFIGURATION ERROR: Endpoint URL is invalid. \
-                                    This should have been caught during config validation. \
-                                    Failing request to expose issue."
-                                );
-                            }
-                        }
-                        // Preserve error type instead of converting to string
-                        AppError::HealthTracking(e)
-                    })?;
+                {
+                    // Log error for operator visibility with detailed context
+                    tracing::warn!(
+                        request_id = %request_id,
+                        endpoint_name = %endpoint.name(),
+                        error = %e,
+                        selected_tier = ?decision.target(),
+                        attempt = attempt,
+                        "Health tracking skipped: {} (request continues with retry logic)",
+                        e
+                    );
+
+                    // Record health tracking failure in metrics for monitoring
+                    state.metrics().health_tracking_failure();
+
+                    // DON'T fail the request - we can still retry with other endpoints
+                    // Endpoint will still be excluded from this request via failed_endpoints set
+                }
 
                 // Exclude this endpoint from subsequent retry attempts in THIS REQUEST ONLY.
                 // This is request-scoped exclusion - prevents retrying the same endpoint
@@ -696,7 +639,8 @@ pub async fn handler(
 
                 // Add exponential backoff before retry
                 if attempt < MAX_RETRIES {
-                    let backoff_ms = RETRY_BACKOFF_MS * (2_u64.pow(attempt as u32 - 1));
+                    let backoff_ms = RETRY_BACKOFF_MS
+                        .saturating_mul(2_u64.saturating_pow((attempt as u32).saturating_sub(1)));
                     tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
                 }
 
@@ -726,15 +670,19 @@ pub async fn handler(
             The retry loop has a missing error assignment path."
         );
 
-        // ALWAYS panic - bugs should be exposed immediately in production
-        // Silent degradation masks programming errors and prevents diagnosis
-        panic!(
-            "BUG: Retry loop exhausted with last_error = None. \
-            Indicates missing error assignment in retry logic. \
-            Tier: {:?}, Failed endpoints: {:?}",
+        // Return error instead of panicking - servers should not crash on requests
+        // This allows the user to receive an error response and operators to diagnose
+        AppError::Internal(format!(
+            "Request failed after {} retry attempts. All endpoints for tier {:?} \
+            were exhausted. Failed endpoints: {:?}. \
+            Please report this issue (retry loop bug - no error recorded).",
+            MAX_RETRIES,
             decision.target(),
             failed_endpoints
-        );
+                .iter()
+                .map(|ep| ep.as_str())
+                .collect::<Vec<_>>()
+        ))
     }))
 }
 

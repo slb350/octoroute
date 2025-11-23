@@ -635,6 +635,37 @@ impl Config {
         // implementation, which calls the validated constructor at parse time.
         // No duplicate validation needed here.
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // Phase 3: HTTP Client Creation Validation
+        // ═══════════════════════════════════════════════════════════════════════
+        //
+        // CRITICAL FIX: Validate that HTTP client can be created (catches TLS errors early)
+        //
+        // RATIONALE: TLS configuration errors (invalid certificates, missing CA bundle, etc.)
+        // would previously cause panics in the background health checking task, crashing
+        // the entire server. By validating client creation at startup, we:
+        //   1. Fail fast with a clear error message to operators
+        //   2. Prevent server crashes during health checks
+        //   3. Give operators actionable feedback to fix TLS issues
+        //
+        // This check does not make actual HTTP requests - it only validates that
+        // the HTTP client can be constructed with the system's TLS libraries.
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .map_err(|e| {
+                crate::error::AppError::Config(format!(
+                    "Failed to create HTTP client (TLS configuration error): {}.\n\
+                    This usually indicates:\n\
+                    - Invalid or expired TLS certificates\n\
+                    - Missing CA certificate bundle\n\
+                    - Incompatible system TLS libraries\n\
+                    \n\
+                    Please check your system's TLS configuration and certificates.",
+                    e
+                ))
+            })?;
+
         Ok(())
     }
 }

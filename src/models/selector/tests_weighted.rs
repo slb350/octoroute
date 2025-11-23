@@ -53,9 +53,10 @@ async fn test_selector_weighted_fast_tier_both_endpoints_selectable() {
 }
 
 #[tokio::test]
+#[should_panic(expected = "MEMORY CORRUPTION DETECTED")]
 async fn test_selector_zero_weight_fallback() {
     // Create config via TOML with zero weights (config validation will reject this at load time,
-    // but this test verifies the selector's fallback behavior if it somehow gets zero weights)
+    // but this test verifies the selector panics if it somehow gets zero weights during runtime)
     let toml_config = r#"
 [server]
 host = "127.0.0.1"
@@ -91,20 +92,18 @@ router_tier = "balanced"
     let config: Config = toml::from_str(toml_config).expect("should parse TOML");
     let selector = ModelSelector::new(Arc::new(config), test_metrics());
 
-    // Should return None (refuse to select) when all weights are zero
-    // This indicates a configuration error or memory corruption
+    // Should panic when all weights are zero - this indicates memory corruption
+    // Config validation prevents this at startup, so reaching this code is a critical error
     let no_exclude = ExclusionSet::new();
-    let result = selector.select(TargetModel::Fast, &no_exclude).await;
-    assert!(
-        result.is_none(),
-        "should return None when all endpoints have zero weight (config error)"
-    );
+    let _result = selector.select(TargetModel::Fast, &no_exclude).await;
+    // Panic expected - test fails if we reach here
 }
 
 #[tokio::test]
+#[should_panic(expected = "MEMORY CORRUPTION DETECTED")]
 async fn test_selector_negative_weight_fallback() {
     // Create config with negative weights via TOML (config validation will reject this,
-    // but this test verifies fallback behavior)
+    // but this test verifies the selector panics if it somehow gets negative weights during runtime)
     let toml_config = r#"
 [server]
 host = "127.0.0.1"
@@ -140,14 +139,11 @@ router_tier = "balanced"
     let config: Config = toml::from_str(toml_config).expect("should parse TOML");
     let selector = ModelSelector::new(Arc::new(config), test_metrics());
 
-    // Should return None (refuse to select) when all weights are negative
-    // This indicates a configuration error or memory corruption
+    // Should panic when all weights are negative - this indicates memory corruption
+    // Config validation prevents this at startup, so reaching this code is a critical error
     let no_exclude = ExclusionSet::new();
-    let result = selector.select(TargetModel::Fast, &no_exclude).await;
-    assert!(
-        result.is_none(),
-        "should return None when all endpoints have negative weights (config error)"
-    );
+    let _result = selector.select(TargetModel::Fast, &no_exclude).await;
+    // Panic expected - test fails if we reach here
 }
 
 #[tokio::test]

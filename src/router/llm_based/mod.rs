@@ -330,7 +330,9 @@ impl LlmBasedRouter {
 
                         // Add exponential backoff before retry
                         if attempt < MAX_ROUTER_RETRIES {
-                            let backoff_ms = RETRY_BACKOFF_MS * (2_u64.pow(attempt as u32 - 1));
+                            let backoff_ms = RETRY_BACKOFF_MS.saturating_mul(
+                                2_u64.saturating_pow((attempt as u32).saturating_sub(1)),
+                            );
                             tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms))
                                 .await;
                         }
@@ -367,7 +369,9 @@ impl LlmBasedRouter {
 
                         // Add exponential backoff before retry
                         if attempt < MAX_ROUTER_RETRIES {
-                            let backoff_ms = RETRY_BACKOFF_MS * (2_u64.pow(attempt as u32 - 1));
+                            let backoff_ms = RETRY_BACKOFF_MS.saturating_mul(
+                                2_u64.saturating_pow((attempt as u32).saturating_sub(1)),
+                            );
                             tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms))
                                 .await;
                         }
@@ -403,7 +407,9 @@ impl LlmBasedRouter {
 
                         // Add exponential backoff before retry
                         if attempt < MAX_ROUTER_RETRIES {
-                            let backoff_ms = RETRY_BACKOFF_MS * (2_u64.pow(attempt as u32 - 1));
+                            let backoff_ms = RETRY_BACKOFF_MS.saturating_mul(
+                                2_u64.saturating_pow((attempt as u32).saturating_sub(1)),
+                            );
                             tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms))
                                 .await;
                         }
@@ -581,9 +587,10 @@ impl LlmBasedRouter {
         );
 
         Err(last_error.unwrap_or_else(|| {
-            // DEFENSIVE BUG DETECTION: Retry loop exhausted without recording an error
-            // The retry loop MUST set last_error on every failure path.
-            // Reaching this code indicates a missing error assignment in retry logic.
+            // DEFENSIVE: This check should be unreachable if retry logic is correct.
+            // All failure paths (endpoint selection, query errors) set last_error before continue.
+            // This fallback exists for future-proofing - if someone adds a new failure path
+            // without setting last_error, we catch it here instead of panicking.
             tracing::error!(
                 tier = ?self.router_tier,
                 max_retries = MAX_ROUTER_RETRIES,
