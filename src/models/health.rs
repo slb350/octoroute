@@ -390,7 +390,16 @@ impl HealthChecker {
     pub async fn mark_failure(&self, endpoint_name: &str) -> Result<(), HealthError> {
         let mut status = self.health_status.write().await;
 
-        // Get mutable reference to endpoint health, returning error if unknown
+        // Defense-in-depth: Validate endpoint name exists in health_status
+        //
+        // This check catches programming errors where routing logic passes an endpoint
+        // name that wasn't registered during HealthChecker initialization. Possible causes:
+        // - Config was modified after HealthChecker creation (shouldn't happen)
+        // - Routing logic has a typo or name mismatch
+        // - Endpoint was removed from config but routing code wasn't updated
+        //
+        // Without this check, we'd panic on unwrap or silently do nothing, making
+        // bugs harder to diagnose. Explicit error allows observability via metrics.
         let health = match status.get_mut(endpoint_name) {
             Some(h) => h,
             None => {
@@ -446,7 +455,16 @@ impl HealthChecker {
     pub async fn mark_success(&self, endpoint_name: &str) -> Result<(), HealthError> {
         let mut status = self.health_status.write().await;
 
-        // Get mutable reference to endpoint health, returning error if unknown
+        // Defense-in-depth: Validate endpoint name exists in health_status
+        //
+        // This check catches programming errors where routing logic passes an endpoint
+        // name that wasn't registered during HealthChecker initialization. Possible causes:
+        // - Config was modified after HealthChecker creation (shouldn't happen)
+        // - Routing logic has a typo or name mismatch
+        // - Endpoint was removed from config but routing code wasn't updated
+        //
+        // Without this check, we'd panic on unwrap or silently do nothing, making
+        // bugs harder to diagnose. Explicit error allows observability via metrics.
         let health = match status.get_mut(endpoint_name) {
             Some(h) => h,
             None => {
