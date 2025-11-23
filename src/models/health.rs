@@ -714,19 +714,24 @@ impl HealthChecker {
 
                     tracing::error!(
                         max_attempts = MAX_BACKGROUND_TASK_RESTARTS,
-                        "DEGRADED: Background health check task failed {} times. \
-                        Health monitoring is now DISABLED to prevent infinite crash-loops. \
-                        Server will continue serving requests but without health monitoring. \
-                        Endpoints will not recover from failures automatically. \
-                        Operator intervention required - check TLS configuration, resource limits, and logs.",
+                        "FATAL: Background health check task failed {} times. \
+                        Cannot operate safely without health monitoring. \
+                        Panicking to shut down server and force operator intervention. \
+                        Check TLS configuration, resource limits, DNS resolution, and logs. \
+                        Process supervisor (systemd/Docker) should restart the server.",
                         MAX_BACKGROUND_TASK_RESTARTS
                     );
 
-                    // Graceful degradation: Disable health checking instead of panicking.
-                    // This prevents infinite crash-loops under process supervisors (systemd/Docker)
-                    // when the failure is systemic (e.g., corrupted TLS certs, resource exhaustion).
-                    // Server continues serving requests but without automatic endpoint recovery.
-                    break;
+                    // FAIL FAST: Server cannot operate safely without health checks.
+                    // The process supervisor (systemd/Docker/Kubernetes) should restart the server.
+                    // This prevents silent degradation where the server appears healthy but
+                    // cannot recover failed endpoints, leading to poor user experience.
+                    panic!(
+                        "Background health checking permanently failed after {} attempts. \
+                        Server cannot operate without health monitoring. \
+                        Operator intervention required - check TLS config, resource limits, DNS resolution.",
+                        MAX_BACKGROUND_TASK_RESTARTS
+                    );
                 }
 
                 // Record restart attempt in metrics
