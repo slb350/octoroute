@@ -529,6 +529,16 @@ pub async fn handler(
                                     Failing request to expose issue."
                                 );
                             }
+                            HealthError::InvalidEndpointUrl { endpoint, base_url, details } => {
+                                tracing::error!(
+                                    request_id = %request_id,
+                                    endpoint = %endpoint,
+                                    base_url = %base_url,
+                                    details = %details,
+                                    attempt = attempt,
+                                    "CONFIGURATION ERROR: Endpoint URL is invalid. Failing request to expose issue."
+                                );
+                            }
                         }
                         // Preserve error type instead of converting to string
                         AppError::HealthTracking(e)
@@ -657,6 +667,18 @@ pub async fn handler(
                                     "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
                                     This indicates a systemic issue (TLS configuration, resource exhaustion) \
                                     affecting ALL endpoints, not an individual endpoint problem. \
+                                    Failing request to expose issue."
+                                );
+                            }
+                            HealthError::InvalidEndpointUrl { endpoint, base_url, details } => {
+                                tracing::error!(
+                                    request_id = %request_id,
+                                    endpoint = %endpoint,
+                                    base_url = %base_url,
+                                    details = %details,
+                                    attempt = attempt,
+                                    "CONFIGURATION ERROR: Endpoint URL is invalid. \
+                                    This should have been caught during config validation. \
                                     Failing request to expose issue."
                                 );
                             }

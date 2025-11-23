@@ -464,6 +464,15 @@ impl LlmBasedRouter {
                                         "SYSTEMIC: HTTP client creation failed in LLM router - failing to expose issue"
                                     );
                                 }
+                                HealthError::InvalidEndpointUrl { endpoint, base_url, details } => {
+                                    tracing::error!(
+                                        endpoint = %endpoint,
+                                        base_url = %base_url,
+                                        details = %details,
+                                        attempt = attempt,
+                                        "CONFIGURATION ERROR: Invalid endpoint URL in LLM router - failing to expose issue"
+                                    );
+                                }
                             }
 
                             AppError::HealthTracking(e)
@@ -533,6 +542,15 @@ impl LlmBasedRouter {
                                         error = %msg,
                                         attempt = attempt,
                                         "SYSTEMIC: HTTP client creation failed in LLM router - failing to expose issue"
+                                    );
+                                }
+                                HealthError::InvalidEndpointUrl { endpoint, base_url, details } => {
+                                    tracing::error!(
+                                        endpoint = %endpoint,
+                                        base_url = %base_url,
+                                        details = %details,
+                                        attempt = attempt,
+                                        "CONFIGURATION ERROR: Invalid endpoint URL in LLM router - failing to expose issue"
                                     );
                                 }
                             }

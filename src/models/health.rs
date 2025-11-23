@@ -176,6 +176,17 @@ pub enum HealthError {
         "Failed to create HTTP client: {0}. This indicates a systemic issue (TLS config, resource exhaustion)."
     )]
     HttpClientCreationFailed(String),
+
+    /// Invalid endpoint URL configuration
+    ///
+    /// The base_url is malformed or contains invalid components (query parameters,
+    /// fragments) that would cause health check failures. This is a configuration error.
+    #[error("Invalid endpoint URL for '{endpoint}': {base_url}. {details}")]
+    InvalidEndpointUrl {
+        endpoint: String,
+        base_url: String,
+        details: String,
+    },
 }
 
 /// Health status for a single endpoint
@@ -564,7 +575,20 @@ impl HealthChecker {
         // We append "/models" to get "http://host:port/v1/models"
         // DO NOT append "/v1/models" - that would create "http://host:port/v1/v1/models" (404!)
         // Historical note: This bug previously caused all endpoints to fail after 90 seconds.
-        let url = format!("{}/models", endpoint.base_url());
+
+        // Validate base_url doesn't contain query params or fragments
+        // These would create malformed URLs and cause cryptic health check failures
+        let base_url = endpoint.base_url();
+        if base_url.contains('?') || base_url.contains('#') {
+            return Err(HealthError::InvalidEndpointUrl {
+                endpoint: endpoint.name().to_string(),
+                base_url: base_url.to_string(),
+                details: "base_url should not contain query parameters (?) or fragments (#)"
+                    .to_string(),
+            });
+        }
+
+        let url = format!("{}/models", base_url);
 
         match client.head(&url).send().await {
             Ok(response) => {
@@ -634,6 +658,20 @@ impl HealthChecker {
                                 );
                                 continue; // Skip to next endpoint instead of panicking
                             }
+                            HealthError::InvalidEndpointUrl {
+                                endpoint,
+                                base_url,
+                                details,
+                            } => {
+                                // CONFIGURATION ERROR: Log and continue
+                                tracing::error!(
+                                    endpoint = %endpoint,
+                                    base_url = %base_url,
+                                    details = %details,
+                                    "Health tracking failed: invalid endpoint URL configuration"
+                                );
+                                continue; // Skip to next endpoint
+                            }
                         }
                     }
                 }
@@ -667,6 +705,20 @@ impl HealthChecker {
                                     "Health tracking failed: unknown endpoint (may be config reload race)"
                                 );
                                 continue; // Skip to next endpoint instead of panicking
+                            }
+                            HealthError::InvalidEndpointUrl {
+                                endpoint,
+                                base_url,
+                                details,
+                            } => {
+                                // CONFIGURATION ERROR: Log and continue
+                                tracing::error!(
+                                    endpoint = %endpoint,
+                                    base_url = %base_url,
+                                    details = %details,
+                                    "Health tracking failed: invalid endpoint URL configuration"
+                                );
+                                continue; // Skip to next endpoint
                             }
                         }
                     }
