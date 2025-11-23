@@ -122,8 +122,12 @@ impl HybridRouter {
                     .route(user_prompt, meta)
                     .await
                     .map_err(|e| {
+                        // Log hybrid routing context but propagate original error
+                        // This preserves error type information for retry logic to determine
+                        // if error is retryable (network timeout) vs systemic (invalid config)
                         tracing::error!(
                             error = %e,
+                            error_type = std::any::type_name_of_val(&e),
                             user_prompt = user_prompt,  // Full prompt, no truncation
                             task_type = ?meta.task_type,
                             importance = ?meta.importance,
@@ -131,13 +135,8 @@ impl HybridRouter {
                             "LLM router failed after no rule match (hybrid routing fallback failed)"
                         );
 
-                        // Wrap error with hybrid routing context for better debugging
-                        crate::error::AppError::HybridRoutingFailed {
-                            prompt_preview: user_prompt.to_string(),
-                            task_type: meta.task_type,
-                            importance: meta.importance,
-                            source: Box::new(e),
-                        }
+                        // Propagate original error to preserve type information for retry logic
+                        e
                     })?;
 
                 tracing::info!(

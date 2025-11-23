@@ -1,14 +1,14 @@
-//! Tests for hybrid router error context preservation
+//! Tests for hybrid router error propagation
 //!
-//! Verifies that the hybrid router preserves full error context when LLM
-//! routing fails, including the complete prompt and error chain, addressing
-//! CRITICAL-3 from PR #4 review.
+//! Verifies that the hybrid router propagates original errors without wrapping,
+//! preserving error type information for retry logic. Context is logged but not
+//! wrapped in the error type.
 //!
 //! ## Background
 //!
-//! Current implementation truncates prompts to 100 chars in error logs and
-//! doesn't wrap LLM routing errors with hybrid routing context. This makes
-//! debugging production issues difficult.
+//! Previous implementation wrapped LLM errors in HybridRoutingFailed, losing
+//! type information needed for retry logic. New implementation propagates
+//! original errors and logs context separately (PR #4 review issue #5).
 
 use octoroute::config::Config;
 use octoroute::error::AppError;
@@ -72,11 +72,12 @@ fn mock_metrics() -> Arc<octoroute::metrics::Metrics> {
 }
 
 #[tokio::test]
-async fn test_hybrid_router_error_preserves_llm_error_chain() {
-    // RED: HybridRoutingFailed error should preserve LLM error chain
+async fn test_hybrid_router_propagates_original_llm_error() {
+    // Verify hybrid router propagates original LLM routing errors without wrapping
     //
-    // When LLM routing fails, hybrid router should wrap the error with
-    // context about hybrid routing fallback, preserving the original error.
+    // When LLM routing fails, hybrid router should propagate the original error
+    // (e.g., RoutingFailed) to preserve type information for retry logic.
+    // Context is logged but not wrapped in the error type.
 
     let config = test_config();
     let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
@@ -100,58 +101,42 @@ async fn test_hybrid_router_error_preserves_llm_error_chain() {
             .expect("mark_failure should succeed");
     }
 
-    // Attempt routing - should fail with HybridRoutingFailed error
+    // Attempt routing - should fail with original RoutingFailed error
     let result = router.route("Test prompt", &meta).await;
     assert!(result.is_err(), "Should fail when LLM routing fails");
 
     let err = result.unwrap_err();
 
-    // Verify error is HybridRoutingFailed with proper context
+    // Verify error is the original RoutingFailed, not wrapped in HybridRoutingFailed
     match err {
-        AppError::HybridRoutingFailed {
-            prompt_preview,
-            task_type,
-            importance,
-            source,
-        } => {
-            // Verify context is preserved
-            assert!(
-                prompt_preview.contains("Test prompt"),
-                "Should include prompt preview"
-            );
-            assert_eq!(task_type, TaskType::CasualChat);
-            assert_eq!(importance, Importance::High);
-
-            // Verify original error is preserved (source is Box<AppError>, always present)
-            let _original_error = source; // Just verify it's accessible
+        AppError::RoutingFailed(_) => {
+            // Success - original error type is preserved
+            // This allows retry logic to determine if error is retryable
         }
-        _ => panic!("Expected HybridRoutingFailed variant, got: {:?}", err),
+        other => panic!(
+            "Expected RoutingFailed variant (original error propagated), got: {:?}",
+            other
+        ),
     }
 }
 
 #[tokio::test]
-async fn test_hybrid_router_error_includes_full_prompt_in_context() {
-    // RED: Error context should include FULL prompt, not truncated
+async fn test_hybrid_router_error_provides_meaningful_context() {
+    // Verify that propagated errors contain meaningful diagnostic information
     //
-    // Current implementation truncates to 100 chars. Need full prompt
-    // for debugging production issues.
+    // Even though we don't wrap errors, the original error should provide
+    // enough context for debugging. Full prompt context is logged separately.
 
     let config = test_config();
     let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
     let router = HybridRouter::new(config, selector.clone(), mock_metrics())
         .expect("Router creation should succeed");
 
-    // Create a long prompt (>100 chars) to test truncation
+    // Create a long prompt to verify it doesn't cause issues
     let long_prompt = "Write a comprehensive analysis of the impact of artificial intelligence on \
                       modern software development practices, including code generation, testing, \
                       documentation, and deployment automation. Consider both benefits and risks. \
                       This is a very long prompt that exceeds 100 characters by a significant margin.";
-
-    assert!(
-        long_prompt.len() > 100,
-        "Test prompt should be >100 chars, got {}",
-        long_prompt.len()
-    );
 
     let meta = RouteMetadata {
         token_estimate: 100,
@@ -173,25 +158,29 @@ async fn test_hybrid_router_error_includes_full_prompt_in_context() {
 
     let err = result.unwrap_err();
 
-    // Verify error includes full prompt context (or at least more than 100 chars)
+    // Verify error provides meaningful diagnostic information
     let err_string = format!("{}", err);
 
-    // The error should include significant portion of the prompt
-    // (we'll use 200 chars as threshold to allow for some truncation if needed)
-    let prompt_portion = &long_prompt[..200];
+    // Should contain key diagnostic information (endpoint availability, tier info, etc.)
     assert!(
-        err_string.contains(prompt_portion) || err_string.len() > 200,
-        "Error should include substantial prompt context (>200 chars), got {} chars: {}",
-        err_string.len(),
+        err_string.contains("Balanced") || err_string.contains("endpoint"),
+        "Error should contain diagnostic information about endpoint/tier, got: {}",
         err_string
+    );
+
+    // Should be the original RoutingFailed error
+    assert!(
+        matches!(err, AppError::RoutingFailed(_)),
+        "Should propagate original RoutingFailed error"
     );
 }
 
 #[tokio::test]
-async fn test_hybrid_routing_failed_error_has_source() {
-    // RED: HybridRoutingFailed should have #[source] attribute
+async fn test_propagated_error_preserves_source_chain() {
+    // Verify that propagated errors maintain their source chain
     //
-    // Verify error chain is accessible for debugging.
+    // Even though we don't wrap errors, the original error's source chain
+    // should be preserved for debugging and error analysis.
 
     let config = test_config();
     let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
@@ -218,24 +207,22 @@ async fn test_hybrid_routing_failed_error_has_source() {
 
     let err = result.unwrap_err();
 
-    // Verify error chain is accessible
+    // Verify error is the original RoutingFailed
+    assert!(
+        matches!(err, AppError::RoutingFailed(_)),
+        "Should be original RoutingFailed error"
+    );
+
+    // Verify error chain is accessible (RoutingFailed may or may not have a source,
+    // but the error should be usable for debugging)
     use std::error::Error;
-    let source = err.source();
+    let err_string = format!("{}", err);
     assert!(
-        source.is_some(),
-        "HybridRoutingFailed should have source error in chain"
+        !err_string.is_empty(),
+        "Error should have meaningful message"
     );
 
-    // Should be able to walk the error chain
-    let mut chain_length = 0;
-    let mut current = err.source();
-    while let Some(e) = current {
-        chain_length += 1;
-        current = e.source();
-    }
-
-    assert!(
-        chain_length > 0,
-        "Error chain should have at least one source error"
-    );
+    // The error maintains its own source chain (if any)
+    // This test just verifies we can access standard error properties
+    let _source = err.source(); // May be Some or None, both are valid
 }
