@@ -333,47 +333,35 @@ pub async fn handler(
             RoutingStrategy::Llm => crate::metrics::Strategy::Llm,
         };
 
-        // Fail fast on metrics recording errors (Prometheus corruption)
-        // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
-        // Errors can only occur from Prometheus internal issues (registry corruption, etc.).
-        // These indicate CRITICAL system degradation requiring operator intervention.
-        metrics
-            .record_request(tier_enum, strategy_enum)
-            .map_err(|e| {
-                metrics.metrics_recording_failure();
-                tracing::error!(
-                    request_id = %request_id,
-                    error = %e,
-                    tier = ?tier_enum,
-                    strategy = ?strategy_enum,
-                    "CRITICAL: Metrics recording failed (Prometheus internal error). \
-                    Failing request to expose issue."
-                );
-                AppError::Internal(format!(
-                    "Metrics recording failed (Prometheus corruption): {}. \
-                    Observability system degraded - operator intervention required.",
-                    e
-                ))
-            })?;
+        // Record metrics - don't fail user requests if metrics fail
+        // Metrics are for observability, not core functionality.
+        // Common failure causes: cardinality explosion, registry lock contention,
+        // descriptor mismatch. These should be logged but not block user requests.
+        if let Err(e) = metrics.record_request(tier_enum, strategy_enum) {
+            metrics.metrics_recording_failure();
+            tracing::error!(
+                request_id = %request_id,
+                error = %e,
+                tier = ?tier_enum,
+                strategy = ?strategy_enum,
+                "Metrics recording failed. Common causes: cardinality explosion, \
+                registry lock contention, or descriptor mismatch. \
+                Observability degraded but request continues."
+            );
+        }
 
-        metrics
-            .record_routing_duration(strategy_enum, routing_duration_ms)
-            .map_err(|e| {
-                metrics.metrics_recording_failure();
-                tracing::error!(
-                    request_id = %request_id,
-                    error = %e,
-                    strategy = ?strategy_enum,
-                    duration_ms = routing_duration_ms,
-                    "CRITICAL: Metrics recording failed (Prometheus internal error). \
-                    Failing request to expose issue."
-                );
-                AppError::Internal(format!(
-                    "Metrics recording failed (Prometheus corruption): {}. \
-                    Observability system degraded - operator intervention required.",
-                    e
-                ))
-            })?;
+        if let Err(e) = metrics.record_routing_duration(strategy_enum, routing_duration_ms) {
+            metrics.metrics_recording_failure();
+            tracing::error!(
+                request_id = %request_id,
+                error = %e,
+                strategy = ?strategy_enum,
+                duration_ms = routing_duration_ms,
+                "Metrics recording failed. Common causes: cardinality explosion, \
+                registry lock contention, or descriptor mismatch. \
+                Observability degraded but request continues."
+            );
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
