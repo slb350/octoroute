@@ -120,14 +120,18 @@ pub struct RoutingConfig {
     /// # Validation (Two-Phase)
     ///
     /// **Phase 1 - Format Validation (Deserialization Time)**:
-    /// Serde deserializes from lowercase strings: "fast", "balanced", "deep".
-    /// Invalid format like "FAST" or "fasst" is rejected at deserialization time
-    /// with clear error messages from serde.
+    /// - **When**: During `toml::from_str::<Config>()` call (config file loading)
+    /// - **Who**: Serde's `TargetModel` enum deserializer
+    /// - **What**: Validates format matches "fast", "balanced", or "deep"
+    ///   (case-sensitive lowercase). Invalid formats like "FAST" or "fasst" are
+    ///   rejected immediately with clear serde deserialization errors.
     ///
-    /// **Phase 2 - Availability Validation (Config::validate)**:
-    /// After deserialization, `Config::validate()` checks that the specified tier
-    /// has at least one configured endpoint (see Config::validate implementation).
-    /// This ensures the router tier is not only valid in format but also usable.
+    /// **Phase 2 - Availability Validation (Router Construction Time)**:
+    /// - **When**: During `LlmBasedRouter::new()` call
+    /// - **Who**: `TierSelector::new()` validation logic
+    /// - **What**: Verifies at least one endpoint exists for the specified tier.
+    ///   Prevents runtime failures by catching misconfiguration (e.g., router_tier="deep"
+    ///   but no [[models.deep]] endpoints) at router construction time.
     ///
     /// Field is private to prevent post-validation mutation. Use `router_tier()` accessor.
     #[serde(default)]
