@@ -167,14 +167,19 @@ impl LlmRouterError {
 ///
 /// ## Rationale for 1KB Limit
 ///
-/// The 1KB limit accommodates legitimate verbose responses (100-200 bytes) while
-/// preventing unbounded memory growth from:
+/// **Safety margin calculation**:
+/// - Maximum expected legitimate response: ~200 bytes (verbose explanation)
+/// - Safety factor: 5x (accommodates unexpectedly verbose but valid responses)
+/// - Result: 1024 bytes (1KB)
+///
+/// This limit prevents unbounded memory growth from LLM malfunctions while
+/// providing enough headroom for legitimate responses:
 /// - Runaway generation (repeating text, hallucination loops)
 /// - LLM generating essays instead of classifications (>100 words)
 /// - Prompt injection attempts attempting to overwhelm the parser
 ///
-/// This is 5-10x larger than typical verbose responses, providing a comfortable safety
-/// margin while still catching problematic generation early.
+/// The 5x safety margin ensures we reject problematic generation (~500+ bytes)
+/// while never rejecting valid verbose responses (~200 bytes maximum).
 const MAX_ROUTER_RESPONSE: usize = 1024;
 
 /// LLM-powered router that uses a model to make routing decisions
