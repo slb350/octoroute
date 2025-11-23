@@ -322,9 +322,14 @@ impl Metrics {
     /// - Routing failures (tracked separately by routing metrics)
     /// - Request failures (tracked by requests_total with status labels)
     ///
-    /// ## Alerting Threshold
+    /// ## Recommended Alerting Thresholds (Operator Configuration)
     ///
-    /// **Recommended alert**: > 5 failures in 1 hour indicates a systemic issue:
+    /// **For Prometheus/Grafana alerts**: Configure external alerting when
+    /// `rate(octoroute_health_tracking_failures_total[1h]) > 5`.
+    ///
+    /// **Note**: This threshold is NOT enforced by Octoroute code - it's a
+    /// recommended configuration for your monitoring system. Exceeding this
+    /// threshold indicates systemic issues:
     /// - Configuration mismatch between routing logic and config file
     /// - Race condition in endpoint registration/deregistration
     /// - Internal bug in health tracking system
