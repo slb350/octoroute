@@ -766,6 +766,24 @@ impl LlmBasedRouter {
             }
         }
 
+        // Early empty response detection: fail immediately after streaming completes
+        // if no content received, instead of waiting for parse_routing_decision() to detect it.
+        // This optimization saves processing time on obvious LLM malfunctions.
+        if response_text.trim().is_empty() {
+            tracing::error!(
+                endpoint_name = %endpoint.name(),
+                endpoint_url = %endpoint.base_url(),
+                attempt = attempt,
+                max_retries = max_retries,
+                "Router LLM returned empty response (0 text blocks received) - \
+                 cannot determine routing decision (attempt {}/{})",
+                attempt, max_retries
+            );
+            return Err(AppError::LlmRouting(LlmRouterError::EmptyResponse {
+                endpoint: endpoint.base_url().to_string(),
+            }));
+        }
+
         tracing::debug!(
             endpoint_name = %endpoint.name(),
             response_length = response_text.len(),
