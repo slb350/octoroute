@@ -344,3 +344,189 @@ log_level = "info"
         err_msg
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Per-Tier Timeout Validation Tests
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// These tests verify the TimeoutsConfig custom deserializer validation logic
+// (src/config.rs:220-276) which enforces timeout bounds: (0, 300] seconds.
+//
+// Addresses PR review Issue #6 (CRITICAL): Missing test coverage for existing
+// validation logic that prevents zero timeouts, excessive timeouts, and ensures
+// boundary values work correctly.
+
+#[test]
+fn test_per_tier_timeout_zero_rejected() {
+    // RED PHASE: Test that zero timeout is rejected during TOML deserialization
+    //
+    // Validates that TimeoutsConfig::new() enforces lower bound (timeout > 0)
+    // to prevent infinite/nonsensical timeouts.
+    let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+router_tier = "balanced"
+
+[timeouts]
+fast = 0  # Invalid: zero timeout
+"#;
+
+    let result: Result<Config, _> = toml::from_str(config_str);
+
+    assert!(
+        result.is_err(),
+        "Config with zero per-tier timeout should be rejected at parse time"
+    );
+
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("timeouts.fast") && err.contains("greater than 0"),
+        "Error should mention timeouts.fast must be > 0, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_per_tier_timeout_exceeds_300_rejected() {
+    // RED PHASE: Test that timeout > 300 seconds is rejected during deserialization
+    //
+    // Validates that TimeoutsConfig::new() enforces upper bound (timeout <= 300)
+    // to prevent config errors, unit confusion, and overflow risk.
+    let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+router_tier = "balanced"
+
+[timeouts]
+deep = 301  # Invalid: exceeds 300 second limit
+"#;
+
+    let result: Result<Config, _> = toml::from_str(config_str);
+
+    assert!(
+        result.is_err(),
+        "Config with per-tier timeout > 300 should be rejected at parse time"
+    );
+
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("timeouts.deep") && err.contains("300"),
+        "Error should mention timeouts.deep cannot exceed 300, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_per_tier_timeout_boundary_values() {
+    // GREEN PHASE: Test that boundary values (1, 300) are accepted
+    //
+    // Validates that minimum valid (1 second) and maximum valid (300 seconds)
+    // timeouts are correctly accepted and accessible.
+    let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+router_tier = "balanced"
+
+[timeouts]
+fast = 1     # Minimum valid value
+balanced = 150  # Middle value
+deep = 300   # Maximum valid value
+"#;
+
+    let config: Config = toml::from_str(config_str)
+        .expect("Config with boundary timeout values (1, 300) should be valid");
+
+    assert_eq!(
+        config.timeouts.fast(),
+        Some(1),
+        "Fast tier should have 1 second timeout"
+    );
+    assert_eq!(
+        config.timeouts.balanced(),
+        Some(150),
+        "Balanced tier should have 150 second timeout"
+    );
+    assert_eq!(
+        config.timeouts.deep(),
+        Some(300),
+        "Deep tier should have 300 second timeout"
+    );
+}
