@@ -43,10 +43,7 @@ pub trait LlmRouter: Send + Sync {
 /// that can be resolved by trying a different endpoint.
 #[derive(Debug, thiserror::Error)]
 pub enum LlmRouterError {
-    /// Router LLM returned empty response (no content blocks)
-    ///
-    /// Systemic error - indicates LLM malfunction or misconfiguration.
-    /// Retrying with a different endpoint won't help.
+    /// Empty response from router LLM (systemic - no retry)
     #[error(
         "Router LLM returned empty response from {endpoint}. \
          Expected response containing one of: FAST, BALANCED, or DEEP. \
@@ -54,13 +51,7 @@ pub enum LlmRouterError {
     )]
     EmptyResponse { endpoint: String },
 
-    /// Router LLM returned unparseable response (no valid routing keyword found)
-    ///
-    /// Systemic error - indicates LLM not following instructions, safety filter activation,
-    /// or misconfiguration. Retrying won't help.
-    ///
-    /// The `response` field contains a truncated preview (max 500 chars).
-    /// The `response_length` field contains the total original response length.
+    /// Unparseable response from router LLM (systemic - no retry)
     #[error("Router LLM returned unparseable response ({response_length} bytes): {response}")]
     UnparseableResponse {
         endpoint: String,
@@ -68,17 +59,11 @@ pub enum LlmRouterError {
         response_length: usize,
     },
 
-    /// Router LLM returned refusal or error message
-    ///
-    /// Systemic error - indicates safety filter activation or LLM refusing the request.
-    /// Retrying won't help.
+    /// Refusal or error from router LLM (systemic - no retry)
     #[error("Router LLM refused or returned error: {message}")]
     Refusal { endpoint: String, message: String },
 
-    /// Router response exceeded size limit ({size} bytes > {max_size} bytes)
-    ///
-    /// Systemic error - indicates LLM generating essays instead of classifications,
-    /// infinite generation loops, or prompt injection. Retrying won't help.
+    /// Response size limit exceeded (systemic - no retry)
     #[error(
         "Router response exceeded {max_size} bytes (got {size} bytes). LLM not following instructions."
     )]
@@ -88,17 +73,11 @@ pub enum LlmRouterError {
         max_size: usize,
     },
 
-    /// Failed to configure AgentOptions for router query
-    ///
-    /// Systemic error - indicates configuration problem (invalid model name, base_url, etc.).
-    /// Retrying won't help.
+    /// AgentOptions configuration failure (systemic - no retry)
     #[error("Failed to configure AgentOptions for router: {details}")]
     AgentOptionsConfigError { endpoint: String, details: String },
 
-    /// Stream error while receiving router response
-    ///
-    /// Transient error - network interruption, timeout, or connection loss mid-stream.
-    /// Retrying with a different endpoint may succeed.
+    /// Stream error during router query (transient - retry allowed)
     #[error("Stream error after {bytes_received} bytes received: {error_message}")]
     StreamError {
         endpoint: String,
@@ -106,10 +85,7 @@ pub enum LlmRouterError {
         error_message: String,
     },
 
-    /// Query timeout waiting for router response
-    ///
-    /// Transient error - endpoint may be overloaded or unreachable.
-    /// Retrying with a different endpoint may succeed.
+    /// Router query timeout (transient - retry allowed)
     #[error(
         "Router query timed out after {timeout_seconds}s (attempt {attempt}/{max_attempts}) for {router_tier:?} tier. \
          Remediation: Check endpoint health at {endpoint}, increase timeout in config, or try a faster tier."
