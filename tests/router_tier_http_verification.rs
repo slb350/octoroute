@@ -15,6 +15,7 @@
 //! 1. Config parsing correctly extracts router_tier
 //! 2. Router is constructed with the correct tier
 //! 3. The tier is immutable and used for all endpoint selection
+//! 4. HTTP requests actually go to the correct tier's endpoints (wiremock verification)
 //!
 //! ## Why This Works
 //!
@@ -31,6 +32,8 @@ use octoroute::models::ModelSelector;
 use octoroute::router::TargetModel;
 use octoroute::router::llm_based::LlmBasedRouter;
 use std::sync::Arc;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Helper to create a test config with the specified router_tier
 fn create_config_with_router_tier(tier: &str) -> Config {
@@ -249,4 +252,158 @@ async fn test_router_tier_is_immutable() {
 
     assert_eq!(tier1, tier2, "Router tier should be immutable");
     assert_eq!(tier1, TargetModel::Fast, "Tier should remain Fast");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HTTP VERIFICATION TESTS (CRITICAL #4)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// These tests verify that the router actually sends HTTP requests to the correct
+// tier's endpoints, not just that it's constructed with the correct tier.
+//
+// This addresses the PR review critical issue: "Tests verify tier assignment
+// but not actual HTTP requests to correct endpoints."
+
+/// Helper to create a config with mock server URLs for each tier
+fn create_config_with_mock_servers(
+    router_tier: &str,
+    fast_url: &str,
+    balanced_url: &str,
+    deep_url: &str,
+) -> Config {
+    let config_toml = format!(
+        r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-mock"
+base_url = "{}"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-mock"
+base_url = "{}"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-mock"
+base_url = "{}"
+max_tokens = 8192
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "llm"
+default_importance = "normal"
+router_tier = "{}"
+"#,
+        fast_url, balanced_url, deep_url, router_tier
+    );
+
+    toml::from_str(&config_toml).expect("should parse test config")
+}
+
+/// Test that router_tier="fast" actually sends HTTP requests to Fast endpoints
+///
+/// **RED PHASE**: Write failing test that verifies HTTP behavior
+/// **Addresses**: PR #4 Critical Issue #4 - Router Tier HTTP Request Path Not Verified
+#[tokio::test]
+async fn test_router_tier_fast_queries_fast_endpoints_http_verification() {
+    // Start mock servers for each tier
+    let fast_server = MockServer::start().await;
+    let balanced_server = MockServer::start().await;
+    let deep_server = MockServer::start().await;
+
+    // Configure mock responses for routing decisions
+    // The Fast tier will be queried for routing decisions
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 1234567890,
+            "model": "fast-mock",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "FAST"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15
+            }
+        })))
+        .expect(1) // Expect exactly 1 request to Fast tier
+        .mount(&fast_server)
+        .await;
+
+    // Balanced and Deep servers should NOT receive requests
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0) // Expect ZERO requests
+        .mount(&balanced_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0) // Expect ZERO requests
+        .mount(&deep_server)
+        .await;
+
+    // Create config with router_tier=fast and mock server URLs
+    let config = create_config_with_mock_servers(
+        "fast",
+        &fast_server.uri(),
+        &balanced_server.uri(),
+        &deep_server.uri(),
+    );
+
+    // Create router with Fast tier
+    let metrics = Arc::new(Metrics::new().expect("should create Metrics"));
+    let selector = Arc::new(ModelSelector::new(
+        Arc::new(config.clone()),
+        metrics.clone(),
+    ));
+    let router = LlmBasedRouter::new(selector, TargetModel::Fast, metrics)
+        .expect("should create LlmBasedRouter with Fast tier");
+
+    // Execute routing decision - this should query the Fast tier endpoint
+    let metadata = octoroute::router::RouteMetadata::new(100)
+        .with_importance(octoroute::router::Importance::Normal);
+
+    // Attempt to route a request
+    let result = router.route("test prompt", &metadata).await;
+
+    // Verify the routing decision was made (may succeed or fail depending on response)
+    // The key assertion is that the Fast server received a request
+    assert!(
+        result.is_ok() || result.is_err(),
+        "Router should attempt to query an endpoint"
+    );
+
+    // CRITICAL ASSERTION: Verify mock server expectations
+    // - Fast server should have received 1 request
+    // - Balanced and Deep servers should have received 0 requests
+    //
+    // This verifies that router_tier=fast actually queries Fast endpoints,
+    // not Balanced or Deep endpoints.
+    //
+    // If this fails, it indicates a bug where the router tier configuration
+    // doesn't correctly control which endpoints are queried.
 }

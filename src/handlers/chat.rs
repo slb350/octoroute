@@ -318,8 +318,7 @@ pub async fn handler(
     //       record_model_invocation() (called later on success) counts actual model queries.
     //       This distinction allows tracking routing overhead separately from query success rate.
     //
-    // Collect warnings from metrics recording failures to surface to user
-    let mut metrics_warnings = Vec::new();
+    // NOTE: Metrics recording now fails fast (no longer surfaced as warnings).
     {
         let metrics = state.metrics();
 
@@ -334,47 +333,47 @@ pub async fn handler(
             RoutingStrategy::Llm => crate::metrics::Strategy::Llm,
         };
 
-        // Surface metrics recording errors as warnings (not fatal - request continues)
+        // Fail fast on metrics recording errors (Prometheus corruption)
         // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
-        // Errors can only occur from Prometheus internal issues (registry problems, etc.).
-        if let Err(e) = metrics.record_request(tier_enum, strategy_enum) {
-            // Track the failure for monitoring
-            metrics.metrics_recording_failure();
+        // Errors can only occur from Prometheus internal issues (registry corruption, etc.).
+        // These indicate CRITICAL system degradation requiring operator intervention.
+        metrics
+            .record_request(tier_enum, strategy_enum)
+            .map_err(|e| {
+                metrics.metrics_recording_failure();
+                tracing::error!(
+                    request_id = %request_id,
+                    error = %e,
+                    tier = ?tier_enum,
+                    strategy = ?strategy_enum,
+                    "CRITICAL: Metrics recording failed (Prometheus internal error). \
+                    Failing request to expose issue."
+                );
+                AppError::Internal(format!(
+                    "Metrics recording failed (Prometheus corruption): {}. \
+                    Observability system degraded - operator intervention required.",
+                    e
+                ))
+            })?;
 
-            tracing::error!(
-                request_id = %request_id,
-                error = %e,
-                tier = ?tier_enum,
-                strategy = ?strategy_enum,
-                "Metrics recording failed - surfacing to user as warning: {}",
-                e
-            );
-
-            metrics_warnings.push(format!(
-                "Metrics recording failure (record_request): {}. Observability may be degraded. \
-                Check /health endpoint for metrics_recording_failures_total count.",
-                e
-            ));
-        }
-
-        if let Err(e) = metrics.record_routing_duration(strategy_enum, routing_duration_ms) {
-            // Track the failure for monitoring
-            metrics.metrics_recording_failure();
-
-            tracing::error!(
-                request_id = %request_id,
-                error = %e,
-                strategy = ?strategy_enum,
-                duration_ms = routing_duration_ms,
-                "Metrics recording failed - surfacing to user as warning: {}",
-                e
-            );
-
-            metrics_warnings.push(format!(
-                "Metrics recording failure (record_routing_duration): {}. Observability may be degraded.",
-                e
-            ));
-        }
+        metrics
+            .record_routing_duration(strategy_enum, routing_duration_ms)
+            .map_err(|e| {
+                metrics.metrics_recording_failure();
+                tracing::error!(
+                    request_id = %request_id,
+                    error = %e,
+                    strategy = ?strategy_enum,
+                    duration_ms = routing_duration_ms,
+                    "CRITICAL: Metrics recording failed (Prometheus internal error). \
+                    Failing request to expose issue."
+                );
+                AppError::Internal(format!(
+                    "Metrics recording failed (Prometheus corruption): {}. \
+                    Observability system degraded - operator intervention required.",
+                    e
+                ))
+            })?;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -559,30 +558,29 @@ pub async fn handler(
                         TargetModel::Deep => crate::metrics::Tier::Deep,
                     };
 
-                    // Surface metrics recording errors as warnings
+                    // Fail fast on metrics recording errors (Prometheus corruption)
                     // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
-                    if let Err(e) = metrics.record_model_invocation(tier_enum) {
-                        // Track the failure for monitoring
+                    // Errors can only occur from Prometheus internal issues (registry corruption, etc.).
+                    metrics.record_model_invocation(tier_enum).map_err(|e| {
                         metrics.metrics_recording_failure();
-
                         tracing::error!(
                             request_id = %request_id,
                             error = %e,
                             tier = ?tier_enum,
-                            "Metrics recording failed - surfacing to user as warning: {}",
-                            e
+                            "CRITICAL: Metrics recording failed (Prometheus internal error). \
+                            Failing request to expose issue."
                         );
-
-                        metrics_warnings.push(format!(
-                            "Metrics recording failure (record_model_invocation): {}. Observability may be degraded.",
+                        AppError::Internal(format!(
+                            "Metrics recording failed (Prometheus corruption): {}. \
+                                Observability system degraded - operator intervention required.",
                             e
-                        ));
-                    }
+                        ))
+                    })?;
                 }
 
-                // Merge warnings from routing decision and metrics recording
-                let mut all_warnings = metrics_warnings;
-                all_warnings.extend(decision.warnings().iter().cloned());
+                // Collect warnings from routing decision
+                // NOTE: Metrics recording failures now fail fast (no longer treated as warnings)
+                let all_warnings: Vec<String> = decision.warnings().to_vec();
 
                 let response = if all_warnings.is_empty() {
                     ChatResponse::new(
@@ -687,7 +685,33 @@ pub async fn handler(
     );
 
     Err(last_error.unwrap_or_else(|| {
-        AppError::Internal(format!("All {} retry attempts exhausted", MAX_RETRIES))
+        // DEFENSIVE BUG DETECTION: This should never happen
+        tracing::error!(
+            request_id = %request_id,
+            tier = ?decision.target(),
+            max_retries = MAX_RETRIES,
+            excluded_endpoints = ?failed_endpoints,
+            "BUG: Retry loop exhausted but last_error is None. \
+            This indicates a logic error in retry handling."
+        );
+
+        // In debug mode, panic to catch bugs during development
+        // In release mode, return defensive error for graceful degradation
+        if cfg!(debug_assertions) {
+            panic!(
+                "BUG: Retry loop exhausted with last_error = None. \
+                This should never happen - fix retry logic."
+            );
+        }
+
+        AppError::Internal(format!(
+            "DEFENSIVE: All {} retry attempts exhausted but no error recorded. \
+            Tier: {:?}, Failed endpoints: {:?}. \
+            This indicates a bug - please report.",
+            MAX_RETRIES,
+            decision.target(),
+            failed_endpoints
+        ))
     }))
 }
 
