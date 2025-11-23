@@ -417,6 +417,7 @@ pub async fn handler(
     //
     // ═══════════════════════════════════════════════════════════════════════════════
     const MAX_RETRIES: usize = 3;
+    const RETRY_BACKOFF_MS: u64 = 100; // Base backoff: 100ms, doubles each retry
     let mut last_error = None;
     let mut failed_endpoints = ExclusionSet::new();
 
@@ -453,6 +454,12 @@ pub async fn handler(
                     attempt,
                     MAX_RETRIES
                 )));
+
+                // Add exponential backoff before retry
+                if attempt < MAX_RETRIES {
+                    let backoff_ms = RETRY_BACKOFF_MS * (2_u64.pow(attempt as u32 - 1));
+                    tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                }
                 continue; // Try again (may have different healthy endpoints)
             }
         };
@@ -664,6 +671,12 @@ pub async fn handler(
                 failed_endpoints.insert(EndpointName::from(&endpoint));
 
                 last_error = Some(e);
+
+                // Add exponential backoff before retry
+                if attempt < MAX_RETRIES {
+                    let backoff_ms = RETRY_BACKOFF_MS * (2_u64.pow(attempt as u32 - 1));
+                    tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                }
 
                 // Continue to next attempt (will select different endpoint due to exclusion)
             }
