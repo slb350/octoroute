@@ -437,52 +437,31 @@ impl LlmBasedRouter {
                 Ok(target_model) => {
                     // Success! Mark endpoint healthy for immediate recovery
                     //
-                    // DEFENSIVE: mark_success should never fail in normal operation because endpoint
-                    // names come from ModelSelector which only returns valid endpoints. However, we check
-                    // explicitly to catch rare edge cases (race conditions, config reload mid-request, or bugs).
+                    // Health tracking is observability infrastructure, not core functionality.
+                    // If mark_success fails, log warning but DON'T fail the request - we have
+                    // a valid routing decision from the LLM. This matches chat handler behavior
+                    // (warn and continue, don't propagate health tracking errors).
                     //
-                    // If health tracking fails, we propagate the error to expose the issue immediately.
-                    // This matches the chat handler's behavior (fail-fast on health tracking errors).
-                    use crate::models::health::HealthError;
-                    self.selector
+                    // Potential failures: UnknownEndpoint (config reload race), HttpClientCreationFailed
+                    // (TLS issues), InvalidEndpointUrl (config error). All are observability issues,
+                    // not reasons to discard a successful routing decision.
+                    if let Err(e) = self
+                        .selector
                         .health_checker()
                         .mark_success(endpoint.name())
                         .await
-                        .map_err(|e| {
-                            self.metrics.health_tracking_failure();
+                    {
+                        self.metrics.health_tracking_failure();
 
-                            match &e {
-                                HealthError::UnknownEndpoint(name) => {
-                                    tracing::error!(
-                                        endpoint_name = %endpoint.name(),
-                                        unknown_name = %name,
-                                        target_model = ?target_model,
-                                        attempt = attempt,
-                                        "DEFENSIVE: mark_success failed in LLM router - failing to expose issue"
-                                    );
-                                }
-                                HealthError::HttpClientCreationFailed(msg) => {
-                                    tracing::error!(
-                                        endpoint_name = %endpoint.name(),
-                                        error = %msg,
-                                        target_model = ?target_model,
-                                        attempt = attempt,
-                                        "SYSTEMIC: HTTP client creation failed in LLM router - failing to expose issue"
-                                    );
-                                }
-                                HealthError::InvalidEndpointUrl { endpoint, base_url, details } => {
-                                    tracing::error!(
-                                        endpoint = %endpoint,
-                                        base_url = %base_url,
-                                        details = %details,
-                                        attempt = attempt,
-                                        "CONFIGURATION ERROR: Invalid endpoint URL in LLM router - failing to expose issue"
-                                    );
-                                }
-                            }
-
-                            AppError::HealthTracking(e)
-                        })?;
+                        tracing::warn!(
+                            endpoint_name = %endpoint.name(),
+                            error = %e,
+                            target_model = ?target_model,
+                            attempt = attempt,
+                            "Health tracking skipped: {} (router continues with successful routing decision)",
+                            e
+                        );
+                    }
 
                     tracing::info!(
                         endpoint_name = %endpoint.name(),
@@ -519,50 +498,30 @@ impl LlmBasedRouter {
                         "Router query failed with transient error, marking endpoint and retrying"
                     );
 
-                    // DEFENSIVE: mark_failure should never fail in normal operation because endpoint
-                    // names come from ModelSelector which only returns valid endpoints. However, we check
-                    // explicitly to catch rare edge cases (race conditions, config reload mid-request, or bugs).
+                    // Health tracking is observability infrastructure, not core functionality.
+                    // If mark_failure fails, log warning but DON'T fail the request - we can still
+                    // retry with other endpoints. This matches chat handler behavior (warn and continue,
+                    // don't propagate health tracking errors).
                     //
-                    // If health tracking fails, we propagate the error to expose the issue immediately.
-                    // This matches the chat handler's behavior (fail-fast on health tracking errors).
-                    use crate::models::health::HealthError;
-                    self.selector
+                    // Potential failures: UnknownEndpoint (config reload race), HttpClientCreationFailed
+                    // (TLS issues), InvalidEndpointUrl (config error). All are observability issues,
+                    // not reasons to block retry logic.
+                    if let Err(e) = self
+                        .selector
                         .health_checker()
                         .mark_failure(endpoint.name())
                         .await
-                        .map_err(|health_err| {
-                            self.metrics.health_tracking_failure();
+                    {
+                        self.metrics.health_tracking_failure();
 
-                            match &health_err {
-                                HealthError::UnknownEndpoint(name) => {
-                                    tracing::error!(
-                                        endpoint_name = %endpoint.name(),
-                                        unknown_name = %name,
-                                        attempt = attempt,
-                                        "DEFENSIVE: mark_failure failed in LLM router - failing to expose issue"
-                                    );
-                                }
-                                HealthError::HttpClientCreationFailed(msg) => {
-                                    tracing::error!(
-                                        endpoint_name = %endpoint.name(),
-                                        error = %msg,
-                                        attempt = attempt,
-                                        "SYSTEMIC: HTTP client creation failed in LLM router - failing to expose issue"
-                                    );
-                                }
-                                HealthError::InvalidEndpointUrl { endpoint, base_url, details } => {
-                                    tracing::error!(
-                                        endpoint = %endpoint,
-                                        base_url = %base_url,
-                                        details = %details,
-                                        attempt = attempt,
-                                        "CONFIGURATION ERROR: Invalid endpoint URL in LLM router - failing to expose issue"
-                                    );
-                                }
-                            }
-
-                            AppError::HealthTracking(health_err)
-                        })?;
+                        tracing::warn!(
+                            endpoint_name = %endpoint.name(),
+                            error = %e,
+                            attempt = attempt,
+                            "Health tracking skipped: {} (router continues with retry logic)",
+                            e
+                        );
+                    }
 
                     // Add to exclusion set to prevent retry on same endpoint
                     use crate::models::EndpointName;

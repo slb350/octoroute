@@ -219,26 +219,23 @@ impl TimeoutsConfig {
     ///
     /// Returns an error if any timeout is zero or exceeds 300 seconds.
     ///
-    /// # Defensive Validation (Sanity Bounds)
+    /// # Configuration Sanity Check
     ///
-    /// The upper bound check (timeout > 300) provides additional validation beyond
-    /// Serde's type checking. Even if deserialization succeeds (value is u64), this
-    /// rejects unreasonable values (>5 minutes) that likely indicate:
-    /// - Config errors (typo: user meant 30 but typed 3000)
-    /// - Unit confusion (user thought milliseconds, not seconds)
-    /// - Arithmetic overflow risk (u64 seconds → milliseconds multiplication)
+    /// The 300-second (5-minute) upper bound enforces reasonable timeout values:
+    /// - Prevents typos (e.g., 3000 instead of 30 seconds)
+    /// - Catches unit confusion (milliseconds vs seconds)
+    /// - Ensures timely failure detection (5+ minute timeouts hide issues)
     ///
-    /// Extreme values like `u64::MAX` (18446744073709551615) would also fail this check,
-    /// preventing arithmetic overflow in downstream timeout calculations.
-    ///
-    /// This is defensive programming, not defense-in-depth security layering.
+    /// This is a **configuration policy**, not a technical limitation. Values above
+    /// 300 seconds are rejected to maintain predictable system behavior and prevent
+    /// excessive resource holding during network issues.
     pub fn new(
         fast: Option<u64>,
         balanced: Option<u64>,
         deep: Option<u64>,
     ) -> crate::error::AppResult<Self> {
         // Validate each timeout (0, 300] seconds
-        // NOTE: Upper bound also prevents u64::MAX and other extreme values
+        // NOTE: Upper bound enforces configuration policy (5-minute max)
         for (tier_name, timeout_opt) in [("fast", fast), ("balanced", balanced), ("deep", deep)] {
             if let Some(timeout) = timeout_opt {
                 if timeout == 0 {

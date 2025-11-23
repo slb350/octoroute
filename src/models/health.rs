@@ -27,6 +27,24 @@ pub enum BackgroundTaskStatus {
     PermanentlyFailed,
 }
 
+/// Per-endpoint health tracking failure information
+///
+/// Tracks persistent failures in health tracking operations (mark_success, mark_failure)
+/// to provide operators with visibility into observability system degradation.
+#[derive(Debug, Clone)]
+pub struct HealthTrackingFailure {
+    /// Name of the endpoint experiencing tracking failures
+    pub endpoint_name: String,
+    /// Number of consecutive tracking failures for this endpoint
+    pub consecutive_failures: u32,
+    /// The last error message encountered
+    pub last_error: String,
+    /// When the last tracking failure occurred
+    pub last_failure_time: Instant,
+}
+
+const MAX_TRACKED_FAILURES: usize = 10; // Limit to prevent unbounded growth
+
 /// Metrics for monitoring the health checking system itself
 ///
 /// Tracks the background task's health to enable external monitoring
@@ -45,6 +63,10 @@ struct HealthMetricsState {
     restart_count: u32,
     /// When the background task last failed (if applicable)
     last_failure_time: Option<Instant>,
+    /// Per-endpoint health tracking failures
+    /// Key: endpoint name, Value: tracking failure info
+    /// Limited to MAX_TRACKED_FAILURES entries (LRU eviction)
+    tracking_failures: HashMap<String, HealthTrackingFailure>,
 }
 
 impl Default for HealthMetrics {
@@ -62,6 +84,7 @@ impl HealthMetrics {
                 background_task_status: BackgroundTaskStatus::Running,
                 restart_count: 0,
                 last_failure_time: None,
+                tracking_failures: HashMap::new(),
             })),
         }
     }
@@ -154,6 +177,64 @@ impl HealthMetrics {
             // This prevents false negatives during startup before first health check completes
             state.background_task_status == BackgroundTaskStatus::Running
         }
+    }
+
+    /// Record a health tracking failure for an endpoint
+    ///
+    /// Tracks consecutive failures to provide operators with visibility into
+    /// observability system degradation. Limited to MAX_TRACKED_FAILURES entries.
+    pub async fn record_tracking_failure(&self, endpoint_name: &str, error_message: &str) {
+        let mut state = self.state.write().await;
+
+        state
+            .tracking_failures
+            .entry(endpoint_name.to_string())
+            .and_modify(|f| {
+                f.consecutive_failures += 1;
+                f.last_error = error_message.to_string();
+                f.last_failure_time = Instant::now();
+            })
+            .or_insert(HealthTrackingFailure {
+                endpoint_name: endpoint_name.to_string(),
+                consecutive_failures: 1,
+                last_error: error_message.to_string(),
+                last_failure_time: Instant::now(),
+            });
+
+        // Enforce MAX_TRACKED_FAILURES limit using LRU eviction
+        // Remove oldest entry if we exceed the limit
+        if state.tracking_failures.len() > MAX_TRACKED_FAILURES
+            && let Some(oldest_key) = state
+                .tracking_failures
+                .iter()
+                .min_by_key(|(_, v)| v.last_failure_time)
+                .map(|(k, _)| k.clone())
+        {
+            state.tracking_failures.remove(&oldest_key);
+        }
+    }
+
+    /// Clear tracking failures for an endpoint (called on successful tracking operation)
+    pub async fn clear_tracking_failure(&self, endpoint_name: &str) {
+        let mut state = self.state.write().await;
+        state.tracking_failures.remove(endpoint_name);
+    }
+
+    /// Get all current health tracking failures
+    ///
+    /// Returns a snapshot of all endpoints currently experiencing health tracking issues.
+    /// Used by /health endpoint to expose tracking failures to operators.
+    pub async fn get_tracking_failures(&self) -> Vec<HealthTrackingFailure> {
+        let state = self.state.read().await;
+        state.tracking_failures.values().cloned().collect()
+    }
+
+    /// Check if there are any health tracking failures
+    ///
+    /// Returns true if any endpoints are experiencing health tracking issues.
+    pub async fn has_tracking_failures(&self) -> bool {
+        let state = self.state.read().await;
+        !state.tracking_failures.is_empty()
     }
 }
 
@@ -649,15 +730,18 @@ impl HealthChecker {
 
                         match &e {
                             HealthError::HttpClientCreationFailed(msg) => {
-                                // NOTE: This code path should be unreachable as mark_success
-                                // only returns UnknownEndpoint errors. However, for defensive
-                                // programming, log and continue instead of panicking.
+                                // SYSTEMIC ERROR: HTTP client creation failed (TLS config, resource exhaustion).
+                                // This error originates from check_endpoint() when reqwest::Client::builder().build()
+                                // fails. It indicates a system-wide issue affecting ALL endpoints.
+                                //
+                                // Response: Log error, surface via metrics, continue checking other endpoints
+                                // (they may also fail, but we want complete failure visibility).
                                 tracing::error!(
                                     endpoint_name = %endpoint.name(),
                                     error = %msg,
-                                    "HTTP client creation failed during health tracking. \
-                                    This error path should be unreachable - mark_success doesn't return this error. \
-                                    Continuing to check other endpoints."
+                                    "SYSTEMIC: HTTP client creation failed during health check. \
+                                    This indicates TLS configuration issues or resource exhaustion. \
+                                    Continuing to check other endpoints for complete visibility."
                                 );
                                 continue;
                             }
@@ -697,15 +781,18 @@ impl HealthChecker {
 
                         match &e {
                             HealthError::HttpClientCreationFailed(msg) => {
-                                // NOTE: This code path should be unreachable as mark_failure
-                                // only returns UnknownEndpoint errors. However, for defensive
-                                // programming, log and continue instead of panicking.
+                                // SYSTEMIC ERROR: HTTP client creation failed (TLS config, resource exhaustion).
+                                // This error originates from check_endpoint() when reqwest::Client::builder().build()
+                                // fails. It indicates a system-wide issue affecting ALL endpoints.
+                                //
+                                // Response: Log error, surface via metrics, continue checking other endpoints
+                                // (they may also fail, but we want complete failure visibility).
                                 tracing::error!(
                                     endpoint_name = %endpoint.name(),
                                     error = %msg,
-                                    "HTTP client creation failed during health tracking. \
-                                    This error path should be unreachable - mark_failure doesn't return this error. \
-                                    Continuing to check other endpoints."
+                                    "SYSTEMIC: HTTP client creation failed during health check. \
+                                    This indicates TLS configuration issues or resource exhaustion. \
+                                    Continuing to check other endpoints for complete visibility."
                                 );
                                 continue;
                             }
