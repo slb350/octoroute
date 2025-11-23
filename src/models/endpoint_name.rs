@@ -97,4 +97,13 @@ impl From<&str> for EndpointName {
 }
 
 /// Type alias for exclusion sets used in retry logic
+///
+/// **IMPORTANT**: Exclusions are request-scoped, NOT global. An ExclusionSet
+/// exists only for the duration of a single request (function call) and is
+/// discarded when the function returns. Endpoints excluded during one request's
+/// retries are available again for the next request.
+///
+/// This prevents retry loops from hitting the same failed endpoint repeatedly
+/// within a single request, while allowing the health checker to independently
+/// track endpoint health and recover failed endpoints across requests.
 pub type ExclusionSet = HashSet<EndpointName>;
