@@ -156,8 +156,8 @@ pub enum AppError {
     /// Health tracking error (mark_success/mark_failure failures)
     ///
     /// Preserves the original HealthError type instead of converting to string,
-    /// enabling proper error handling and debugging. The #[from] attribute
-    /// automatically implements From<HealthError> for AppError.
+    /// enabling proper error handling and debugging. The `#[from]` attribute
+    /// automatically implements `From<HealthError>` for AppError.
     #[error(transparent)]
     HealthTracking(#[from] crate::models::health::HealthError),
 
