@@ -317,6 +317,9 @@ pub async fn handler(
     // NOTE: record_request() counts routing decisions, NOT successful responses.
     //       record_model_invocation() (called later on success) counts actual model queries.
     //       This distinction allows tracking routing overhead separately from query success rate.
+    //
+    // Collect warnings from metrics recording failures to surface to user
+    let mut metrics_warnings = Vec::new();
     {
         let metrics = state.metrics();
 
@@ -331,7 +334,7 @@ pub async fn handler(
             RoutingStrategy::Llm => crate::metrics::Strategy::Llm,
         };
 
-        // Log-and-continue on metrics recording errors (observability should never break requests)
+        // Surface metrics recording errors as warnings (not fatal - request continues)
         // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
         // Errors can only occur from Prometheus internal issues (registry problems, etc.).
         if let Err(e) = metrics.record_request(tier_enum, strategy_enum) {
@@ -343,13 +346,15 @@ pub async fn handler(
                 error = %e,
                 tier = ?tier_enum,
                 strategy = ?strategy_enum,
-                "Metrics recording failed (non-fatal) - incremented failure counter: {}. \
-                Request will continue. Check /health for metrics_recording_failures_total count. \
-                This indicates an internal Prometheus error (not a cardinality issue). \
-                Monitor this error - frequent occurrence requires investigation.",
+                "Metrics recording failed - surfacing to user as warning: {}",
                 e
             );
-            // DO NOT return error - metrics are non-critical
+
+            metrics_warnings.push(format!(
+                "Metrics recording failure (record_request): {}. Observability may be degraded. \
+                Check /health endpoint for metrics_recording_failures_total count.",
+                e
+            ));
         }
 
         if let Err(e) = metrics.record_routing_duration(strategy_enum, routing_duration_ms) {
@@ -361,13 +366,14 @@ pub async fn handler(
                 error = %e,
                 strategy = ?strategy_enum,
                 duration_ms = routing_duration_ms,
-                "Metrics recording failed (non-fatal) - incremented failure counter: {}. \
-                Request will continue. Check /health for metrics_recording_failures_total count. \
-                This indicates an internal Prometheus error (not a cardinality issue). \
-                Monitor this error - frequent occurrence requires investigation.",
+                "Metrics recording failed - surfacing to user as warning: {}",
                 e
             );
-            // DO NOT return error - metrics are non-critical
+
+            metrics_warnings.push(format!(
+                "Metrics recording failure (record_routing_duration): {}. Observability may be degraded.",
+                e
+            ));
         }
     }
 
@@ -538,8 +544,47 @@ pub async fn handler(
                     "Request completed successfully"
                 );
 
-                // Propagate warnings from routing decision to response
-                let response = if decision.warnings().is_empty() {
+                // Record successful model invocation BEFORE constructing response
+                // NOTE: This is only recorded on SUCCESS, unlike record_request() which is
+                //       recorded before the query attempt. This allows tracking success rate:
+                //       success_rate = model_invocations_total / requests_total
+                //
+                // Moved here (before response construction) so metrics warnings can be
+                // included in the response warnings field.
+                {
+                    let metrics = state.metrics();
+                    let tier_enum = match decision.target() {
+                        TargetModel::Fast => crate::metrics::Tier::Fast,
+                        TargetModel::Balanced => crate::metrics::Tier::Balanced,
+                        TargetModel::Deep => crate::metrics::Tier::Deep,
+                    };
+
+                    // Surface metrics recording errors as warnings
+                    // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
+                    if let Err(e) = metrics.record_model_invocation(tier_enum) {
+                        // Track the failure for monitoring
+                        metrics.metrics_recording_failure();
+
+                        tracing::error!(
+                            request_id = %request_id,
+                            error = %e,
+                            tier = ?tier_enum,
+                            "Metrics recording failed - surfacing to user as warning: {}",
+                            e
+                        );
+
+                        metrics_warnings.push(format!(
+                            "Metrics recording failure (record_model_invocation): {}. Observability may be degraded.",
+                            e
+                        ));
+                    }
+                }
+
+                // Merge warnings from routing decision and metrics recording
+                let mut all_warnings = metrics_warnings;
+                all_warnings.extend(decision.warnings().iter().cloned());
+
+                let response = if all_warnings.is_empty() {
                     ChatResponse::new(
                         response_text,
                         &endpoint,
@@ -552,41 +597,9 @@ pub async fn handler(
                         &endpoint,
                         decision.target(),
                         decision.strategy(),
-                        decision.warnings().to_vec(),
+                        all_warnings,
                     )
                 };
-
-                // Record successful model invocation
-                // NOTE: This is only recorded on SUCCESS, unlike record_request() which is
-                //       recorded before the query attempt. This allows tracking success rate:
-                //       success_rate = model_invocations_total / requests_total
-                {
-                    let metrics = state.metrics();
-                    let tier_enum = match decision.target() {
-                        TargetModel::Fast => crate::metrics::Tier::Fast,
-                        TargetModel::Balanced => crate::metrics::Tier::Balanced,
-                        TargetModel::Deep => crate::metrics::Tier::Deep,
-                    };
-
-                    // Log-and-continue on metrics recording errors (observability should never break requests)
-                    // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
-                    if let Err(e) = metrics.record_model_invocation(tier_enum) {
-                        // Track the failure for monitoring
-                        metrics.metrics_recording_failure();
-
-                        tracing::error!(
-                            request_id = %request_id,
-                            error = %e,
-                            tier = ?tier_enum,
-                            "Metrics recording failed (non-fatal) - incremented failure counter: {}. \
-                            Request will continue. Check /health for metrics_recording_failures_total count. \
-                            This indicates an internal Prometheus error (not a cardinality issue). \
-                            Monitor this error - frequent occurrence requires investigation.",
-                            e
-                        );
-                        // DO NOT return error - metrics are non-critical
-                    }
-                }
 
                 return Ok(Json(response));
             }
