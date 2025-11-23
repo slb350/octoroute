@@ -136,6 +136,15 @@ impl HealthMetrics {
         if let Some(last_check) = state.last_successful_check {
             let elapsed = Instant::now().duration_since(last_check);
             if elapsed > Duration::from_secs(HEALTH_CHECK_STALE_THRESHOLD_SECS) {
+                tracing::warn!(
+                    elapsed_seconds = elapsed.as_secs(),
+                    threshold_seconds = HEALTH_CHECK_STALE_THRESHOLD_SECS,
+                    last_check = ?last_check,
+                    "Background health check data is stale (no successful check in {}s, threshold: {}s). \
+                    Health checker may be stalled or overloaded.",
+                    elapsed.as_secs(),
+                    HEALTH_CHECK_STALE_THRESHOLD_SECS
+                );
                 return false; // No successful check in threshold time (2x the interval)
             }
             true // Recent successful check - system is healthy
@@ -600,13 +609,30 @@ impl HealthChecker {
                         if let Some(ref app_metrics) = self.app_metrics {
                             app_metrics.health_tracking_failure();
                         }
-                        tracing::error!(
-                            endpoint_name = %endpoint.name(),
-                            error = %e,
-                            has_metrics = self.app_metrics.is_some(),
-                            "Failed to update health status - this should never happen. \
-                            Failure surfaced via metrics if available."
-                        );
+
+                        match &e {
+                            HealthError::HttpClientCreationFailed(msg) => {
+                                // SYSTEMIC FAILURE: Panic to force operator intervention
+                                tracing::error!(
+                                    error = %msg,
+                                    "FATAL: HTTP client creation failed during health tracking. \
+                                    Cannot continue background health checks. Panicking."
+                                );
+                                panic!(
+                                    "Background health checking cannot continue: HTTP client creation failed. \
+                                    This indicates TLS config error or resource exhaustion: {}",
+                                    msg
+                                );
+                            }
+                            HealthError::UnknownEndpoint(name) => {
+                                // TRANSIENT: Log and continue (may be config reload race)
+                                tracing::error!(
+                                    endpoint_name = %endpoint.name(),
+                                    unknown_name = %name,
+                                    "Health tracking failed: unknown endpoint (may be config reload race)"
+                                );
+                            }
+                        }
                     }
                 }
                 Ok(false) => {
@@ -616,27 +642,47 @@ impl HealthChecker {
                         if let Some(ref app_metrics) = self.app_metrics {
                             app_metrics.health_tracking_failure();
                         }
-                        tracing::error!(
-                            endpoint_name = %endpoint.name(),
-                            error = %e,
-                            has_metrics = self.app_metrics.is_some(),
-                            "Failed to update health status - this should never happen. \
-                            Failure surfaced via metrics if available."
-                        );
+
+                        match &e {
+                            HealthError::HttpClientCreationFailed(msg) => {
+                                // SYSTEMIC FAILURE: Panic to force operator intervention
+                                tracing::error!(
+                                    error = %msg,
+                                    "FATAL: HTTP client creation failed during health tracking. \
+                                    Cannot continue background health checks. Panicking."
+                                );
+                                panic!(
+                                    "Background health checking cannot continue: HTTP client creation failed. \
+                                    This indicates TLS config error or resource exhaustion: {}",
+                                    msg
+                                );
+                            }
+                            HealthError::UnknownEndpoint(name) => {
+                                // TRANSIENT: Log and continue (may be config reload race)
+                                tracing::error!(
+                                    endpoint_name = %endpoint.name(),
+                                    unknown_name = %name,
+                                    "Health tracking failed: unknown endpoint (may be config reload race)"
+                                );
+                            }
+                        }
                     }
                 }
                 Err(HealthError::HttpClientCreationFailed(msg)) => {
-                    // Systemic failure - HTTP client creation failed
-                    // This will affect ALL endpoints, so we log the error and exit early
-                    // rather than marking individual endpoints as failed
+                    // SYSTEMIC FAILURE: HTTP client creation failed
+                    // This will affect ALL endpoints. Panic to force operator intervention.
                     tracing::error!(
                         error = %msg,
-                        "FATAL: HTTP client creation failed. All subsequent health checks \
-                        will fail. This is a systemic issue, not an endpoint-specific problem. \
-                        Background health checking cannot continue."
+                        "FATAL: HTTP client creation failed during endpoint health check. \
+                        All subsequent health checks will fail. This is a systemic issue, \
+                        not an endpoint-specific problem. Background health checking cannot continue. \
+                        Panicking."
                     );
-                    // Exit the loop early - don't check remaining endpoints
-                    return;
+                    panic!(
+                        "Background health checking cannot continue: HTTP client creation failed. \
+                        This indicates TLS config error or resource exhaustion: {}",
+                        msg
+                    );
                 }
                 Err(e) => {
                     // Other errors (currently none, but future-proofing)

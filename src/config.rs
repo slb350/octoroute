@@ -360,9 +360,35 @@ impl Config {
 
         // Phase 1: Read file (preserves io::Error context)
         let content = std::fs::read_to_string(path.as_ref()).map_err(|source| {
+            let remediation = match source.kind() {
+                std::io::ErrorKind::NotFound => {
+                    let current_dir = std::env::current_dir()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|_| "<unknown>".to_string());
+                    format!(
+                        "\nFile not found. Check that:\n\
+                        1. Path '{}' is correct\n\
+                        2. File exists and is readable\n\
+                        3. Current working directory is: {}",
+                        path_display, current_dir
+                    )
+                }
+                std::io::ErrorKind::PermissionDenied => {
+                    format!(
+                        "\nPermission denied. Check that:\n\
+                        1. File '{}' has read permissions (chmod +r)\n\
+                        2. Parent directories have execute permissions (chmod +x)\n\
+                        3. Process runs as user with file access",
+                        path_display
+                    )
+                }
+                _ => String::new(),
+            };
+
             crate::error::AppError::ConfigFileRead {
                 path: path_display.clone(),
                 source,
+                remediation,
             }
         })?;
 

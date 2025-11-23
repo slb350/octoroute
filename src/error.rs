@@ -92,11 +92,12 @@ pub enum AppError {
     Config(String),
 
     /// Failed to read config file from filesystem
-    #[error("Failed to read config file '{path}': {source}")]
+    #[error("Failed to read config file '{path}': {source}\n{remediation}")]
     ConfigFileRead {
         path: String,
         #[source]
         source: std::io::Error,
+        remediation: String,
     },
 
     /// Failed to parse TOML configuration
