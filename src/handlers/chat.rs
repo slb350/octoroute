@@ -703,23 +703,15 @@ pub async fn handler(
             The retry loop has a missing error assignment path."
         );
 
-        // In debug mode, panic to catch bugs during development
-        // In release mode, return defensive error for graceful degradation
-        if cfg!(debug_assertions) {
-            panic!(
-                "BUG: Retry loop exhausted with last_error = None. \
-                Indicates missing error assignment in retry logic - fix immediately."
-            );
-        }
-
-        AppError::Internal(format!(
-            "DEFENSIVE: All {} retry attempts exhausted but no error recorded. \
-            Tier: {:?}, Failed endpoints: {:?}. \
-            Indicates missing error assignment in retry logic - please report this bug.",
-            MAX_RETRIES,
+        // ALWAYS panic - bugs should be exposed immediately in production
+        // Silent degradation masks programming errors and prevents diagnosis
+        panic!(
+            "BUG: Retry loop exhausted with last_error = None. \
+            Indicates missing error assignment in retry logic. \
+            Tier: {:?}, Failed endpoints: {:?}",
             decision.target(),
             failed_endpoints
-        ))
+        );
     }))
 }
 
