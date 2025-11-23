@@ -730,11 +730,8 @@ router_tier = "fast"  # Router uses Fast tier, which will be exhausted
     );
 
     assert!(
-        error_msg.contains("timeout")
-            || error_msg.contains("unreachable")
-            || error_msg.contains("fail")
-            || error_msg.contains("endpoint"),
-        "Error should explain what went wrong, got: {}",
+        error_msg.contains("timed out"),
+        "Error should explain timeout failure, got: {}",
         error_msg
     );
 
