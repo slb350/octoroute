@@ -130,13 +130,12 @@ impl HealthMetrics {
             if elapsed > Duration::from_secs(HEALTH_CHECK_STALE_THRESHOLD_SECS) {
                 return false; // No successful check in threshold time (2x the interval)
             }
+            true // Recent successful check - system is healthy
         } else {
-            // No successful check yet - give it some time to start
-            // This is only false if it's been running for a while with no checks
-            return state.background_task_status == BackgroundTaskStatus::Running;
+            // No successful check yet - cannot verify health
+            // Return false to avoid false positive (reporting healthy before any verification)
+            false
         }
-
-        true
     }
 }
 
@@ -992,5 +991,27 @@ router_tier = "balanced"
         metrics.record_successful_check().await;
         assert_eq!(metrics.status().await, BackgroundTaskStatus::Running);
         assert!(metrics.is_background_task_healthy().await);
+    }
+
+    /// Test that health returns false when no successful checks have completed yet
+    ///
+    /// **RED PHASE**: This test will fail because is_background_task_healthy()
+    /// currently returns true when the task is Running but no checks have completed.
+    ///
+    /// **Issue**: False positive - system reports healthy before any actual health
+    /// verification has occurred.
+    #[tokio::test]
+    async fn test_health_returns_false_when_no_checks_yet() {
+        let metrics = HealthMetrics::new();
+
+        // Initially, task is Running but no checks have completed
+        assert_eq!(metrics.status().await, BackgroundTaskStatus::Running);
+
+        // Should return false because we haven't verified health yet
+        // (last_successful_check is None)
+        assert!(
+            !metrics.is_background_task_healthy().await,
+            "Should return false when no successful checks have completed yet"
+        );
     }
 }
