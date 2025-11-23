@@ -43,24 +43,24 @@ pub trait LlmRouter: Send + Sync {
 /// that can be resolved by trying a different endpoint.
 #[derive(Debug, thiserror::Error)]
 pub enum LlmRouterError {
-    /// Empty response from router LLM (systemic - no retry)
+    /// Empty response from LLM router (systemic - no retry)
     #[error(
-        "Router LLM returned empty response from {endpoint}. \
+        "LLM router returned empty response from {endpoint}. \
          Expected response containing one of: FAST, BALANCED, or DEEP. \
          Possible causes: safety filter activation, API failure, streaming error, or LLM misconfiguration."
     )]
     EmptyResponse { endpoint: String },
 
-    /// Unparseable response from router LLM (systemic - no retry)
-    #[error("Router LLM returned unparseable response ({response_length} bytes): {response}")]
+    /// Unparseable response from LLM router (systemic - no retry)
+    #[error("LLM router returned unparseable response ({response_length} bytes): {response}")]
     UnparseableResponse {
         endpoint: String,
         response: String,
         response_length: usize,
     },
 
-    /// Refusal or error from router LLM (systemic - no retry)
-    #[error("Router LLM refused or returned error: {message}")]
+    /// Refusal or error from LLM router (systemic - no retry)
+    #[error("LLM router refused or returned error: {message}")]
     Refusal { endpoint: String, message: String },
 
     /// Response size limit exceeded (systemic - no retry)
@@ -756,7 +756,7 @@ impl LlmBasedRouter {
                 endpoint_url = %endpoint.base_url(),
                 attempt = attempt,
                 max_retries = max_retries,
-                "Router LLM returned empty response (0 text blocks received) - \
+                "LLM router returned empty response (0 text blocks received) - \
                  cannot determine routing decision (attempt {}/{})",
                 attempt, max_retries
             );
@@ -898,7 +898,7 @@ impl LlmBasedRouter {
         if normalized.is_empty() {
             tracing::error!(
                 response = %response,
-                "Router LLM returned empty response - cannot determine routing decision"
+                "LLM router returned empty response - cannot determine routing decision"
             );
             return Err(AppError::LlmRouting(LlmRouterError::EmptyResponse {
                 endpoint: "router".to_string(),
