@@ -457,11 +457,15 @@ mod tests {
         let metrics = Metrics::new().expect("Failed to create metrics");
 
         // Record at least one value for each metric so they appear in the registry
-        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        metrics
+            .record_request(Tier::Fast, Strategy::Rule)
+            .expect("Test operation should succeed");
         metrics
             .record_routing_duration(Strategy::Rule, 1.0)
-            .unwrap();
-        metrics.record_model_invocation(Tier::Fast).unwrap();
+            .expect("Test operation should succeed");
+        metrics
+            .record_model_invocation(Tier::Fast)
+            .expect("Test operation should succeed");
         metrics.health_tracking_failure(); // Increment health tracking failures
         metrics.metrics_recording_failure(); // Increment metrics recording failures
 
@@ -483,15 +487,19 @@ mod tests {
 
     #[test]
     fn test_record_request_increments_counter() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
-        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
-        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        metrics
+            .record_request(Tier::Fast, Strategy::Rule)
+            .expect("Test operation should succeed");
+        metrics
+            .record_request(Tier::Fast, Strategy::Rule)
+            .expect("Test operation should succeed");
         metrics
             .record_request(Tier::Balanced, Strategy::Llm)
-            .unwrap();
+            .expect("Test operation should succeed");
 
-        let output = metrics.gather().unwrap();
+        let output = metrics.gather().expect("Failed to gather test metrics");
         assert!(output.contains("octoroute_requests_total"));
         assert!(output.contains("tier=\"fast\""));
         assert!(output.contains("strategy=\"rule\""));
@@ -499,19 +507,19 @@ mod tests {
 
     #[test]
     fn test_record_routing_duration_observes_histogram() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         metrics
             .record_routing_duration(Strategy::Rule, 0.5)
-            .unwrap();
+            .expect("Test operation should succeed");
         metrics
             .record_routing_duration(Strategy::Rule, 1.2)
-            .unwrap();
+            .expect("Test operation should succeed");
         metrics
             .record_routing_duration(Strategy::Llm, 250.0)
-            .unwrap();
+            .expect("Test operation should succeed");
 
-        let output = metrics.gather().unwrap();
+        let output = metrics.gather().expect("Failed to gather test metrics");
         assert!(output.contains("octoroute_routing_duration_ms"));
         assert!(output.contains("strategy=\"rule\""));
         assert!(output.contains("strategy=\"llm\""));
@@ -519,13 +527,19 @@ mod tests {
 
     #[test]
     fn test_record_model_invocation_increments_counter() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
-        metrics.record_model_invocation(Tier::Fast).unwrap();
-        metrics.record_model_invocation(Tier::Fast).unwrap();
-        metrics.record_model_invocation(Tier::Balanced).unwrap();
+        metrics
+            .record_model_invocation(Tier::Fast)
+            .expect("Test operation should succeed");
+        metrics
+            .record_model_invocation(Tier::Fast)
+            .expect("Test operation should succeed");
+        metrics
+            .record_model_invocation(Tier::Balanced)
+            .expect("Test operation should succeed");
 
-        let output = metrics.gather().unwrap();
+        let output = metrics.gather().expect("Failed to gather test metrics");
         assert!(output.contains("octoroute_model_invocations_total"));
         assert!(output.contains("tier=\"fast\""));
         assert!(output.contains("tier=\"balanced\""));
@@ -533,10 +547,12 @@ mod tests {
 
     #[test]
     fn test_gather_produces_prometheus_text_format() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
-        metrics.record_request(Tier::Deep, Strategy::Rule).unwrap();
-        let output = metrics.gather().unwrap();
+        metrics
+            .record_request(Tier::Deep, Strategy::Rule)
+            .expect("Test operation should succeed");
+        let output = metrics.gather().expect("Failed to gather test metrics");
 
         // Verify Prometheus text format structure
         assert!(output.contains("# HELP octoroute_requests_total"));
@@ -546,29 +562,31 @@ mod tests {
 
     #[test]
     fn test_metrics_is_clonable() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
         let cloned = metrics.clone();
 
         // Record on original
-        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        metrics
+            .record_request(Tier::Fast, Strategy::Rule)
+            .expect("Test operation should succeed");
 
         // Verify clone sees the same metrics (shared registry)
-        let output = cloned.gather().unwrap();
+        let output = cloned.gather().expect("Failed to gather test metrics");
         assert!(output.contains("octoroute_requests_total"));
     }
 
     #[test]
     fn test_histogram_buckets_configured() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         metrics
             .record_routing_duration(Strategy::Rule, 0.1)
-            .unwrap();
+            .expect("Test operation should succeed");
         metrics
             .record_routing_duration(Strategy::Rule, 100.0)
-            .unwrap();
+            .expect("Test operation should succeed");
 
-        let output = metrics.gather().unwrap();
+        let output = metrics.gather().expect("Failed to gather test metrics");
 
         // Verify histogram buckets exist
         assert!(output.contains("le=\"0.1\""));
@@ -578,19 +596,23 @@ mod tests {
 
     #[test]
     fn test_multiple_label_combinations() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         // Record different combinations
-        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        metrics
+            .record_request(Tier::Fast, Strategy::Rule)
+            .expect("Test operation should succeed");
         metrics
             .record_request(Tier::Balanced, Strategy::Rule)
-            .unwrap();
+            .expect("Test operation should succeed");
         metrics
             .record_request(Tier::Balanced, Strategy::Llm)
-            .unwrap();
-        metrics.record_request(Tier::Deep, Strategy::Rule).unwrap();
+            .expect("Test operation should succeed");
+        metrics
+            .record_request(Tier::Deep, Strategy::Rule)
+            .expect("Test operation should succeed");
 
-        let output = metrics.gather().unwrap();
+        let output = metrics.gather().expect("Failed to gather test metrics");
 
         // All combinations should be present (Prometheus may format with spaces)
         assert!(output.contains("tier=\"fast\"") && output.contains("strategy=\"rule\""));
@@ -608,26 +630,29 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        let metrics = Arc::new(Metrics::new().unwrap());
+        let metrics = Arc::new(Metrics::new().expect("Failed to create test metrics"));
         let mut handles = vec![];
 
         // Spawn multiple threads recording metrics
         for i in 0..10 {
             let m = Arc::clone(&metrics);
             let handle = thread::spawn(move || {
-                m.record_request(Tier::Fast, Strategy::Rule).unwrap();
-                m.record_routing_duration(Strategy::Rule, i as f64).unwrap();
-                m.record_model_invocation(Tier::Fast).unwrap();
+                m.record_request(Tier::Fast, Strategy::Rule)
+                    .expect("Test operation should succeed");
+                m.record_routing_duration(Strategy::Rule, i as f64)
+                    .expect("Test operation should succeed");
+                m.record_model_invocation(Tier::Fast)
+                    .expect("Test operation should succeed");
             });
             handles.push(handle);
         }
 
         for handle in handles {
-            handle.join().unwrap();
+            handle.join().expect("Test operation should succeed");
         }
 
         // Verify metrics were recorded
-        let output = metrics.gather().unwrap();
+        let output = metrics.gather().expect("Failed to gather test metrics");
         assert!(output.contains("octoroute_requests_total"));
         assert!(output.contains("octoroute_routing_duration_ms"));
         assert!(output.contains("octoroute_model_invocations_total"));
@@ -642,7 +667,7 @@ mod tests {
 
     #[test]
     fn test_gather_handles_extreme_values_without_panic() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         // Record extreme histogram values
         for _ in 0..100 {
@@ -665,19 +690,19 @@ mod tests {
 
     #[test]
     fn test_gather_handles_large_metric_count() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         // Record many metrics to test encoding of large output
         for i in 0..1000 {
             metrics
                 .record_routing_duration(Strategy::Rule, i as f64 / 10.0)
-                .unwrap();
+                .expect("Test operation should succeed");
         }
 
         let result = metrics.gather();
         assert!(result.is_ok(), "Should handle large metric count");
 
-        let output = result.unwrap();
+        let output = result.expect("Test operation should succeed");
         assert!(!output.is_empty(), "Output should not be empty");
         assert!(output.contains("octoroute_routing_duration_ms"));
         // Verify histogram contains count data
@@ -688,7 +713,7 @@ mod tests {
 
     #[test]
     fn test_routing_duration_histogram_edge_values() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         // Valid boundary values
         assert!(metrics.record_routing_duration(Strategy::Rule, 0.0).is_ok());
@@ -724,7 +749,7 @@ mod tests {
 
     #[test]
     fn test_histogram_values_at_bucket_boundaries() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         // Test values exactly at bucket boundaries
         // Buckets: [0.1, 0.5, 1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0]
@@ -740,7 +765,7 @@ mod tests {
             );
         }
 
-        let output = metrics.gather().unwrap();
+        let output = metrics.gather().expect("Failed to gather test metrics");
         assert!(output.contains("le=\"0.1\""));
         assert!(output.contains("le=\"1\""));
         assert!(output.contains("le=\"100\""));
@@ -754,7 +779,7 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        let metrics = Arc::new(Metrics::new().unwrap());
+        let metrics = Arc::new(Metrics::new().expect("Failed to create test metrics"));
         let mut handles = vec![];
 
         // Spawn threads recording different label combinations
@@ -771,9 +796,12 @@ mod tests {
                 let strategy = strategies[i % 2];
 
                 // Each thread may create a new label combination
-                m.record_request(tier, strategy).unwrap();
-                m.record_routing_duration(strategy, i as f64).unwrap();
-                m.record_model_invocation(tier).unwrap();
+                m.record_request(tier, strategy)
+                    .expect("Test operation should succeed");
+                m.record_routing_duration(strategy, i as f64)
+                    .expect("Test operation should succeed");
+                m.record_model_invocation(tier)
+                    .expect("Test operation should succeed");
             });
             handles.push(handle);
         }
@@ -783,7 +811,7 @@ mod tests {
         }
 
         // Verify all label combinations were recorded without corruption
-        let output = metrics.gather().unwrap();
+        let output = metrics.gather().expect("Failed to gather test metrics");
 
         // Should contain all tier values
         assert!(output.contains("tier=\"fast\""));
@@ -873,37 +901,45 @@ mod tests {
     fn test_metrics_with_type_safe_enums() {
         use super::{Strategy, Tier};
 
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         // Now we pass ENUMS, not strings - impossible to typo!
-        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        metrics
+            .record_request(Tier::Fast, Strategy::Rule)
+            .expect("Test operation should succeed");
         metrics
             .record_request(Tier::Balanced, Strategy::Llm)
-            .unwrap();
+            .expect("Test operation should succeed");
 
         // Test Hybrid suppression behavior: Calling record_request with Strategy::Hybrid
         // succeeds (returns Ok) but does NOT create a metric (see metric_label() returning None).
         // This test verifies that Hybrid can be safely passed without inflating cardinality.
         metrics
             .record_request(Tier::Deep, Strategy::Hybrid)
-            .unwrap(); // Succeeds but suppressed - no metric created
+            .expect("Test operation should succeed"); // Succeeds but suppressed - no metric created
 
         metrics
             .record_routing_duration(Strategy::Rule, 1.0)
-            .unwrap();
+            .expect("Test operation should succeed");
         metrics
             .record_routing_duration(Strategy::Llm, 250.0)
-            .unwrap();
+            .expect("Test operation should succeed");
         // Verify Hybrid suppression also works for histogram metrics
         metrics
             .record_routing_duration(Strategy::Hybrid, 10.0)
-            .unwrap(); // Succeeds but suppressed - no histogram observation created
+            .expect("Test operation should succeed"); // Succeeds but suppressed - no histogram observation created
 
-        metrics.record_model_invocation(Tier::Fast).unwrap();
-        metrics.record_model_invocation(Tier::Balanced).unwrap();
-        metrics.record_model_invocation(Tier::Deep).unwrap();
+        metrics
+            .record_model_invocation(Tier::Fast)
+            .expect("Test operation should succeed");
+        metrics
+            .record_model_invocation(Tier::Balanced)
+            .expect("Test operation should succeed");
+        metrics
+            .record_model_invocation(Tier::Deep)
+            .expect("Test operation should succeed");
 
-        let output = metrics.gather().unwrap();
+        let output = metrics.gather().expect("Failed to gather test metrics");
 
         // Verify correct label values appear
         assert!(output.contains("tier=\"fast\""));
@@ -921,19 +957,25 @@ mod tests {
     fn test_enum_labels_prevent_cardinality_explosion() {
         use super::{Strategy, Tier};
 
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         // OLD BEHAVIOR (strings): These would ALL create separate metrics:
-        // metrics.record_request("fast", "rule").unwrap();   // OK
-        // metrics.record_request("FAST", "rule").unwrap();   // Typo! New metric!
-        // metrics.record_request("Fast", "rule").unwrap();   // Typo! New metric!
-        // metrics.record_request("fasst", "rule").unwrap();  // Typo! New metric!
+        // metrics.record_request("fast", "rule").expect("Test operation should succeed");   // OK
+        // metrics.record_request("FAST", "rule").expect("Test operation should succeed");   // Typo! New metric!
+        // metrics.record_request("Fast", "rule").expect("Test operation should succeed");   // Typo! New metric!
+        // metrics.record_request("fasst", "rule").expect("Test operation should succeed");  // Typo! New metric!
         // Result: 4 separate time series = 4x memory usage
 
         // NEW BEHAVIOR (enums): Only ONE way to express each tier
-        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
-        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
-        metrics.record_request(Tier::Fast, Strategy::Rule).unwrap();
+        metrics
+            .record_request(Tier::Fast, Strategy::Rule)
+            .expect("Test operation should succeed");
+        metrics
+            .record_request(Tier::Fast, Strategy::Rule)
+            .expect("Test operation should succeed");
+        metrics
+            .record_request(Tier::Fast, Strategy::Rule)
+            .expect("Test operation should succeed");
 
         // Result: All three calls increment the SAME metric
         // Maximum possible cardinality: 3 tiers × 2 strategies = 6 combinations
@@ -942,9 +984,9 @@ mod tests {
         // Verify Hybrid meta-strategy suppression prevents cardinality inflation
         metrics
             .record_request(Tier::Deep, Strategy::Hybrid)
-            .unwrap(); // Succeeds but does not create new time series
+            .expect("Test operation should succeed"); // Succeeds but does not create new time series
 
-        let output = metrics.gather().unwrap();
+        let output = metrics.gather().expect("Failed to gather test metrics");
 
         // Only one "fast" variant exists
         let fast_count = output.matches("tier=\"fast\"").count();
@@ -964,7 +1006,7 @@ mod tests {
 
     #[test]
     fn test_histogram_rejects_nan() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         let result = metrics.record_routing_duration(Strategy::Rule, f64::NAN);
         assert!(
@@ -980,7 +1022,7 @@ mod tests {
 
     #[test]
     fn test_histogram_rejects_positive_infinity() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         let result = metrics.record_routing_duration(Strategy::Rule, f64::INFINITY);
         assert!(
@@ -996,7 +1038,7 @@ mod tests {
 
     #[test]
     fn test_histogram_rejects_negative_infinity() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         let result = metrics.record_routing_duration(Strategy::Rule, f64::NEG_INFINITY);
         assert!(
@@ -1007,7 +1049,7 @@ mod tests {
 
     #[test]
     fn test_histogram_rejects_negative_values() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         let result = metrics.record_routing_duration(Strategy::Rule, -1.0);
         assert!(
@@ -1024,7 +1066,7 @@ mod tests {
 
     #[test]
     fn test_histogram_accepts_zero() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         let result = metrics.record_routing_duration(Strategy::Rule, 0.0);
         assert!(
@@ -1035,7 +1077,7 @@ mod tests {
 
     #[test]
     fn test_histogram_accepts_valid_positive_values() {
-        let metrics = Metrics::new().unwrap();
+        let metrics = Metrics::new().expect("Failed to create test metrics");
 
         // Test a range of valid positive values
         let valid_values = [0.1, 1.0, 10.0, 100.0, 1000.0, f64::MAX];
@@ -1057,7 +1099,7 @@ mod tests {
         use std::thread;
         use std::time::Duration;
 
-        let metrics = Arc::new(Metrics::new().unwrap());
+        let metrics = Arc::new(Metrics::new().expect("Failed to create test metrics"));
         let mut handles = vec![];
 
         // Spawn 1000 concurrent tasks recording metrics
@@ -1079,10 +1121,12 @@ mod tests {
                 let strategy = strategies[i % 2];
 
                 // Record multiple metrics per task
-                m.record_request(tier, strategy).unwrap();
+                m.record_request(tier, strategy)
+                    .expect("Test operation should succeed");
                 m.record_routing_duration(strategy, (i % 100) as f64)
-                    .unwrap();
-                m.record_model_invocation(tier).unwrap();
+                    .expect("Test operation should succeed");
+                m.record_model_invocation(tier)
+                    .expect("Test operation should succeed");
             });
             handles.push(handle);
         }
@@ -1107,7 +1151,7 @@ mod tests {
         );
 
         // Verify metrics can still be gathered after high concurrency
-        let output = metrics.gather().unwrap();
+        let output = metrics.gather().expect("Failed to gather test metrics");
 
         // All label combinations should be present
         assert!(output.contains("tier=\"fast\""));
@@ -1133,7 +1177,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::thread;
 
-        let metrics = Arc::new(Metrics::new().unwrap());
+        let metrics = Arc::new(Metrics::new().expect("Failed to create test metrics"));
         let expected_count = Arc::new(AtomicUsize::new(0));
         let mut handles = vec![];
 
@@ -1147,7 +1191,8 @@ mod tests {
             let handle = thread::spawn(move || {
                 // Each task increments the same metric multiple times
                 for _ in 0..INCREMENTS_PER_TASK {
-                    m.record_request(Tier::Fast, Strategy::Rule).unwrap();
+                    m.record_request(Tier::Fast, Strategy::Rule)
+                        .expect("Test operation should succeed");
                     count.fetch_add(1, Ordering::SeqCst);
                 }
             });
@@ -1155,11 +1200,11 @@ mod tests {
         }
 
         for handle in handles {
-            handle.join().unwrap();
+            handle.join().expect("Test operation should succeed");
         }
 
         let expected = expected_count.load(Ordering::SeqCst);
-        let output = metrics.gather().unwrap();
+        let output = metrics.gather().expect("Failed to gather test metrics");
 
         // Parse the output to verify correct count
         // Format: octoroute_requests_total{tier="fast",strategy="rule"} 5000

@@ -802,19 +802,23 @@ log_level = "info"
     #[test]
     fn test_routing_strategy_enum_values() {
         assert_eq!(
-            serde_json::from_str::<RoutingStrategy>(r#""rule""#).unwrap(),
+            serde_json::from_str::<RoutingStrategy>(r#""rule""#)
+                .expect("Test operation should succeed"),
             RoutingStrategy::Rule
         );
         assert_eq!(
-            serde_json::from_str::<RoutingStrategy>(r#""llm""#).unwrap(),
+            serde_json::from_str::<RoutingStrategy>(r#""llm""#)
+                .expect("Test operation should succeed"),
             RoutingStrategy::Llm
         );
         assert_eq!(
-            serde_json::from_str::<RoutingStrategy>(r#""hybrid""#).unwrap(),
+            serde_json::from_str::<RoutingStrategy>(r#""hybrid""#)
+                .expect("Test operation should succeed"),
             RoutingStrategy::Hybrid
         );
         assert_eq!(
-            serde_json::from_str::<RoutingStrategy>(r#""tool""#).unwrap(),
+            serde_json::from_str::<RoutingStrategy>(r#""tool""#)
+                .expect("Test operation should succeed"),
             RoutingStrategy::Tool
         );
     }
@@ -936,7 +940,7 @@ strategy = "llm"
 default_importance = "normal"
 router_tier = "deep"
 "#;
-        let mut config = Config::from_str(config_str).unwrap();
+        let mut config = Config::from_str(config_str).expect("Test operation should succeed");
 
         // Clear deep endpoints to test validation
         config.models.deep.clear();
@@ -1002,7 +1006,7 @@ strategy = "rule"
 
     #[test]
     fn test_config_validation_negative_weight_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.models.fast[0].weight = -1.0; // Invalid: negative weight
 
         let result = config.validate();
@@ -1014,7 +1018,7 @@ strategy = "rule"
 
     #[test]
     fn test_config_validation_zero_weight_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.models.balanced[0].weight = 0.0; // Invalid: zero weight
 
         let result = config.validate();
@@ -1026,7 +1030,7 @@ strategy = "rule"
 
     #[test]
     fn test_config_validation_nan_weight_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.models.deep[0].weight = f64::NAN; // Invalid: NaN weight
 
         let result = config.validate();
@@ -1037,7 +1041,7 @@ strategy = "rule"
 
     #[test]
     fn test_config_validation_zero_max_tokens_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.models.fast[0].max_tokens = 0; // Invalid: zero max_tokens
 
         let result = config.validate();
@@ -1049,7 +1053,7 @@ strategy = "rule"
 
     #[test]
     fn test_config_validation_invalid_base_url_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.models.balanced[0].base_url = "ftp://invalid.com".to_string(); // Invalid: not http/https
 
         let result = config.validate();
@@ -1061,7 +1065,7 @@ strategy = "rule"
 
     #[test]
     fn test_config_validation_missing_protocol_base_url_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.models.deep[0].base_url = "localhost:1234/v1".to_string(); // Invalid: missing protocol
 
         let result = config.validate();
@@ -1073,7 +1077,7 @@ strategy = "rule"
 
     #[test]
     fn test_config_validation_base_url_must_end_with_v1() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.models.fast[0].base_url = "http://localhost:1234".to_string(); // Invalid: missing /v1
 
         let result = config.validate();
@@ -1086,7 +1090,7 @@ strategy = "rule"
 
     #[test]
     fn test_config_validation_zero_timeout_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.server.request_timeout_seconds = 0; // Invalid: zero timeout
 
         let result = config.validate();
@@ -1101,7 +1105,7 @@ strategy = "rule"
 
     #[test]
     fn test_config_validation_excessive_timeout_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.server.request_timeout_seconds = 301; // Invalid: exceeds 300 second limit
 
         let result = config.validate();
@@ -1116,7 +1120,7 @@ strategy = "rule"
 
     #[test]
     fn test_config_validation_valid_timeout_succeeds() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
 
         // Test lower bound (1 second)
         config.server.request_timeout_seconds = 1;
@@ -1235,7 +1239,7 @@ fast = 15
 
     #[test]
     fn test_config_timeout_for_tier_uses_override() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.server.request_timeout_seconds = 30; // Global default
         config.timeouts.fast = Some(15);
         config.timeouts.balanced = Some(45);
@@ -1258,7 +1262,7 @@ fast = 15
 
     #[test]
     fn test_config_timeout_for_tier_uses_global_default() {
-        let config = Config::from_str(TEST_CONFIG).unwrap();
+        let config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         // No per-tier overrides, should use global default (30s)
 
         assert_eq!(
@@ -1277,7 +1281,7 @@ fast = 15
 
     #[test]
     fn test_config_timeout_for_tier_mixed_overrides() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.server.request_timeout_seconds = 40; // Global default
         config.timeouts.fast = Some(20); // Override only fast tier
 
@@ -1424,7 +1428,7 @@ deep = 60
             result.is_ok(),
             "Config parsing should succeed with valid timeouts (1-300)"
         );
-        let config = result.unwrap();
+        let config = result.expect("Test operation should succeed");
         assert_eq!(config.timeouts.fast(), Some(15));
         assert_eq!(config.timeouts.balanced(), Some(30));
         assert_eq!(config.timeouts.deep(), Some(60));
@@ -1467,7 +1471,7 @@ deep = 300
             result.is_ok(),
             "Config parsing should succeed with boundary values 1 and 300"
         );
-        let config = result.unwrap();
+        let config = result.expect("Test operation should succeed");
         assert_eq!(config.timeouts.fast(), Some(1));
         assert_eq!(config.timeouts.deep(), Some(300));
     }
