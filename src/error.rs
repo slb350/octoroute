@@ -87,7 +87,7 @@ impl ModelQueryError {
 /// Main error type for the application
 #[derive(Error, Debug)]
 pub enum AppError {
-    /// Generic configuration error (deprecated - use specific variants below)
+    /// Generic configuration error for cases not covered by specific variants
     #[error("Configuration error: {0}")]
     Config(String),
 

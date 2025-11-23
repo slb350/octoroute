@@ -355,3 +355,148 @@ router_tier = "balanced"
         "Accessor should return Balanced when router_tier='balanced'"
     );
 }
+
+/// Test that concurrent router_tier() reads are safe (no data races)
+///
+/// This test verifies that Config can be safely shared across tokio tasks using Arc,
+/// and that concurrent reads of router_tier() always return the same value.
+///
+/// Addresses PR #4 Medium Priority Issue #14.
+///
+/// **Background**: Multi-threaded Axum handlers share `Arc<Config>` state. If router_tier()
+/// had interior mutability (e.g., lazy initialization), concurrent reads could cause:
+/// - Race conditions (two threads both initializing)
+/// - Inconsistent values returned
+/// - Undefined behavior
+///
+/// **This test verifies**: router_tier() returns a Copy type (TargetModel) with no
+/// interior mutability, so concurrent reads are safe.
+#[tokio::test]
+async fn test_concurrent_router_tier_reads_no_data_race() {
+    use std::sync::Arc;
+
+    let config_toml = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "hybrid"
+default_importance = "normal"
+router_tier = "balanced"
+"#;
+
+    let config: Config = toml::from_str(config_toml).expect("Should parse");
+    let config = Arc::new(config);
+
+    // Spawn 100 concurrent tasks all reading router_tier()
+    let handles: Vec<_> = (0..100)
+        .map(|_| {
+            let config = Arc::clone(&config);
+            tokio::spawn(async move {
+                // Each task reads router_tier() - should always return Balanced
+                config.routing.router_tier()
+            })
+        })
+        .collect();
+
+    // Wait for all tasks and verify all returned Balanced
+    for handle in handles {
+        let tier = handle.await.expect("Task should not panic");
+        assert_eq!(
+            tier,
+            TargetModel::Balanced,
+            "All concurrent reads should return Balanced (no data race)"
+        );
+    }
+}
+
+/// Test that Arc<Config> sharing is safe across threads
+///
+/// This test verifies that Config can be safely shared across OS threads (not just tokio tasks).
+/// This is important for multi-threaded Axum servers where different request handlers may run
+/// on different OS threads.
+#[test]
+fn test_arc_config_sharing_across_threads() {
+    use std::sync::Arc;
+    use std::thread;
+
+    let config_toml = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "llm"
+default_importance = "normal"
+router_tier = "deep"
+"#;
+
+    let config: Config = toml::from_str(config_toml).expect("Should parse");
+    let config = Arc::new(config);
+
+    // Spawn 10 OS threads all reading router_tier()
+    let handles: Vec<_> = (0..10)
+        .map(|_| {
+            let config = Arc::clone(&config);
+            thread::spawn(move || {
+                // Each thread reads router_tier() - should always return Deep
+                config.routing.router_tier()
+            })
+        })
+        .collect();
+
+    // Wait for all threads and verify all returned Deep
+    for handle in handles {
+        let tier = handle.join().expect("Thread should not panic");
+        assert_eq!(
+            tier,
+            TargetModel::Deep,
+            "All concurrent thread reads should return Deep (no data race)"
+        );
+    }
+}

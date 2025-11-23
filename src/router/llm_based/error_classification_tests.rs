@@ -240,8 +240,8 @@ fn test_max_router_response_limit_is_reasonable() {
     // 1KB limit is 100x the expected size - exceeding it indicates LLM malfunction
     //
     // Note: The actual enforcement happens in try_router_query() during streaming
-    // (lines 256-277). When exceeded, it returns ModelQueryFailed error instead
-    // of truncating and continuing to parse.
+    // (checked during while let Some(result) = stream.next() loop). When exceeded,
+    // it returns SizeExceeded error instead of truncating and continuing to parse.
 
     use super::MAX_ROUTER_RESPONSE;
 
@@ -267,7 +267,7 @@ fn test_stream_error_with_partial_response_is_retryable() {
     // encounters an error (timeout, connection lost, etc.).
     //
     // The error message format is "Stream error after X bytes received: <error>"
-    // (see try_router_query lines 468-487).
+    // (see try_router_query stream error handling in the Err(e) match arm).
     //
     // This should be classified as RETRYABLE (transient network/endpoint issue),
     // NOT systemic (LLM malfunction). The LLM was working correctly - the

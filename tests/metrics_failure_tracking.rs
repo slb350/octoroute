@@ -117,3 +117,141 @@ fn test_metrics_recording_failures_in_prometheus_output() {
         output
     );
 }
+
+/// Test that metrics have bounded cardinality (no explosion from dynamic labels)
+///
+/// This test verifies that the type-safe enum approach prevents cardinality explosions.
+/// Addresses PR #4 Medium Priority Issue #13.
+///
+/// **Background**: Prometheus metrics with high-cardinality labels (unbounded unique values)
+/// cause memory exhaustion. For example, if error messages were used as labels:
+/// - "Config file '/path/1' failed" -> series 1
+/// - "Config file '/path/2' failed" -> series 2
+/// - ... 1000 different paths -> 1000 series -> OOM
+///
+/// **This project's defense**: Use type-safe enums for all labels:
+/// - Tier: Fast, Balanced, Deep (3 values)
+/// - Strategy: Rule, Llm (2 values)
+/// - Max cardinality: 3 * 2 = 6 unique series for request metrics
+///
+/// This test verifies that recording 1000 requests creates exactly 6 series, not 1000.
+#[test]
+fn test_metrics_cardinality_bounded_by_enums() {
+    let metrics = Metrics::new().expect("should create metrics");
+
+    // Record 1000 requests using all combinations of tier and strategy
+    // This simulates heavy production load with diverse routing patterns
+    for i in 0..1000 {
+        let tier = match i % 3 {
+            0 => Tier::Fast,
+            1 => Tier::Balanced,
+            _ => Tier::Deep,
+        };
+        let strategy = if i % 2 == 0 {
+            Strategy::Rule
+        } else {
+            Strategy::Llm
+        };
+
+        metrics
+            .record_request(tier, strategy)
+            .expect("should record successfully");
+    }
+
+    // Gather metrics
+    let output = metrics.gather().expect("should gather metrics");
+
+    // Count unique series for octoroute_requests_total
+    // Each line like: octoroute_requests_total{strategy="rule",tier="fast"} 167
+    // Should have exactly 6 unique series (3 tiers * 2 strategies)
+    let request_lines: Vec<&str> = output
+        .lines()
+        .filter(|line| line.starts_with("octoroute_requests_total{"))
+        .collect();
+
+    // Verify we have exactly 6 unique label combinations (bounded cardinality)
+    assert_eq!(
+        request_lines.len(),
+        6,
+        "Should have exactly 6 unique metric series (3 tiers * 2 strategies), not 1000. \
+        Type-safe enums prevent cardinality explosion. Found {} series:\n{}",
+        request_lines.len(),
+        request_lines.join("\n")
+    );
+
+    // Verify all expected combinations exist
+    let expected_combinations = [
+        r#"strategy="rule",tier="fast""#,
+        r#"strategy="rule",tier="balanced""#,
+        r#"strategy="rule",tier="deep""#,
+        r#"strategy="llm",tier="fast""#,
+        r#"strategy="llm",tier="balanced""#,
+        r#"strategy="llm",tier="deep""#,
+    ];
+
+    for expected in &expected_combinations {
+        assert!(
+            output.contains(expected),
+            "Missing expected label combination: {}\nPrometheus output:\n{}",
+            expected,
+            output
+        );
+    }
+
+    // Verify total count is 1000 (distributed across 6 series)
+    let total_count: i32 = request_lines
+        .iter()
+        .filter_map(|line| {
+            // Extract count from "...} 167"
+            line.split_whitespace().last()?.parse::<i32>().ok()
+        })
+        .sum();
+
+    assert_eq!(
+        total_count, 1000,
+        "Total requests across all series should be 1000"
+    );
+}
+
+/// Test that future error metrics (if added) must use bounded labels
+///
+/// This test documents the cardinality explosion risk and how to avoid it.
+/// If error recording is added in the future, this test serves as a reference.
+#[test]
+fn test_documentation_error_metrics_must_use_bounded_labels() {
+    // This test doesn't execute code - it documents the pattern
+    //
+    // ❌ NEVER DO THIS (unbounded cardinality):
+    // ```rust
+    // counter!("errors_total", "message" => error.to_string());
+    // // Creates unlimited unique series from error messages
+    // ```
+    //
+    // ✅ ALWAYS DO THIS (bounded cardinality):
+    // ```rust
+    // enum ErrorKind { Config, Routing, Network, Model }
+    // counter!("errors_total", "kind" => error.kind().as_str());
+    // // Maximum 4 unique series regardless of error count
+    // ```
+    //
+    // This project uses typed error enums (LlmRouterError, ModelQueryError, AppError)
+    // which enable bounded classification via variant names, not error messages.
+
+    // If error recording is added, verify cardinality is bounded:
+    let _metrics = Metrics::new().expect("should create metrics");
+
+    // Hypothetical future: if record_error() exists, test it like this:
+    // for i in 0..1000 {
+    //     let error = create_error_with_unique_message(i);
+    //     metrics.record_error(&error);  // Must use error.variant_name(), not to_string()
+    // }
+    // let output = metrics.gather().unwrap();
+    // let error_series_count = count_unique_series(&output, "errors_total");
+    // assert!(error_series_count <= 10, "Error metrics must have <=10 series");
+
+    // For now, this test passes trivially to document the requirement
+    assert!(
+        true,
+        "Error metrics (if added) must use bounded enum labels, not unbounded error messages"
+    );
+}
