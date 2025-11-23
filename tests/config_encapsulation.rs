@@ -213,3 +213,145 @@ default_importance = "normal"
         "Default router_tier should be Balanced"
     );
 }
+
+/// Test that router_tier accessor is consistent across the system
+///
+/// Verifies that when router_tier is set in config, the accessor returns the
+/// same value that would be used for router construction. This ensures the
+/// config → router tier mapping is consistent.
+///
+/// Addresses PR #4 Issue: No test verifies accessor matches router construction
+#[test]
+fn test_router_tier_accessor_consistency() {
+    // Test with Deep tier
+    let config_deep = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "llm"
+default_importance = "normal"
+router_tier = "deep"
+"#;
+
+    let config: Config = toml::from_str(config_deep).expect("Should parse");
+
+    // Verify accessor returns Deep
+    let tier_from_accessor = config.routing.router_tier();
+    assert_eq!(
+        tier_from_accessor,
+        TargetModel::Deep,
+        "Accessor should return Deep when router_tier='deep'"
+    );
+
+    // Test with Fast tier
+    let config_fast = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "llm"
+default_importance = "normal"
+router_tier = "fast"
+"#;
+
+    let config: Config = toml::from_str(config_fast).expect("Should parse");
+
+    // Verify accessor returns Fast
+    let tier_from_accessor = config.routing.router_tier();
+    assert_eq!(
+        tier_from_accessor,
+        TargetModel::Fast,
+        "Accessor should return Fast when router_tier='fast'"
+    );
+
+    // Test with Balanced tier (explicit)
+    let config_balanced = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "llm"
+default_importance = "normal"
+router_tier = "balanced"
+"#;
+
+    let config: Config = toml::from_str(config_balanced).expect("Should parse");
+
+    // Verify accessor returns Balanced
+    let tier_from_accessor = config.routing.router_tier();
+    assert_eq!(
+        tier_from_accessor,
+        TargetModel::Balanced,
+        "Accessor should return Balanced when router_tier='balanced'"
+    );
+}

@@ -953,8 +953,9 @@ router_tier = "balanced"
     async fn test_health_metrics_is_healthy_when_running() {
         let metrics = HealthMetrics::new();
 
-        // Should be healthy initially (no checks yet, but status is Running)
-        assert!(metrics.is_background_task_healthy().await);
+        // Should be UNHEALTHY initially (no checks completed yet)
+        // This prevents false positive - we haven't verified health yet
+        assert!(!metrics.is_background_task_healthy().await);
 
         // Should be healthy after successful check
         metrics.record_successful_check().await;
