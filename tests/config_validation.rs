@@ -530,3 +530,111 @@ deep = 300   # Maximum valid value
         "Deep tier should have 300 second timeout"
     );
 }
+
+/// Test that very small (but valid) weight values are accepted
+///
+/// Addresses PR #4 Medium Priority Issue #17: Config boundary tests
+///
+/// This test verifies that floating-point precision issues don't cause
+/// rejection of very small but valid weight values.
+#[test]
+fn test_weight_boundary_very_small_valid() {
+    let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 0.0001  # Very small but valid (> 0)
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+router_tier = "balanced"
+"#;
+
+    let config: Config =
+        toml::from_str(config_str).expect("Config with very small weight (0.0001) should be valid");
+
+    config
+        .validate()
+        .expect("Config with weight=0.0001 should pass validation");
+
+    // Verify weight was preserved correctly (no precision loss)
+    assert_eq!(
+        config.models.fast[0].weight(),
+        0.0001,
+        "Very small weight should be preserved exactly"
+    );
+}
+
+/// Test that minimum max_tokens value is accepted
+///
+/// Addresses PR #4 Medium Priority Issue #17: Config boundary tests
+///
+/// While max_tokens=1 is technically valid, it's impractical for real use.
+/// This test verifies the boundary condition is handled correctly.
+#[test]
+fn test_max_tokens_minimum_boundary() {
+    let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 1  # Minimum valid value
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 1  # Minimum valid value
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 1  # Minimum valid value
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+router_tier = "balanced"
+"#;
+
+    let config: Config = toml::from_str(config_str)
+        .expect("Config with max_tokens=1 should be valid (boundary condition)");
+
+    config
+        .validate()
+        .expect("Config with max_tokens=1 should pass validation");
+
+    // Verify values
+    assert_eq!(config.models.fast[0].max_tokens(), 1);
+    assert_eq!(config.models.balanced[0].max_tokens(), 1);
+    assert_eq!(config.models.deep[0].max_tokens(), 1);
+}
