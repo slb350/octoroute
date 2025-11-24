@@ -107,6 +107,58 @@ fn default_priority() -> u8 {
     1
 }
 
+/// Router query timeout configuration per tier
+///
+/// Allows different timeout values for router queries based on model size.
+/// Larger models (Deep tier) typically need more time to analyze routing decisions.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RouterTimeouts {
+    /// Timeout for Fast tier router queries (in seconds)
+    ///
+    /// Recommended: 5-10s for 8B models
+    pub fast: u64,
+    /// Timeout for Balanced tier router queries (in seconds)
+    ///
+    /// Recommended: 10-15s for 30B models
+    pub balanced: u64,
+    /// Timeout for Deep tier router queries (in seconds)
+    ///
+    /// Recommended: 15-30s for 120B models
+    pub deep: u64,
+}
+
+impl Default for RouterTimeouts {
+    /// Default router timeouts: 10s for all tiers
+    ///
+    /// Conservative default that works for most deployments.
+    /// Operators can tune based on their hardware and model performance.
+    fn default() -> Self {
+        Self {
+            fast: 10,
+            balanced: 10,
+            deep: 10,
+        }
+    }
+}
+
+impl RouterTimeouts {
+    /// Validate that all timeouts are positive (> 0)
+    ///
+    /// Zero or negative timeouts are invalid and will cause immediate failures.
+    fn validate(&self) -> Result<(), String> {
+        if self.fast == 0 {
+            return Err("router_timeouts.fast must be greater than 0".to_string());
+        }
+        if self.balanced == 0 {
+            return Err("router_timeouts.balanced must be greater than 0".to_string());
+        }
+        if self.deep == 0 {
+            return Err("router_timeouts.deep must be greater than 0".to_string());
+        }
+        Ok(())
+    }
+}
+
 /// Routing configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RoutingConfig {
@@ -137,6 +189,12 @@ pub struct RoutingConfig {
     /// Field is private to prevent post-validation mutation. Use `router_tier()` accessor.
     #[serde(default)]
     router_tier: TargetModel,
+    /// Router query timeout configuration per tier
+    ///
+    /// Defaults to 10s for all tiers if not specified (backward compatible).
+    /// Can be customized per tier to accommodate different model response times.
+    #[serde(default)]
+    pub router_timeouts: RouterTimeouts,
 }
 
 impl RoutingConfig {
@@ -149,6 +207,24 @@ impl RoutingConfig {
     /// The configured router tier (validated during config loading)
     pub fn router_tier(&self) -> TargetModel {
         self.router_tier
+    }
+
+    /// Get the router query timeout for a specific tier
+    ///
+    /// Returns the configured timeout (in seconds) for router queries
+    /// to the specified tier.
+    ///
+    /// # Arguments
+    /// * `tier` - The model tier to get the timeout for
+    ///
+    /// # Returns
+    /// Timeout in seconds (u64)
+    pub fn router_timeout_for_tier(&self, tier: TargetModel) -> u64 {
+        match tier {
+            TargetModel::Fast => self.router_timeouts.fast,
+            TargetModel::Balanced => self.router_timeouts.balanced,
+            TargetModel::Deep => self.router_timeouts.deep,
+        }
     }
 }
 
@@ -629,6 +705,12 @@ impl Config {
         // Per-tier timeout validation is now handled by TimeoutsConfig's custom Deserialize
         // implementation, which calls the validated constructor at parse time.
         // No duplicate validation needed here.
+
+        // Validate router query timeouts
+        self.routing
+            .router_timeouts
+            .validate()
+            .map_err(|e| crate::error::AppError::Config(format!("Configuration error: {}", e)))?;
 
         // ═══════════════════════════════════════════════════════════════════════
         // Phase 3: HTTP Client Creation Validation

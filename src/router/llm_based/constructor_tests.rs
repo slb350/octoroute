@@ -60,7 +60,7 @@ router_tier = "balanced"
     assert_eq!(selector.endpoint_count(TargetModel::Balanced), 1);
 
     // Construction should succeed
-    let result = LlmBasedRouter::new(selector, TargetModel::Balanced, mock_metrics());
+    let result = LlmBasedRouter::new(selector, TargetModel::Balanced, 10, mock_metrics());
     assert!(
         result.is_ok(),
         "LlmBasedRouter::new() should succeed with balanced tier"
@@ -143,7 +143,7 @@ router_tier = "balanced"
     let selector = Arc::new(ModelSelector::new(config.clone(), mock_metrics()));
 
     // This should succeed because there is a balanced tier endpoint
-    let result = LlmBasedRouter::new(selector, TargetModel::Balanced, mock_metrics());
+    let result = LlmBasedRouter::new(selector, TargetModel::Balanced, 10, mock_metrics());
     assert!(
         result.is_ok(),
         "LlmBasedRouter::new() should succeed with balanced tier present"

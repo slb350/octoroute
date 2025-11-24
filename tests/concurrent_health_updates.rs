@@ -320,6 +320,7 @@ router_tier = "balanced"
         LlmBasedRouter::new(
             selector.clone(),
             TargetModel::Balanced,
+            10,
             Arc::new(octoroute::metrics::Metrics::new().unwrap()),
         )
         .expect("should construct LLM router"),

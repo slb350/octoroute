@@ -114,7 +114,7 @@ router_tier = "balanced"
 
     let selector = Arc::new(ModelSelector::new(config, test_metrics()));
     let metrics = Arc::new(Metrics::new().expect("should create metrics"));
-    let router = LlmBasedRouter::new(selector.clone(), TargetModel::Balanced, metrics)
+    let router = LlmBasedRouter::new(selector.clone(), TargetModel::Balanced, 10, metrics)
         .expect("should create router");
 
     // Mark balanced tier (router) as unhealthy
@@ -342,7 +342,7 @@ router_tier = "balanced"
     // Create LLM router using exhausted Balanced tier
     let metrics = Arc::new(Metrics::new().expect("should create metrics"));
     let router = Arc::new(
-        LlmBasedRouter::new(selector.clone(), TargetModel::Balanced, metrics)
+        LlmBasedRouter::new(selector.clone(), TargetModel::Balanced, 10, metrics)
             .expect("should create router"),
     );
 

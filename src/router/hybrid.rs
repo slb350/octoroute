@@ -33,8 +33,10 @@ impl HybridRouter {
     ) -> AppResult<Self> {
         // Router tier from config (serde validates format at deserialization time)
         let router_tier = config.routing.router_tier();
+        let router_timeout_secs = config.routing.router_timeout_for_tier(router_tier);
 
-        let llm_router = LlmBasedRouter::new(selector.clone(), router_tier, metrics)?;
+        let llm_router =
+            LlmBasedRouter::new(selector.clone(), router_tier, router_timeout_secs, metrics)?;
         Ok(Self {
             rule_router: RuleBasedRouter::new(),
             llm_router: Arc::new(llm_router),

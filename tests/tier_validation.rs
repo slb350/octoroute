@@ -449,8 +449,12 @@ router_tier = "balanced"
             let selector = selector.clone();
             let metrics = metrics.clone();
             async move {
-                let router =
-                    LlmBasedRouter::new(selector, octoroute::router::TargetModel::Fast, metrics);
+                let router = LlmBasedRouter::new(
+                    selector,
+                    octoroute::router::TargetModel::Fast,
+                    10,
+                    metrics,
+                );
                 assert!(
                     router.is_ok(),
                     "Fast tier router should be created successfully"
@@ -465,6 +469,7 @@ router_tier = "balanced"
                 let router = LlmBasedRouter::new(
                     selector,
                     octoroute::router::TargetModel::Balanced,
+                    10,
                     metrics,
                 );
                 assert!(
@@ -478,8 +483,12 @@ router_tier = "balanced"
             let selector = selector.clone();
             let metrics = metrics.clone();
             async move {
-                let router =
-                    LlmBasedRouter::new(selector, octoroute::router::TargetModel::Deep, metrics);
+                let router = LlmBasedRouter::new(
+                    selector,
+                    octoroute::router::TargetModel::Deep,
+                    10,
+                    metrics,
+                );
                 assert!(
                     router.is_ok(),
                     "Deep tier router should be created successfully"

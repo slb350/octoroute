@@ -169,6 +169,7 @@ const MAX_ROUTER_RESPONSE: usize = 1024;
 pub struct LlmBasedRouter {
     selector: TierSelector,
     router_tier: TargetModel,
+    router_timeout_secs: u64,
     metrics: Arc<crate::metrics::Metrics>,
 }
 
@@ -180,6 +181,7 @@ impl LlmBasedRouter {
     /// # Arguments
     /// * `selector` - The underlying ModelSelector
     /// * `tier` - Which tier (Fast, Balanced, Deep) to use for routing decisions
+    /// * `router_timeout_secs` - Timeout for router queries in seconds
     /// * `metrics` - Metrics collector for observability
     ///
     /// # Tier Selection
@@ -195,6 +197,7 @@ impl LlmBasedRouter {
     pub fn new(
         selector: Arc<ModelSelector>,
         tier: TargetModel,
+        router_timeout_secs: u64,
         metrics: Arc<crate::metrics::Metrics>,
     ) -> AppResult<Self> {
         // TierSelector validates that the tier exists
@@ -203,6 +206,7 @@ impl LlmBasedRouter {
         Ok(Self {
             selector: tier_selector,
             router_tier: tier,
+            router_timeout_secs,
             metrics,
         })
     }
@@ -611,8 +615,7 @@ impl LlmBasedRouter {
         use futures::StreamExt;
         use tokio::time::{Duration, timeout};
 
-        const ROUTER_QUERY_TIMEOUT_SECS: u64 = 10;
-        let timeout_duration = Duration::from_secs(ROUTER_QUERY_TIMEOUT_SECS);
+        let timeout_duration = Duration::from_secs(self.router_timeout_secs);
 
         let mut stream = timeout(timeout_duration, open_agent::query(router_prompt, &options))
             .await
@@ -620,16 +623,16 @@ impl LlmBasedRouter {
                 tracing::error!(
                     endpoint_name = %endpoint.name(),
                     endpoint_url = %endpoint.base_url(),
-                    timeout_seconds = ROUTER_QUERY_TIMEOUT_SECS,
+                    timeout_seconds = self.router_timeout_secs,
                     router_tier = ?self.router_tier,
                     attempt = attempt,
                     max_retries = max_retries,
                     "Router query timeout - endpoint did not respond within {} seconds (attempt {}/{})",
-                    ROUTER_QUERY_TIMEOUT_SECS, attempt, max_retries
+                    self.router_timeout_secs, attempt, max_retries
                 );
                 AppError::LlmRouting(LlmRouterError::Timeout {
                     endpoint: endpoint.base_url().to_string(),
-                    timeout_seconds: ROUTER_QUERY_TIMEOUT_SECS,
+                    timeout_seconds: self.router_timeout_secs,
                     attempt,
                     max_attempts: max_retries,
                     router_tier: self.router_tier,

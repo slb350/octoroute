@@ -101,7 +101,7 @@ async fn test_router_tier_fast_creates_fast_router() {
     ));
 
     // Construct LlmBasedRouter with Fast tier
-    let router = LlmBasedRouter::new(selector, TargetModel::Fast, metrics)
+    let router = LlmBasedRouter::new(selector, TargetModel::Fast, 10, metrics)
         .expect("should create LlmBasedRouter with Fast tier");
 
     // Verify the router is configured with Fast tier
@@ -134,7 +134,7 @@ async fn test_router_tier_balanced_creates_balanced_router() {
     ));
 
     // Construct LlmBasedRouter with Balanced tier
-    let router = LlmBasedRouter::new(selector, TargetModel::Balanced, metrics)
+    let router = LlmBasedRouter::new(selector, TargetModel::Balanced, 10, metrics)
         .expect("should create LlmBasedRouter with Balanced tier");
 
     // Verify the router is configured with Balanced tier
@@ -167,7 +167,7 @@ async fn test_router_tier_deep_creates_deep_router() {
     ));
 
     // Construct LlmBasedRouter with Deep tier
-    let router = LlmBasedRouter::new(selector, TargetModel::Deep, metrics)
+    let router = LlmBasedRouter::new(selector, TargetModel::Deep, 10, metrics)
         .expect("should create LlmBasedRouter with Deep tier");
 
     // Verify the router is configured with Deep tier
@@ -243,8 +243,8 @@ async fn test_router_tier_is_immutable() {
     let metrics = Arc::new(Metrics::new().expect("should create Metrics"));
     let selector = Arc::new(ModelSelector::new(Arc::new(config), metrics.clone()));
 
-    let router =
-        LlmBasedRouter::new(selector, TargetModel::Fast, metrics).expect("should create router");
+    let router = LlmBasedRouter::new(selector, TargetModel::Fast, 10, metrics)
+        .expect("should create router");
 
     // Calling tier() multiple times should return the same value
     let tier1 = router.tier();
@@ -380,7 +380,7 @@ async fn test_router_tier_fast_queries_fast_endpoints_http_verification() {
         Arc::new(config.clone()),
         metrics.clone(),
     ));
-    let router = LlmBasedRouter::new(selector, TargetModel::Fast, metrics)
+    let router = LlmBasedRouter::new(selector, TargetModel::Fast, 10, metrics)
         .expect("should create LlmBasedRouter with Fast tier");
 
     // Execute routing decision - this should query the Fast tier endpoint

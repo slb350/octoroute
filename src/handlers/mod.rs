@@ -71,14 +71,20 @@ impl AppState {
                 // LLM-only routing: router tier required
                 // Serde validates router_tier format at deserialization time
                 let router_tier = config.routing.router_tier();
+                let router_timeout_secs = config.routing.router_timeout_for_tier(router_tier);
 
                 tracing::info!(
-                    "Initializing LLM-based router with {:?} tier for routing decisions",
-                    router_tier
+                    "Initializing LLM-based router with {:?} tier for routing decisions (timeout: {}s)",
+                    router_tier,
+                    router_timeout_secs
                 );
 
-                let llm_router =
-                    LlmBasedRouter::new(selector.clone(), router_tier, metrics.clone())?;
+                let llm_router = LlmBasedRouter::new(
+                    selector.clone(),
+                    router_tier,
+                    router_timeout_secs,
+                    metrics.clone(),
+                )?;
                 Arc::new(Router::Llm(llm_router))
             }
             RoutingStrategy::Hybrid => {

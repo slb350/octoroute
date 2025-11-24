@@ -60,7 +60,7 @@ async fn test_llm_router_continues_on_health_tracking_failure() {
     ));
 
     // Create LLM router with balanced tier
-    let router = LlmBasedRouter::new(selector.clone(), TargetModel::Balanced, metrics.clone())
+    let router = LlmBasedRouter::new(selector.clone(), TargetModel::Balanced, 10, metrics.clone())
         .expect("Failed to create LLM router");
 
     // ACT: Attempt to route a request

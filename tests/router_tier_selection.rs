@@ -84,6 +84,7 @@ router_tier = "fast"  # Using Fast tier for routing decisions
     let result = LlmBasedRouter::new(
         selector.clone(),
         octoroute::router::TargetModel::Fast,
+        10,
         Arc::new(octoroute::metrics::Metrics::new().unwrap()),
     );
 
@@ -326,6 +327,7 @@ router_tier = "{}"
                 "deep" => octoroute::router::TargetModel::Deep,
                 _ => panic!("Invalid router_tier in test"),
             },
+            10,
             Arc::new(octoroute::metrics::Metrics::new().unwrap()),
         );
 
@@ -444,6 +446,7 @@ router_tier = "fast"
     let router = LlmBasedRouter::new(
         selector,
         octoroute::router::TargetModel::Fast,
+        10,
         Arc::new(octoroute::metrics::Metrics::new().unwrap()),
     )
     .expect("should create LlmBasedRouter");
@@ -687,6 +690,7 @@ router_tier = "fast"  # Router uses Fast tier, which will be exhausted
     let router = LlmBasedRouter::new(
         selector.clone(),
         octoroute::router::TargetModel::Fast,
+        10,
         Arc::new(octoroute::metrics::Metrics::new().unwrap()),
     )
     .expect("should construct router");
