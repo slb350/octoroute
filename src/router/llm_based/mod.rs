@@ -798,14 +798,16 @@ impl LlmBasedRouter {
             let before_is_boundary = if pos == 0 {
                 true
             } else {
-                // Check if previous character is non-alphanumeric (whitespace, punctuation, or non-ASCII).
-                // Word boundary definition: Any character where is_ascii_alphanumeric() == false.
+                let prev_char = text_bytes[pos - 1];
+                // Word boundary definition: Not alphanumeric AND not underscore
+                // Treat underscore as part of words (like in identifiers)
+                // This prevents "SUPER_FAST" from matching "FAST"
                 // Examples:
                 //   - "FAST-TRACK" matches "FAST" (dash is boundary)
+                //   - "SUPER_FAST" does NOT match "FAST" (underscore is part of word)
                 //   - "你FAST好" matches "FAST" (Chinese chars are boundary)
                 //   - "steadFAST" does NOT match "FAST" (lowercase 'd' is alphanumeric)
-                text_bytes[pos - 1].is_ascii_whitespace()
-                    || !text_bytes[pos - 1].is_ascii_alphanumeric()
+                !(prev_char.is_ascii_alphanumeric() || prev_char == b'_')
             };
 
             // Check character after (must be word boundary or end of string)
@@ -813,10 +815,10 @@ impl LlmBasedRouter {
             let after_is_boundary = if after_pos >= text.len() {
                 true
             } else {
-                // Check if next character is non-alphanumeric (whitespace, punctuation, or non-ASCII).
-                // Word boundary definition: Any character where is_ascii_alphanumeric() == false.
-                text_bytes[after_pos].is_ascii_whitespace()
-                    || !text_bytes[after_pos].is_ascii_alphanumeric()
+                let next_char = text_bytes[after_pos];
+                // Word boundary definition: Not alphanumeric AND not underscore
+                // Treat underscore as part of words (like in identifiers)
+                !(next_char.is_ascii_alphanumeric() || next_char == b'_')
             };
 
             if before_is_boundary && after_is_boundary {

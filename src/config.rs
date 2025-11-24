@@ -221,22 +221,19 @@ pub struct RoutingConfig {
     ///
     /// Defaults to Balanced if not specified (recommended for most use cases).
     ///
-    /// # Validation (Two-Phase)
+    /// # Validation
     ///
-    /// **Phase 1 - Format Validation (Deserialization Time)**:
-    /// - **When**: During `toml::from_str::<Config>()` call (config file loading)
-    /// - **Who**: Serde's `TargetModel` enum deserializer
-    /// - **What**: Validates format matches "fast", "balanced", or "deep"
-    ///   (case-sensitive lowercase). Invalid formats like "FAST" or "fasst" are
-    ///   rejected immediately with clear serde deserialization errors.
+    /// **Format Validation (Deserialization Time)**:
+    /// - Serde's `TargetModel` enum deserializer validates format matches
+    ///   "fast", "balanced", or "deep" (case-sensitive lowercase)
+    /// - Invalid formats like "FAST" or "fasst" are rejected immediately
+    ///   with clear deserialization errors
     ///
-    /// **Phase 2 - Availability Validation (Router Construction Time)**:
-    /// - **When**: During router construction (`LlmBasedRouter::new()` or `HybridRouter::new()`)
-    /// - **Who**: `TierSelector::new()` validation logic
-    /// - **What**: Verifies at least one endpoint exists for the specified tier.
-    ///   Prevents runtime failures by catching misconfiguration (e.g., router_tier="deep"
-    ///   but no [[models.deep]] endpoints) at router construction time.
-    /// - **Note**: Applies to both LLM and Hybrid routing strategies (both use TierSelector)
+    /// **Availability Validation (Config Loading Time)**:
+    /// - `Config::validate()` ensures ALL tiers have at least one endpoint
+    ///   (lines 686-716), preventing routing failures regardless of router_tier
+    /// - This catches misconfiguration (e.g., router_tier="deep" but no
+    ///   [[models.deep]] endpoints) at config load time, not runtime
     ///
     /// Field is private to prevent post-validation mutation. Use `router_tier()` accessor.
     #[serde(default)]

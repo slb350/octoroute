@@ -115,8 +115,7 @@ fn test_error_chain_is_preserved_through_conversion() {
 
 #[test]
 fn test_config_validation_error_provides_context() {
-    // Test that validation errors include helpful context
-    // This will need implementation after typed errors are added
+    // Test that validation errors include helpful context when no endpoints are defined
     let config_toml = r#"
 [server]
 host = "127.0.0.1"
@@ -129,13 +128,24 @@ router_tier = "balanced"
 # No endpoints defined - should fail validation
 "#;
 
-    let _result = Config::from_str(config_toml);
+    let result = Config::from_str(config_toml);
 
-    // This should fail during validation (no balanced endpoints for LLM routing)
-    // After implementation, verify error includes:
-    // - Which tier is missing endpoints
-    // - What strategy requires it
-    // - How to fix it
+    // Should fail during TOML parsing (missing required sections)
+    assert!(
+        result.is_err(),
+        "Config should fail when no model endpoints are defined"
+    );
+
+    let err = result.unwrap_err();
+    let err_msg = format!("{}", err);
+
+    // Error should mention missing model configuration
+    // (toml crate will report missing required table)
+    assert!(
+        err_msg.to_lowercase().contains("missing") || err_msg.to_lowercase().contains("models"),
+        "Error should indicate missing models configuration, got: {}",
+        err_msg
+    );
 }
 
 #[test]

@@ -305,3 +305,108 @@ fn test_parse_routing_decision_multiple_options_first_wins() {
     // FAST comes first in our parsing order
     assert_eq!(result.unwrap(), TargetModel::Fast);
 }
+
+#[test]
+fn test_parse_routing_decision_tier_like_invalid_responses() {
+    // ADDRESSES: PR #4 Review CRITICAL-3 - Missing Test for Invalid LLM Tier Responses
+    //
+    // Production LLMs can hallucinate tier-like names that are invalid.
+    // These look similar to valid tiers but are wrong:
+    // - "INVALID_TIER", "SUPER_FAST", "MEDIUM" (tier-like but wrong)
+    // - "FASTER", "SLOW", "QUICK" (tier-related but not exact matches)
+    //
+    // This test ensures the parser rejects these gracefully (returns error,
+    // doesn't panic or silently default).
+    //
+    // # Why This Is Critical
+    //
+    // LLMs in production WILL hallucinate. Without explicit tests for tier-like
+    // invalid responses, there's no guarantee the system handles them correctly.
+    // Word boundary matching prevents "FAST" in "FASTEST" from matching, but we
+    // need to verify this explicitly.
+
+    let tier_like_invalid_cases = vec![
+        // Tier-like invalid names (look like tiers but aren't)
+        "INVALID_TIER",
+        "SUPER_FAST",
+        "MEDIUM",
+        "SLOW",
+        "QUICK",
+        "FASTER",
+        "SLOWER",
+        // Variations of valid tiers (but not exact matches)
+        "FAST_TIER",
+        "BALANCED_TIER",
+        "DEEP_TIER",
+        "TIER_FAST",
+        // Almost-valid (one letter off)
+        "FASE",     // Typo of FAST
+        "BALANCET", // Typo of BALANCED
+        "DEP",      // Typo of DEEP
+        // Common LLM hallucinations
+        "FASTEST",    // Has "FAST" substring but shouldn't match
+        "UNBALANCED", // Has "BALANCED" substring but shouldn't match
+    ];
+
+    for response in &tier_like_invalid_cases {
+        let result = LlmBasedRouter::parse_routing_decision(response);
+
+        // CRITICAL ASSERTION: These should all return errors, not succeed
+        assert!(
+            result.is_err(),
+            "Tier-like invalid response '{}' should return error, not succeed. \
+             This prevents silent failures where LLM hallucinations are accepted as valid tiers.",
+            response
+        );
+
+        let err = result.unwrap_err();
+        let err_msg = format!("{}", err);
+
+        // Error should indicate parsing failure
+        assert!(
+            err_msg.to_lowercase().contains("unparseable")
+                || err_msg.to_lowercase().contains("parse")
+                || err_msg.to_lowercase().contains("invalid"),
+            "Error for '{}' should indicate parsing failure, got: {}",
+            response,
+            err_msg
+        );
+
+        // Error should include the invalid response for debugging
+        // (helps operators identify LLM hallucinations in logs)
+        assert!(
+            err_msg.contains(response),
+            "Error for '{}' should include the invalid response text for debugging, got: {}",
+            response,
+            err_msg
+        );
+    }
+
+    println!(
+        "✅ All {} tier-like invalid responses rejected correctly",
+        tier_like_invalid_cases.len()
+    );
+}
+
+#[test]
+fn test_parse_routing_decision_case_sensitivity_for_invalid() {
+    // Verify that invalid responses are rejected regardless of case
+    // Valid tiers are case-insensitive ("fast", "FAST", "Fast" all work),
+    // but invalid tiers should be rejected regardless of case.
+
+    let case_variations = vec![
+        "INVALID_TIER",
+        "invalid_tier",
+        "Invalid_Tier",
+        "InVaLiD_tIeR",
+    ];
+
+    for response in case_variations {
+        let result = LlmBasedRouter::parse_routing_decision(response);
+        assert!(
+            result.is_err(),
+            "Invalid tier '{}' should be rejected regardless of case",
+            response
+        );
+    }
+}
