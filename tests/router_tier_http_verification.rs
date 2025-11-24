@@ -397,7 +397,7 @@ async fn test_router_tier_fast_queries_fast_endpoints_http_verification() {
         "Router should attempt to query an endpoint"
     );
 
-    // CRITICAL ASSERTION: Verify mock server expectations
+    // CRITICAL ASSERTION: Verify mock server expectations were met
     // - Fast server should have received 1 request
     // - Balanced and Deep servers should have received 0 requests
     //
@@ -406,4 +406,45 @@ async fn test_router_tier_fast_queries_fast_endpoints_http_verification() {
     //
     // If this fails, it indicates a bug where the router tier configuration
     // doesn't correctly control which endpoints are queried.
+
+    // Get received requests from each mock server (unwrap the Option)
+    let fast_requests = fast_server
+        .received_requests()
+        .await
+        .expect("should get fast server received requests");
+    let balanced_requests = balanced_server
+        .received_requests()
+        .await
+        .expect("should get balanced server received requests");
+    let deep_requests = deep_server
+        .received_requests()
+        .await
+        .expect("should get deep server received requests");
+
+    // Verify Fast server received exactly 1 request (the routing query)
+    assert_eq!(
+        fast_requests.len(),
+        1,
+        "Fast server should receive exactly 1 request when router_tier='fast'. \
+         Got {} requests. This verifies the router queries the correct tier.",
+        fast_requests.len()
+    );
+
+    // Verify Balanced server received 0 requests
+    assert_eq!(
+        balanced_requests.len(),
+        0,
+        "Balanced server should receive 0 requests when router_tier='fast'. \
+         Got {} requests. If this fails, router is querying wrong tier.",
+        balanced_requests.len()
+    );
+
+    // Verify Deep server received 0 requests
+    assert_eq!(
+        deep_requests.len(),
+        0,
+        "Deep server should receive 0 requests when router_tier='fast'. \
+         Got {} requests. If this fails, router is querying wrong tier.",
+        deep_requests.len()
+    );
 }
