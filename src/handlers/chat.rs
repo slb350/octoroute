@@ -421,6 +421,10 @@ pub async fn handler(
     let mut last_error = None;
     let mut failed_endpoints = ExclusionSet::new();
 
+    // Collect non-fatal warnings to surface to users
+    // Examples: health tracking failures, metrics recording failures
+    let mut warnings: Vec<String> = Vec::new();
+
     for attempt in 1..=MAX_RETRIES {
         // Select endpoint from target tier (with health filtering + priority + exclusion)
         let endpoint = match state
@@ -513,6 +517,14 @@ pub async fn handler(
                     // Record health tracking failure in metrics for monitoring
                     state.metrics().health_tracking_failure();
 
+                    // Surface health tracking failure to user as a warning
+                    // This provides immediate feedback that health state may be stale
+                    let warning_msg = format!(
+                        "Health tracking failed: {} (endpoint health state may be stale)",
+                        e
+                    );
+                    warnings.push(warning_msg);
+
                     // DON'T fail the request - we already have a valid LLM response
                     // Users should receive their response even if health tracking fails
                 }
@@ -563,8 +575,9 @@ pub async fn handler(
                     }
                 }
 
-                // Collect warnings from routing decision
-                let all_warnings: Vec<String> = decision.warnings().to_vec();
+                // Collect all warnings: routing decision warnings + health tracking warnings
+                let mut all_warnings: Vec<String> = decision.warnings().to_vec();
+                all_warnings.extend(warnings);
 
                 let response = if all_warnings.is_empty() {
                     ChatResponse::new(
@@ -625,6 +638,14 @@ pub async fn handler(
 
                     // Record health tracking failure in metrics for monitoring
                     state.metrics().health_tracking_failure();
+
+                    // Surface health tracking failure to user as a warning
+                    // This provides immediate feedback that health state may be stale
+                    let warning_msg = format!(
+                        "Health tracking failed: {} (endpoint health state may be stale)",
+                        e
+                    );
+                    warnings.push(warning_msg);
 
                     // DON'T fail the request - we can still retry with other endpoints
                     // Endpoint will still be excluded from this request via failed_endpoints set
