@@ -270,6 +270,24 @@ pub enum HealthError {
     },
 }
 
+impl HealthError {
+    /// Get the error type as a string label for metrics
+    ///
+    /// Returns a consistent snake_case string matching the error variant:
+    /// - `UnknownEndpoint` → "unknown_endpoint"
+    /// - `HttpClientCreationFailed` → "http_client_failed"
+    /// - `InvalidEndpointUrl` → "invalid_url"
+    ///
+    /// Used for Prometheus metric labels to categorize health tracking failures.
+    pub fn error_type(&self) -> &'static str {
+        match self {
+            HealthError::UnknownEndpoint(_) => "unknown_endpoint",
+            HealthError::HttpClientCreationFailed(_) => "http_client_failed",
+            HealthError::InvalidEndpointUrl { .. } => "invalid_url",
+        }
+    }
+}
+
 /// Health status for a single endpoint
 ///
 /// Encapsulates health state to prevent invalid state transitions.
@@ -723,9 +741,9 @@ impl HealthChecker {
                 Ok(true) => {
                     // Endpoint is healthy
                     if let Err(e) = self.mark_success(endpoint.name()).await {
-                        // Surface the failure via Prometheus metrics if available
+                        // Surface the failure via Prometheus metrics if available with labels
                         if let Some(ref app_metrics) = self.app_metrics {
-                            app_metrics.health_tracking_failure();
+                            app_metrics.health_tracking_failure(endpoint.name(), e.error_type());
                         }
 
                         match &e {
@@ -774,9 +792,9 @@ impl HealthChecker {
                 Ok(false) => {
                     // Endpoint is unhealthy
                     if let Err(e) = self.mark_failure(endpoint.name()).await {
-                        // Surface the failure via Prometheus metrics if available
+                        // Surface the failure via Prometheus metrics if available with labels
                         if let Some(ref app_metrics) = self.app_metrics {
-                            app_metrics.health_tracking_failure();
+                            app_metrics.health_tracking_failure(endpoint.name(), e.error_type());
                         }
 
                         match &e {

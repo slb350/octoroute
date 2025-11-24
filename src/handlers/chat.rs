@@ -514,8 +514,10 @@ pub async fn handler(
                         e
                     );
 
-                    // Record health tracking failure in metrics for monitoring
-                    state.metrics().health_tracking_failure();
+                    // Record health tracking failure in metrics for monitoring with labels
+                    state
+                        .metrics()
+                        .health_tracking_failure(endpoint.name(), e.error_type());
 
                     // Surface health tracking failure to user as a warning
                     // This provides immediate feedback that health state may be stale
@@ -636,8 +638,10 @@ pub async fn handler(
                         e
                     );
 
-                    // Record health tracking failure in metrics for monitoring
-                    state.metrics().health_tracking_failure();
+                    // Record health tracking failure in metrics for monitoring with labels
+                    state
+                        .metrics()
+                        .health_tracking_failure(endpoint.name(), e.error_type());
 
                     // Surface health tracking failure to user as a warning
                     // This provides immediate feedback that health state may be stale

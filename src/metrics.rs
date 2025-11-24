@@ -16,7 +16,8 @@
 //! ```
 
 use prometheus::{
-    CounterVec, Encoder, HistogramOpts, HistogramVec, IntCounter, Opts, Registry, TextEncoder,
+    CounterVec, Encoder, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, Opts, Registry,
+    TextEncoder,
 };
 use std::sync::Arc;
 
@@ -96,11 +97,11 @@ impl Strategy {
 /// latency, and model invocations.
 #[derive(Clone)]
 pub struct Metrics {
-    registry: Arc<Registry>,
+    pub registry: Arc<Registry>,
     requests_total: CounterVec,
     routing_duration: HistogramVec,
     model_invocations: CounterVec,
-    health_tracking_failures: IntCounter,
+    health_tracking_failures: IntCounterVec,
     metrics_recording_failures: IntCounter,
 }
 
@@ -154,10 +155,19 @@ impl Metrics {
             &["tier"],
         )?;
 
-        // Counter: Health tracking operation failures
-        let health_tracking_failures = IntCounter::new(
-            "octoroute_health_tracking_failures_total",
-            "Total number of health tracking operation failures (mark_success/mark_failure errors)",
+        // Counter: Health tracking operation failures with endpoint and error type labels
+        //
+        // Labels:
+        // - endpoint: Which endpoint experienced the tracking failure (e.g., "fast-1")
+        // - error_type: Type of error (unknown_endpoint, http_client_failed, invalid_url)
+        //
+        // Cardinality: N endpoints × 3 error types = 3N time series (bounded by endpoint count)
+        let health_tracking_failures = IntCounterVec::new(
+            Opts::new(
+                "octoroute_health_tracking_failures_total",
+                "Total number of health tracking operation failures (mark_success/mark_failure errors) by endpoint and error type",
+            ),
+            &["endpoint", "error_type"],
         )?;
 
         // Counter: Metrics recording operation failures
@@ -337,16 +347,39 @@ impl Metrics {
     /// - Endpoint recovery is delayed (30-60s background polling vs immediate)
     /// - Routing may be suboptimal (avoiding healthy endpoints)
     /// - Warnings are surfaced to users in responses
-    pub fn health_tracking_failure(&self) {
-        self.health_tracking_failures.inc();
+    ///
+    /// ## Parameters
+    ///
+    /// - `endpoint`: Name of the endpoint that experienced the tracking failure (e.g., "fast-1")
+    /// - `error_type`: Type of error - must be one of:
+    ///   - "unknown_endpoint": Endpoint name not found in health tracker (config reload race)
+    ///   - "http_client_failed": TLS or HTTP client creation failed
+    ///   - "invalid_url": Endpoint URL is malformed
+    pub fn health_tracking_failure(&self, endpoint: &str, error_type: &str) {
+        self.health_tracking_failures
+            .with_label_values(&[endpoint, error_type])
+            .inc();
     }
 
-    /// Get the current count of health tracking failures
+    /// Get the total count of health tracking failures across all endpoints and error types
     ///
-    /// Returns the total number of health tracking operation failures since startup.
-    /// Used by the /health endpoint to report health tracking status.
+    /// Returns the sum of all health tracking operation failures since startup.
+    /// Used by the /health endpoint to report overall health tracking status.
+    ///
+    /// Note: This sums across all label combinations (all endpoints × all error types).
     pub fn health_tracking_failures_count(&self) -> u64 {
-        self.health_tracking_failures.get()
+        // Gather metrics from registry and sum health_tracking_failures across all labels
+        let metric_families = self.registry.gather();
+        metric_families
+            .iter()
+            .find(|mf| mf.get_name() == "octoroute_health_tracking_failures_total")
+            .map(|mf| {
+                mf.get_metric()
+                    .iter()
+                    .map(|m| m.counter.value.unwrap_or(0.0) as u64)
+                    .sum()
+            })
+            .unwrap_or(0)
     }
 
     /// Record a metrics recording operation failure
@@ -466,7 +499,7 @@ mod tests {
         metrics
             .record_model_invocation(Tier::Fast)
             .expect("Test operation should succeed");
-        metrics.health_tracking_failure(); // Increment health tracking failures
+        metrics.health_tracking_failure("test-endpoint", "unknown_endpoint"); // Increment health tracking failures with test labels
         metrics.metrics_recording_failure(); // Increment metrics recording failures
 
         let metric_families = metrics.registry.gather();

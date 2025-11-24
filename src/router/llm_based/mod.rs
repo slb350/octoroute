@@ -451,7 +451,8 @@ impl LlmBasedRouter {
                         .mark_success(endpoint.name())
                         .await
                     {
-                        self.metrics.health_tracking_failure();
+                        self.metrics
+                            .health_tracking_failure(endpoint.name(), e.error_type());
 
                         tracing::warn!(
                             endpoint_name = %endpoint.name(),
@@ -512,7 +513,8 @@ impl LlmBasedRouter {
                         .mark_failure(endpoint.name())
                         .await
                     {
-                        self.metrics.health_tracking_failure();
+                        self.metrics
+                            .health_tracking_failure(endpoint.name(), e.error_type());
 
                         tracing::warn!(
                             endpoint_name = %endpoint.name(),

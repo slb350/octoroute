@@ -158,8 +158,10 @@ router_tier = "balanced"
     async fn test_health_handler_shows_degraded_when_health_tracking_fails() {
         let state = create_test_state();
 
-        // Increment health_tracking_failures metric
-        state.metrics().health_tracking_failure();
+        // Increment health_tracking_failures metric with test labels
+        state
+            .metrics()
+            .health_tracking_failure("test-endpoint", "unknown_endpoint");
 
         let (status, Json(response)) = handler(State(state)).await;
 
@@ -194,8 +196,10 @@ router_tier = "balanced"
     async fn test_health_handler_shows_both_degraded_when_both_fail() {
         let state = create_test_state();
 
-        // Increment both failure metrics
-        state.metrics().health_tracking_failure();
+        // Increment both failure metrics with test labels
+        state
+            .metrics()
+            .health_tracking_failure("test-endpoint", "unknown_endpoint");
         state.metrics().metrics_recording_failure();
 
         let (status, Json(response)) = handler(State(state)).await;
