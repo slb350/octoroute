@@ -48,11 +48,10 @@ weight = 1.0
 priority = 1
 
 [routing]
-# Strategy options: "rule", "llm", "hybrid", "tool"
+# Strategy options: "rule", "llm", "hybrid"
 # - rule: Fast pattern-based routing (no LLM overhead)
-# - llm: Intelligent routing using 30B model
+# - llm: Intelligent routing using router tier model
 # - hybrid: Rule-based first, LLM fallback (recommended)
-# - tool: Tool-based routing (experimental)
 strategy = "hybrid"
 
 # Default importance level if not specified in request

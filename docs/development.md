@@ -574,7 +574,7 @@ octoroute/
 │   ├── timeout_enforcement.rs
 │   ├── stream_interruption.rs
 │   ├── background_health_checks.rs
-│   └── ... (19 integration test files total)
+│   └── ... (46 integration test files total)
 │
 ├── benches/                       # Benchmarks
 │   └── routing.rs

@@ -498,12 +498,12 @@ Contributions welcome! Please see [Development Guide](docs/development.md) for g
 
 **Areas for contribution**:
 
-- Additional routing strategies (e.g., RL-based)
+- Additional routing strategies (e.g., RL-based, tool-based)
 - Streaming response support (SSE/WebSocket)
 - Caching layer for repeated prompts
 - Web UI for routing visualization
 - More comprehensive benchmarks
-- LLM-based routing implementation
+- Configurable config file path (currently hardcoded to `config.toml`)
 
 ---
 
