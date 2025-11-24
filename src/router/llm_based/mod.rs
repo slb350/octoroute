@@ -871,11 +871,11 @@ impl LlmBasedRouter {
 
         // Check for refusal/error patterns BEFORE keyword matching
         //
-        // Note: Uses simple substring matching - may have false positives if refusal
-        // keywords appear in legitimate responses (e.g., "I CANNOT decide FAST enough").
-        // This is acceptable because router responses should be single-word (FAST/BALANCED/DEEP)
-        // per the prompt instructions. Any multi-word response indicates LLM malfunction
-        // and should be treated as an error regardless.
+        // Note: Uses simple substring matching for refusal patterns. False positives
+        // are possible (e.g., "The FAST tier CANNOT be used") but rare in practice
+        // because the prompt explicitly instructs single-word responses. If the LLM
+        // ignores instructions and generates multi-word responses containing refusal
+        // keywords, we treat it as a malfunction regardless of false positive risk.
         const REFUSAL_PATTERNS: &[&str] = &[
             "CANNOT", "CAN'T", "UNABLE", "ERROR", "SORRY", "REFUSE", "FAILED", "TIMEOUT",
         ];

@@ -247,7 +247,7 @@ impl TimeoutsConfig {
                 if timeout > 300 {
                     return Err(crate::error::AppError::Config(format!(
                         "timeouts.{} cannot exceed 300 seconds (5 minutes), got {}. \
-                        This limit prevents connection pool exhaustion and arithmetic overflow.",
+                        This configuration policy prevents connection pool exhaustion and ensures timely failure detection.",
                         tier_name, timeout
                     )));
                 }
@@ -485,16 +485,14 @@ impl Config {
 
                 // Validate max_tokens: must not exceed u32::MAX
                 //
-                // This validation serves two purposes:
+                // **SDK Compatibility & Defensive Validation**:
+                // open-agent-sdk requires max_tokens to fit in u32 for API compatibility.
+                // Values must be <= 4,294,967,295 (u32::MAX).
                 //
-                // 1. **SDK Compatibility**: open-agent-sdk requires max_tokens to fit in u32
-                //    for API compatibility. Values must be <= 4,294,967,295 (u32::MAX).
-                //
-                // 2. **Defensive Upper Bound**: Most LLMs don't support >4 billion tokens.
-                //    This check prevents unreasonable values (like usize::MAX on 64-bit systems)
-                //    from being silently truncated or causing unexpected behavior.
-                //
-                // Combined, these checks ensure both API correctness and reasonable limits.
+                // This single check also provides defensive validation: no LLM supports >4 billion
+                // tokens, so the u32::MAX limit naturally prevents configuration errors like setting
+                // usize::MAX on 64-bit systems (which would be silently truncated). The check
+                // simultaneously ensures API correctness and reasonable configuration limits.
                 if endpoint.max_tokens > u32::MAX as usize {
                     return Err(crate::error::AppError::Config(format!(
                         "Configuration error: Endpoint '{}' in tier '{}' has max_tokens={} which exceeds u32::MAX ({}). \
