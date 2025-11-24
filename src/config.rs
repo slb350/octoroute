@@ -111,20 +111,27 @@ fn default_priority() -> u8 {
 ///
 /// Allows different timeout values for router queries based on model size.
 /// Larger models (Deep tier) typically need more time to analyze routing decisions.
+///
+/// # Encapsulation
+///
+/// Fields are private to prevent post-validation mutation. Use `new()` constructor
+/// for validated construction and accessor methods for field access.
+///
+/// This matches the `TimeoutsConfig` pattern for consistency.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RouterTimeouts {
     /// Timeout for Fast tier router queries (in seconds)
     ///
     /// Recommended: 5-10s for 8B models
-    pub fast: u64,
+    fast: u64,
     /// Timeout for Balanced tier router queries (in seconds)
     ///
     /// Recommended: 10-15s for 30B models
-    pub balanced: u64,
+    balanced: u64,
     /// Timeout for Deep tier router queries (in seconds)
     ///
     /// Recommended: 15-30s for 120B models
-    pub deep: u64,
+    deep: u64,
 }
 
 impl Default for RouterTimeouts {
@@ -142,6 +149,51 @@ impl Default for RouterTimeouts {
 }
 
 impl RouterTimeouts {
+    /// Create a new RouterTimeouts with validation
+    ///
+    /// # Arguments
+    ///
+    /// * `fast` - Timeout for Fast tier router queries (in seconds)
+    /// * `balanced` - Timeout for Balanced tier router queries (in seconds)
+    /// * `deep` - Timeout for Deep tier router queries (in seconds)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any timeout is 0 (zero timeouts cause immediate failures)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use octoroute::config::RouterTimeouts;
+    ///
+    /// let timeouts = RouterTimeouts::new(5, 10, 20).expect("valid timeouts");
+    /// assert_eq!(timeouts.fast(), 5);
+    /// ```
+    pub fn new(fast: u64, balanced: u64, deep: u64) -> Result<Self, String> {
+        let timeouts = Self {
+            fast,
+            balanced,
+            deep,
+        };
+        timeouts.validate()?;
+        Ok(timeouts)
+    }
+
+    /// Get the Fast tier timeout in seconds
+    pub fn fast(&self) -> u64 {
+        self.fast
+    }
+
+    /// Get the Balanced tier timeout in seconds
+    pub fn balanced(&self) -> u64 {
+        self.balanced
+    }
+
+    /// Get the Deep tier timeout in seconds
+    pub fn deep(&self) -> u64 {
+        self.deep
+    }
+
     /// Validate that all timeouts are positive (> 0)
     ///
     /// Zero or negative timeouts are invalid and will cause immediate failures.
@@ -221,9 +273,9 @@ impl RoutingConfig {
     /// Timeout in seconds (u64)
     pub fn router_timeout_for_tier(&self, tier: TargetModel) -> u64 {
         match tier {
-            TargetModel::Fast => self.router_timeouts.fast,
-            TargetModel::Balanced => self.router_timeouts.balanced,
-            TargetModel::Deep => self.router_timeouts.deep,
+            TargetModel::Fast => self.router_timeouts.fast(),
+            TargetModel::Balanced => self.router_timeouts.balanced(),
+            TargetModel::Deep => self.router_timeouts.deep(),
         }
     }
 }
