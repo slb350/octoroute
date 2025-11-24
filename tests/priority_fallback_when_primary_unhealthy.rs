@@ -13,17 +13,20 @@ use octoroute::router::TargetModel;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// Test that selector falls back to priority=2 when priority=1 is unhealthy
+/// Test that selector falls back to priority=1 when priority=2 is unhealthy
 ///
 /// SCENARIO: Tier has two endpoints:
-/// - endpoint-1 (priority=1, primary) - marked unhealthy after 3 failures
-/// - endpoint-2 (priority=2, fallback) - healthy
+/// - endpoint-1 (priority=2, primary) - marked unhealthy after 3 failures
+/// - endpoint-2 (priority=1, fallback) - healthy
 ///
 /// EXPECTED: Selector should return endpoint-2 (fallback), NOT None.
 /// Users should never see "no healthy endpoints" when fallbacks are available.
+///
+/// RATIONALE: Per docs/configuration.md, higher priority values = tried first.
+/// When priority=2 fails, system should fall back to priority=1.
 #[tokio::test]
 async fn test_priority_fallback_when_primary_unhealthy() {
-    // ARRANGE: Create config with primary + fallback endpoints
+    // ARRANGE: Create config with primary (priority=2) + fallback (priority=1) endpoints
     let toml = r#"
         [server]
         host = "127.0.0.1"
@@ -33,14 +36,14 @@ async fn test_priority_fallback_when_primary_unhealthy() {
         name = "fast-primary"
         base_url = "http://localhost:11434/v1"
         max_tokens = 4096
-        priority = 1
+        priority = 2
         weight = 1.0
 
         [[models.fast]]
         name = "fast-fallback"
         base_url = "http://localhost:11435/v1"
         max_tokens = 4096
-        priority = 2
+        priority = 1
         weight = 1.0
 
         [[models.balanced]]
@@ -97,18 +100,23 @@ async fn test_priority_fallback_when_primary_unhealthy() {
     assert_eq!(
         endpoint.name(),
         "fast-fallback",
-        "Should select fallback endpoint (priority=2) when primary (priority=1) is unhealthy"
+        "Should select fallback endpoint (priority=1) when primary (priority=2) is unhealthy"
+    );
+    assert_eq!(
+        endpoint.priority(),
+        1,
+        "Fallback should have priority=1 (lower than primary's priority=2)"
     );
 }
 
 /// Test that selector returns None only when ALL priorities are exhausted
 ///
-/// SCENARIO: Both primary and fallback are unhealthy
+/// SCENARIO: Both primary (priority=2) and fallback (priority=1) are unhealthy
 ///
 /// EXPECTED: Selector returns None (no healthy endpoints available)
 #[tokio::test]
 async fn test_returns_none_when_all_priorities_exhausted() {
-    // ARRANGE: Create config with primary + fallback endpoints
+    // ARRANGE: Create config with primary (priority=2) + fallback (priority=1) endpoints
     let toml = r#"
         [server]
         host = "127.0.0.1"
@@ -118,13 +126,13 @@ async fn test_returns_none_when_all_priorities_exhausted() {
         name = "fast-primary"
         base_url = "http://localhost:11434/v1"
         max_tokens = 4096
-        priority = 1
+        priority = 2
 
         [[models.fast]]
         name = "fast-fallback"
         base_url = "http://localhost:11435/v1"
         max_tokens = 4096
-        priority = 2
+        priority = 1
 
         [[models.balanced]]
         name = "balanced"
@@ -173,18 +181,16 @@ async fn test_returns_none_when_all_priorities_exhausted() {
 
 /// Test that priorities are respected during selection
 ///
-/// SCENARIO: Both priority=1 and priority=2 are healthy
+/// SCENARIO: Both priority=2 and priority=1 are healthy
 ///
-/// EXPECTED: Selector should ONLY choose from priority=1 (never priority=2)
+/// EXPECTED: Selector should ONLY choose from priority=2 (never priority=1)
 /// when higher priority is available.
 ///
-/// NOTE: This test currently FAILS, revealing a potential bug in priority selection.
-/// When all endpoints are healthy, the selector sometimes chooses priority=2 endpoints.
-/// This should be investigated separately.
+/// RATIONALE: Per docs/configuration.md, higher priority values = tried first.
+/// Priority=2 endpoints should always be selected over priority=1 when healthy.
 #[tokio::test]
-#[ignore = "Test reveals potential priority selection bug - needs investigation"]
 async fn test_respects_priority_order_when_all_healthy() {
-    // ARRANGE: Create config with primary + fallback endpoints
+    // ARRANGE: Create config with primary (priority=2) + fallback (priority=1) endpoints
     let toml = r#"
         [server]
         host = "127.0.0.1"
@@ -194,13 +200,13 @@ async fn test_respects_priority_order_when_all_healthy() {
         name = "fast-primary"
         base_url = "http://localhost:11434/v1"
         max_tokens = 4096
-        priority = 1
+        priority = 2
 
         [[models.fast]]
         name = "fast-fallback"
         base_url = "http://localhost:11435/v1"
         max_tokens = 4096
-        priority = 2
+        priority = 1
 
         [[models.balanced]]
         name = "balanced"
@@ -222,7 +228,7 @@ async fn test_respects_priority_order_when_all_healthy() {
     let metrics = Arc::new(Metrics::new().expect("Failed to create metrics"));
     let selector = Arc::new(ModelSelector::new(Arc::new(config), metrics));
 
-    // ACT: Select 100 times and verify we NEVER get fallback
+    // ACT: Select 100 times and verify we ALWAYS get primary (priority=2), NEVER fallback (priority=1)
     let exclusions: HashSet<EndpointName> = HashSet::new();
     for _ in 0..100 {
         let selected = selector.select(TargetModel::Fast, &exclusions).await;
@@ -232,7 +238,12 @@ async fn test_respects_priority_order_when_all_healthy() {
         assert_eq!(
             endpoint.name(),
             "fast-primary",
-            "Should only select priority=1 endpoint when it's healthy, NEVER priority=2"
+            "Should only select priority=2 endpoint (primary) when healthy, NEVER priority=1 (fallback)"
+        );
+        assert_eq!(
+            endpoint.priority(),
+            2,
+            "Should select highest priority value (2 > 1)"
         );
     }
 }
