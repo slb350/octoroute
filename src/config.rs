@@ -939,11 +939,6 @@ router_tier = "balanced"
         assert_eq!(config.models.fast[0].priority, 1);
     }
 
-    // REMOVED: test_config_validation_empty_fast_tier_allowed_for_non_router_tier
-    // This test was validating the OLD buggy behavior where empty tiers were allowed.
-    // P1 FIX: All tiers must have endpoints because routers can select any tier.
-    // See tests/all_tier_validation.rs for new comprehensive validation tests.
-
     #[test]
     fn test_config_validation_invalid_router_tier_fails() {
         let config_str = r#"
@@ -1032,12 +1027,6 @@ router_tier = "deep"
         assert!(err_msg.contains("endpoint"));
     }
 
-    // Note: Format validation tests removed - serde now validates router_tier format
-    // at deserialization time. Invalid values like "" or "FAST" are caught by serde's
-    // enum deserializer, not by Config::validate(). This provides stronger type safety
-    // - invalid configs can't even be deserialized, preventing the need for runtime
-    // validation.
-
     #[test]
     fn test_config_router_tier_defaults_to_balanced() {
         // Test that configs without router_tier field use Balanced as default
@@ -1076,13 +1065,6 @@ strategy = "rule"
             "router_tier should default to Balanced when omitted"
         );
     }
-
-    // REMOVED: test_config_validation_rule_strategy_allows_empty_router_tier
-    // This test was validating the OLD buggy behavior where Rule strategy could have empty tiers.
-    // P1 FIX: RuleBasedRouter routes to ANY tier (Fast/Balanced/Deep), not just router_tier.
-    // Example: CasualChat routes to Fast, High importance routes to Deep.
-    // If those tiers are empty, requests fail at runtime with "No available healthy endpoints".
-    // See tests/all_tier_validation.rs for new comprehensive validation tests.
 
     #[test]
     fn test_config_validation_negative_weight_fails() {
@@ -1303,19 +1285,6 @@ fast = 15
         assert_eq!(config.timeouts.balanced, None);
         assert_eq!(config.timeouts.deep, None);
     }
-
-    // REMOVED: test_config_validation_per_tier_timeout_too_low_fails
-    // REMOVED: test_config_validation_per_tier_timeout_too_high_fails
-    // REMOVED: test_config_validation_per_tier_timeouts_valid_succeeds
-    //
-    // These tests tested the OLD behavior where timeouts.fast/balanced/deep fields were
-    // public and could be modified after construction, with validation happening later
-    // during validate(). This created a temporal gap where invalid TimeoutsConfig
-    // instances could exist.
-    //
-    // With Issue #3 fix (custom Deserialize), these fields are now PRIVATE and validation
-    // happens DURING deserialization. Invalid values are rejected immediately at parse time.
-    // See new tests: test_timeouts_config_deserialization_* for the CORRECT behavior.
 
     #[test]
     fn test_config_timeout_for_tier_uses_override() {
