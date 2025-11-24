@@ -46,7 +46,7 @@ fn test_health_tracking_degraded_serializes() {
 /// Test that HealthResponse::new() constructs from metrics
 #[test]
 fn test_health_response_new_with_zero_failures() {
-    let response = HealthResponse::new(0, 0);
+    let response = HealthResponse::new(0, 0, 0);
 
     let json = serde_json::to_value(&response).expect("Should serialize");
 
@@ -64,7 +64,7 @@ fn test_health_response_new_with_zero_failures() {
 /// Test that HealthResponse::new() returns degraded when failures > 0
 #[test]
 fn test_health_response_new_with_failures() {
-    let response = HealthResponse::new(5, 0);
+    let response = HealthResponse::new(5, 0, 0);
 
     let json = serde_json::to_value(&response).expect("Should serialize");
 
@@ -82,7 +82,7 @@ fn test_health_response_new_with_failures() {
 /// Test that HealthResponse fields are private (compile-time check)
 #[test]
 fn test_health_response_fields_are_private() {
-    let response = HealthResponse::new(0, 0);
+    let response = HealthResponse::new(0, 0, 0);
 
     // This test verifies we must use the constructor
     // Trying to access response.status or response.health_tracking_status
@@ -119,7 +119,7 @@ fn test_invalid_states_prevented_at_compile_time() {
     // - Enums restrict values to valid states only
     // - Constructor enforces invariants
 
-    let response = HealthResponse::new(0, 0);
+    let response = HealthResponse::new(0, 0, 0);
     let json = serde_json::to_value(&response).expect("Should serialize");
 
     // Can only have valid states

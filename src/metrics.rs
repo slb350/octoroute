@@ -102,6 +102,7 @@ pub struct Metrics {
     model_invocations: CounterVec,
     health_tracking_failures: IntCounterVec,
     metrics_recording_failures: IntCounterVec,
+    background_task_failures: IntCounterVec,
 }
 
 impl Metrics {
@@ -184,12 +185,40 @@ impl Metrics {
             &["operation"],
         )?;
 
+        // Counter: Background health check task failures with failure type label
+        //
+        // CRITICAL: Alert on ANY increment - indicates health checking degradation
+        //
+        // Labels:
+        // - failure_type: Type of failure (panic, unexpected_termination)
+        //
+        // Cardinality: 2 failure types = 2 time series (bounded)
+        //
+        // Context (from PR #4 Review - MED-4):
+        // Background health check task can fail silently for up to 5 restart attempts
+        // before panicking. This metric surfaces failures immediately so operators can
+        // detect degradation early (via alerts) instead of waiting for catastrophic failure.
+        //
+        // Alerting thresholds:
+        // - WARNING: Any increase (> 0) - Health checking is degraded
+        // - CRITICAL: increase > 3 in 5m - Multiple failures, imminent panic
+        let background_task_failures = IntCounterVec::new(
+            Opts::new(
+                "octoroute_background_health_task_failures_total",
+                "CRITICAL: Background health check task failures before permanent failure. \
+                Alert on ANY increment - indicates health checking degradation. \
+                Task restarts up to 5 times before panic.",
+            ),
+            &["failure_type"],
+        )?;
+
         // Register all metrics
         registry.register(Box::new(requests_total.clone()))?;
         registry.register(Box::new(routing_duration.clone()))?;
         registry.register(Box::new(model_invocations.clone()))?;
         registry.register(Box::new(health_tracking_failures.clone()))?;
         registry.register(Box::new(metrics_recording_failures.clone()))?;
+        registry.register(Box::new(background_task_failures.clone()))?;
 
         Ok(Self {
             registry: Arc::new(registry),
@@ -198,6 +227,7 @@ impl Metrics {
             model_invocations,
             health_tracking_failures,
             metrics_recording_failures,
+            background_task_failures,
         })
     }
 
@@ -442,6 +472,47 @@ impl Metrics {
         metric_families
             .iter()
             .find(|mf| mf.name() == "octoroute_metrics_recording_failures_total")
+            .map(|mf| {
+                mf.get_metric()
+                    .iter()
+                    .map(|m| m.counter.value.unwrap_or(0.0) as u64)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Record a background health check task failure
+    ///
+    /// # Arguments
+    ///
+    /// * `failure_type` - Type of failure: "panic" or "unexpected_termination"
+    ///
+    /// # Context
+    ///
+    /// The background health check task can fail and restart up to 5 times before
+    /// permanently failing. This metric tracks each restart to provide early warning
+    /// of health checking degradation.
+    ///
+    /// Operators should alert on ANY increment of this metric, as it indicates
+    /// health tracking is degraded and may fail permanently soon.
+    pub fn background_task_failure(&self, failure_type: &str) {
+        self.background_task_failures
+            .with_label_values(&[failure_type])
+            .inc();
+    }
+
+    /// Get the current count of background task failures across all failure types
+    ///
+    /// Returns the total number of background health task failures since startup.
+    /// Used by the /health endpoint to report background task status.
+    ///
+    /// Note: This sums across all label combinations (all failure types).
+    pub fn background_task_failures_count(&self) -> u64 {
+        // Gather metrics from registry and sum background_task_failures across all labels
+        let metric_families = self.registry.gather();
+        metric_families
+            .iter()
+            .find(|mf| mf.name() == "octoroute_background_health_task_failures_total")
             .map(|mf| {
                 mf.get_metric()
                     .iter()

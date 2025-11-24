@@ -926,6 +926,11 @@ impl HealthChecker {
                             restart_count = restart_count,
                             "Background health check task terminated unexpectedly"
                         );
+
+                        // Record failure in metrics for operator visibility
+                        if let Some(ref app_metrics) = self.app_metrics {
+                            app_metrics.background_task_failure("unexpected_termination");
+                        }
                     }
                     Err(e) => {
                         // Task panicked
@@ -934,6 +939,11 @@ impl HealthChecker {
                             restart_count = restart_count,
                             "Background health check task panicked"
                         );
+
+                        // Record failure in metrics for operator visibility
+                        if let Some(ref app_metrics) = self.app_metrics {
+                            app_metrics.background_task_failure("panic");
+                        }
                     }
                 }
 

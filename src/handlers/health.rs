@@ -42,6 +42,10 @@ pub struct HealthResponse {
     health_tracking_status: HealthTrackingStatus,
     /// Metrics recording status: operational or degraded
     metrics_recording_status: HealthTrackingStatus,
+    /// Background health task status: operational or degraded
+    background_task_status: HealthTrackingStatus,
+    /// Number of background task failures (restart attempts)
+    background_task_failures: u64,
 }
 
 impl HealthResponse {
@@ -50,13 +54,20 @@ impl HealthResponse {
     /// # Arguments
     /// * `health_tracking_failures` - Number of health tracking failures (from metrics)
     /// * `metrics_recording_failures` - Number of metrics recording failures (from metrics)
+    /// * `background_task_failures` - Number of background task failures/restarts (from metrics)
     ///
     /// # Returns
     /// A HealthResponse with:
     /// - status: Always HealthStatus::Ok
     /// - health_tracking_status: Degraded if failures > 0, otherwise Operational
     /// - metrics_recording_status: Degraded if failures > 0, otherwise Operational
-    pub fn new(health_tracking_failures: u64, metrics_recording_failures: u64) -> Self {
+    /// - background_task_status: Degraded if failures > 0, otherwise Operational
+    /// - background_task_failures: Count of failures for operator visibility
+    pub fn new(
+        health_tracking_failures: u64,
+        metrics_recording_failures: u64,
+        background_task_failures: u64,
+    ) -> Self {
         let health_tracking_status = if health_tracking_failures > 0 {
             HealthTrackingStatus::Degraded
         } else {
@@ -69,10 +80,18 @@ impl HealthResponse {
             HealthTrackingStatus::Operational
         };
 
+        let background_task_status = if background_task_failures > 0 {
+            HealthTrackingStatus::Degraded
+        } else {
+            HealthTrackingStatus::Operational
+        };
+
         Self {
             status: HealthStatus::Ok,
             health_tracking_status,
             metrics_recording_status,
+            background_task_status,
+            background_task_failures,
         }
     }
 }
@@ -88,7 +107,12 @@ impl HealthResponse {
 pub async fn handler(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
     let health_tracking_failures = state.metrics().health_tracking_failures_count();
     let metrics_recording_failures = state.metrics().metrics_recording_failures_count();
-    let response = HealthResponse::new(health_tracking_failures, metrics_recording_failures);
+    let background_task_failures = state.metrics().background_task_failures_count();
+    let response = HealthResponse::new(
+        health_tracking_failures,
+        metrics_recording_failures,
+        background_task_failures,
+    );
 
     (StatusCode::OK, Json(response))
 }
