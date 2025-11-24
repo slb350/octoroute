@@ -21,22 +21,22 @@ port = 3000
 request_timeout_seconds = 30
 
 [[models.fast]]
-name = "fast-priority-3-a"
+name = "fast-priority-1-a"
 base_url = "http://localhost:1234/v1"
 max_tokens = 2048
-priority = 3
+priority = 1
 
 [[models.fast]]
-name = "fast-priority-3-b"
+name = "fast-priority-1-b"
 base_url = "http://localhost:1235/v1"
 max_tokens = 2048
-priority = 3
+priority = 1
 
 [[models.fast]]
-name = "fast-priority-1"
+name = "fast-priority-3"
 base_url = "http://localhost:1236/v1"
 max_tokens = 2048
-priority = 1
+priority = 3
 
 [[models.balanced]]
 name = "balanced-1"
@@ -60,19 +60,21 @@ async fn test_priority_tier_exhaustion_falls_back_to_lower_priority() {
     // This test verifies that when all endpoints in the highest priority tier
     // are marked unhealthy, the selector correctly falls back to lower priority tiers.
     //
+    // Priority semantics: Lower numbers = higher priority
+    //
     // Setup:
-    // - 2 endpoints at priority 3 (highest)
-    // - 1 endpoint at priority 1 (lower)
+    // - 2 endpoints at priority 1 (highest - tried first)
+    // - 1 endpoint at priority 3 (lower - fallback)
     //
     // Steps:
-    // 1. Mark both priority-3 endpoints as unhealthy
-    // 2. Verify selector returns the priority-1 endpoint
+    // 1. Mark both priority-1 endpoints as unhealthy
+    // 2. Verify selector returns the priority-3 endpoint (fallback)
     // 3. Verify service continues (doesn't fail when preferred tier unavailable)
 
     let config = Arc::new(create_priority_test_config());
     let selector = ModelSelector::new(config.clone(), test_metrics());
 
-    // Initially, should select from priority 3 tier
+    // Initially, should select from priority 1 tier (highest priority)
     let no_exclude = ExclusionSet::new();
     let initial_endpoint = selector
         .select(TargetModel::Fast, &no_exclude)
@@ -81,58 +83,58 @@ async fn test_priority_tier_exhaustion_falls_back_to_lower_priority() {
 
     assert_eq!(
         initial_endpoint.priority(),
-        3,
-        "Initially should select from highest priority tier"
+        1,
+        "Initially should select from highest priority tier (priority=1)"
     );
 
-    // Mark both priority-3 endpoints as unhealthy
+    // Mark both priority-1 endpoints as unhealthy
     selector
         .health_checker()
-        .mark_failure("fast-priority-3-a")
+        .mark_failure("fast-priority-1-a")
         .await
         .unwrap();
     selector
         .health_checker()
-        .mark_failure("fast-priority-3-a")
+        .mark_failure("fast-priority-1-a")
         .await
         .unwrap();
     selector
         .health_checker()
-        .mark_failure("fast-priority-3-a")
+        .mark_failure("fast-priority-1-a")
         .await
         .unwrap(); // 3rd failure makes it unhealthy
 
     selector
         .health_checker()
-        .mark_failure("fast-priority-3-b")
+        .mark_failure("fast-priority-1-b")
         .await
         .unwrap();
     selector
         .health_checker()
-        .mark_failure("fast-priority-3-b")
+        .mark_failure("fast-priority-1-b")
         .await
         .unwrap();
     selector
         .health_checker()
-        .mark_failure("fast-priority-3-b")
+        .mark_failure("fast-priority-1-b")
         .await
         .unwrap(); // 3rd failure makes it unhealthy
 
-    // Verify both priority-3 endpoints are now unhealthy
+    // Verify both priority-1 endpoints are now unhealthy
     assert!(
         !selector
             .health_checker()
-            .is_healthy("fast-priority-3-a")
+            .is_healthy("fast-priority-1-a")
             .await
     );
     assert!(
         !selector
             .health_checker()
-            .is_healthy("fast-priority-3-b")
+            .is_healthy("fast-priority-1-b")
             .await
     );
 
-    // Now selection should fall back to priority-1 endpoint
+    // Now selection should fall back to priority-3 endpoint (lower priority)
     for _ in 0..10 {
         let endpoint = selector
             .select(TargetModel::Fast, &no_exclude)
@@ -141,10 +143,10 @@ async fn test_priority_tier_exhaustion_falls_back_to_lower_priority() {
 
         assert_eq!(
             endpoint.name(),
-            "fast-priority-1",
+            "fast-priority-3",
             "Should fall back to lower priority tier when highest tier is exhausted"
         );
-        assert_eq!(endpoint.priority(), 1);
+        assert_eq!(endpoint.priority(), 3);
     }
 
     println!("✓ Priority tier exhaustion correctly falls back to lower priority tiers");
@@ -158,7 +160,7 @@ async fn test_all_priorities_unhealthy_returns_none() {
     let selector = ModelSelector::new(config.clone(), test_metrics());
 
     // Mark ALL fast endpoints unhealthy
-    for endpoint_name in ["fast-priority-3-a", "fast-priority-3-b", "fast-priority-1"] {
+    for endpoint_name in ["fast-priority-1-a", "fast-priority-1-b", "fast-priority-3"] {
         for _ in 0..3 {
             selector
                 .health_checker()

@@ -143,23 +143,24 @@ impl ModelSelector {
         );
 
         // Find highest priority among available endpoints and filter to only that tier
-        let max_priority = available_endpoints
+        // Note: Lower priority numbers = higher priority (priority=1 is tried before priority=2)
+        let highest_priority_value = available_endpoints
             .iter()
             .map(|e| e.priority())
-            .max()
+            .min()
             .expect(
                 "Defensive check: available_endpoints cannot be empty due to early return above",
             );
 
         let highest_priority_endpoints: Vec<&ModelEndpoint> = available_endpoints
             .iter()
-            .filter(|e| e.priority() == max_priority)
+            .filter(|e| e.priority() == highest_priority_value)
             .copied()
             .collect();
 
         tracing::debug!(
             tier = ?target,
-            max_priority = max_priority,
+            highest_priority = highest_priority_value,
             available_endpoints = available_endpoints.len(),
             priority_tier_endpoints = highest_priority_endpoints.len(),
             "Filtered to highest priority tier among available endpoints"
@@ -180,7 +181,7 @@ impl ModelSelector {
                 This indicates memory corruption (buffer overflow, use-after-free) or a critical \
                 bug in endpoint management. Cannot safely continue operation. \
                 Endpoints: {:?}",
-                max_priority,
+                highest_priority_value,
                 target,
                 total_weight,
                 highest_priority_endpoints
@@ -201,7 +202,7 @@ impl ModelSelector {
             if random_weight < cumulative_weight {
                 tracing::debug!(
                     tier = ?target,
-                    priority = max_priority,
+                    priority = highest_priority_value,
                     endpoint_name = %endpoint.name(),
                     endpoint_url = %endpoint.base_url(),
                     weight = endpoint.weight(),
@@ -219,7 +220,7 @@ impl ModelSelector {
             .expect("Defensive check: highest_priority_endpoints cannot be empty");
         tracing::warn!(
             tier = ?target,
-            priority = max_priority,
+            priority = highest_priority_value,
             endpoint_name = %last_endpoint.name(),
             "Fallback to last endpoint (likely floating-point rounding)"
         );
@@ -242,8 +243,11 @@ impl ModelSelector {
     /// returns None and LLM routing is not available.
     ///
     /// # Selection Logic
-    /// 1. Find the maximum priority value across all configured endpoints in all tiers
+    /// 1. Find the highest priority value (lowest number) across all configured endpoints in all tiers
     /// 2. Return the first tier (in order: Fast, Balanced, Deep) that has an endpoint with that priority
+    ///
+    /// # Priority Semantics
+    /// Lower numbers = higher priority (priority=1 is tried before priority=2)
     ///
     /// # Returns
     /// Returns `Some(TargetModel)` with the tier of the highest-priority endpoint,
@@ -254,12 +258,12 @@ impl ModelSelector {
     /// Config:
     ///   Fast tier: priority 2
     ///   Balanced tier: (empty)
-    ///   Deep tier: priority 3
+    ///   Deep tier: priority 1
     ///
-    /// default_tier() returns Deep (priority 3 is highest)
+    /// default_tier() returns Deep (priority 1 is highest)
     /// ```
     pub fn default_tier(&self) -> Option<TargetModel> {
-        // Find max priority across all tiers
+        // Find highest priority (lowest number) across all tiers
         let all_endpoints = self
             .config
             .models
@@ -268,7 +272,7 @@ impl ModelSelector {
             .chain(self.config.models.balanced.iter())
             .chain(self.config.models.deep.iter());
 
-        let max_priority = all_endpoints.map(|e| e.priority()).max()?;
+        let highest_priority_value = all_endpoints.map(|e| e.priority()).min()?;
 
         // Return first tier with that priority (check in order: Fast, Balanced, Deep)
         if self
@@ -276,7 +280,7 @@ impl ModelSelector {
             .models
             .fast
             .iter()
-            .any(|e| e.priority() == max_priority)
+            .any(|e| e.priority() == highest_priority_value)
         {
             return Some(TargetModel::Fast);
         }
@@ -286,7 +290,7 @@ impl ModelSelector {
             .models
             .balanced
             .iter()
-            .any(|e| e.priority() == max_priority)
+            .any(|e| e.priority() == highest_priority_value)
         {
             return Some(TargetModel::Balanced);
         }
@@ -296,12 +300,12 @@ impl ModelSelector {
             .models
             .deep
             .iter()
-            .any(|e| e.priority() == max_priority)
+            .any(|e| e.priority() == highest_priority_value)
         {
             return Some(TargetModel::Deep);
         }
 
-        // Should never reach here if max_priority exists
+        // Should never reach here if highest_priority_value exists
         None
     }
 }

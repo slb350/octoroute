@@ -178,11 +178,9 @@ async fn test_returns_none_when_all_priorities_exhausted() {
 /// EXPECTED: Selector should ONLY choose from priority=1 (never priority=2)
 /// when higher priority is available.
 ///
-/// NOTE: This test currently FAILS, revealing a potential bug in priority selection.
-/// When all endpoints are healthy, the selector sometimes chooses priority=2 endpoints.
-/// This should be investigated separately.
+/// RATIONALE: Verifies that priority semantics are correct (lower numbers = higher priority).
+/// Priority=1 endpoints should always be preferred over priority=2 when healthy.
 #[tokio::test]
-#[ignore = "Test reveals potential priority selection bug - needs investigation"]
 async fn test_respects_priority_order_when_all_healthy() {
     // ARRANGE: Create config with primary + fallback endpoints
     let toml = r#"
