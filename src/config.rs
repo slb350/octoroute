@@ -579,7 +579,7 @@ impl Config {
         // ═══════════════════════════════════════════════════════════════════════
         //
         // Validates individual endpoint configuration fields across all tiers:
-        //   - max_tokens: must fit in u32, must have defensive upper bound
+        //   - max_tokens: must fit in u32 (API compatibility)
         //   - base_url: must start with http:// or https://, must end with /v1
         //   - temperature: must be finite number between 0.0 and 2.0
         //
@@ -643,15 +643,11 @@ impl Config {
                     )));
                 }
 
-                // Validate base_url: must end with /v1
-                // This is required because health checks append "/models" to get "/v1/models"
-                // Without this validation, users might configure "http://host:port" which would
-                // result in health checks trying "/models" (404) instead of "/v1/models"
+                // Validate base_url: must end with /v1 (OpenAI API compatibility)
                 if !endpoint.base_url.ends_with("/v1") {
                     return Err(crate::error::AppError::Config(format!(
                         "Configuration error: Endpoint '{}' in tier '{}' has invalid base_url '{}'. \
-                        base_url must end with '/v1' (e.g., 'http://host:port/v1'). \
-                        This is required for health checks to work correctly.",
+                        base_url must end with '/v1' (e.g., 'http://host:port/v1') for OpenAI API compatibility.",
                         endpoint.name, tier_name, endpoint.base_url
                     )));
                 }
@@ -677,11 +673,10 @@ impl Config {
         //
         // P1 FIX: Require ALL tiers (Fast/Balanced/Deep) to have at least one endpoint.
         //
-        // RATIONALE: Both RuleBasedRouter and LlmBasedRouter can route to ANY tier:
-        //   - RuleBasedRouter routes CasualChat → Fast, High importance → Deep, etc.
-        //   - LlmBasedRouter can return any tier based on prompt analysis
-        //   - If a tier is empty and gets selected, request fails at runtime with
-        //     "No available healthy endpoints" instead of failing at startup validation.
+        // RATIONALE: Both RuleBasedRouter and LlmBasedRouter can route to ANY tier
+        // based on request characteristics. If a tier is empty and gets selected,
+        // requests fail at runtime with "No available healthy endpoints" instead
+        // of failing at startup validation.
         //
         // This validation ensures config errors are caught at startup, not runtime.
         //
@@ -692,15 +687,8 @@ impl Config {
             return Err(crate::error::AppError::Config(
                 "Configuration error: models.fast has no endpoints. \
                 All three tiers (fast, balanced, deep) must have at least one endpoint \
-                because routers can select any tier based on request characteristics.\n\n\
-                Example fix - add to config.toml:\n\
-                [[models.fast]]\n\
-                name = \"my-fast-model\"\n\
-                base_url = \"http://localhost:11434/v1\"\n\
-                max_tokens = 2048\n\
-                temperature = 0.7\n\
-                weight = 1.0\n\
-                priority = 1"
+                because routers can select any tier based on request characteristics. \
+                See config.toml or tests for configuration examples."
                     .to_string(),
             ));
         }
@@ -710,15 +698,8 @@ impl Config {
             return Err(crate::error::AppError::Config(
                 "Configuration error: models.balanced has no endpoints. \
                 All three tiers (fast, balanced, deep) must have at least one endpoint \
-                because routers can select any tier based on request characteristics.\n\n\
-                Example fix - add to config.toml:\n\
-                [[models.balanced]]\n\
-                name = \"my-balanced-model\"\n\
-                base_url = \"http://localhost:1234/v1\"\n\
-                max_tokens = 4096\n\
-                temperature = 0.7\n\
-                weight = 1.0\n\
-                priority = 1"
+                because routers can select any tier based on request characteristics. \
+                See config.toml or tests for configuration examples."
                     .to_string(),
             ));
         }
@@ -728,15 +709,8 @@ impl Config {
             return Err(crate::error::AppError::Config(
                 "Configuration error: models.deep has no endpoints. \
                 All three tiers (fast, balanced, deep) must have at least one endpoint \
-                because routers can select any tier based on request characteristics.\n\n\
-                Example fix - add to config.toml:\n\
-                [[models.deep]]\n\
-                name = \"my-deep-model\"\n\
-                base_url = \"http://localhost:8080/v1\"\n\
-                max_tokens = 8192\n\
-                temperature = 0.7\n\
-                weight = 1.0\n\
-                priority = 1"
+                because routers can select any tier based on request characteristics. \
+                See config.toml or tests for configuration examples."
                     .to_string(),
             ));
         }
@@ -1199,7 +1173,7 @@ strategy = "rule"
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("base_url"));
         assert!(err_msg.contains("/v1"));
-        assert!(err_msg.contains("health checks"));
+        assert!(err_msg.contains("OpenAI API"));
     }
 
     #[test]

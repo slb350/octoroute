@@ -123,38 +123,15 @@ impl LlmRouterError {
 // on AppError::LlmRouting variant. This preserves type information instead of
 // losing it by converting to AppError::ModelQueryFailed.
 
-/// Maximum size for router LLM response (bytes)
+/// Maximum size for router LLM response (1KB)
 ///
-/// This 1KB limit is a **defensive safeguard** to catch runaway LLM generation early
-/// and prevent unbounded memory growth. Responses exceeding this limit are rejected
-/// during streaming without parsing (error returned immediately).
+/// Prevents unbounded memory growth from LLM malfunctions (runaway generation,
+/// hallucination loops, prompt injection).
 ///
-/// ## Expected Response Format
+/// **Expected response**: "FAST", "BALANCED", or "DEEP" with optional explanation (~10-200 bytes).
+/// **Safety margin**: 1024 bytes = 5x maximum expected legitimate response (~200 bytes).
 ///
-/// Router responses contain one of three keywords: "FAST", "BALANCED", or "DEEP".
-/// The parser extracts these keywords from verbose responses (e.g., "I recommend
-/// BALANCED because it provides the best balance of speed and accuracy for this task").
-///
-/// **Typical response sizes**:
-/// - Minimal: "BALANCED" (~10 bytes)
-/// - Verbose: "I recommend BALANCED because..." (~100-200 bytes)
-/// - Excessive: Multi-paragraph explanations (>500 bytes, likely indicates issues)
-///
-/// ## Rationale for 1KB Limit
-///
-/// **Safety margin calculation**:
-/// - Maximum expected legitimate response: ~200 bytes (verbose explanation)
-/// - Safety factor: 5x (accommodates unexpectedly verbose but valid responses)
-/// - Result: 1024 bytes (1KB)
-///
-/// This limit prevents unbounded memory growth from LLM malfunctions while
-/// providing enough headroom for legitimate responses:
-/// - Runaway generation (repeating text, hallucination loops)
-/// - LLM generating essays instead of classifications (>100 words)
-/// - Prompt injection attempts attempting to overwhelm the parser
-///
-/// The 5x safety margin ensures we reject problematic generation (~500+ bytes)
-/// while never rejecting valid verbose responses (~200 bytes maximum).
+/// Oversized responses (>1KB) indicate LLM misconfiguration and are rejected during streaming.
 const MAX_ROUTER_RESPONSE: usize = 1024;
 
 /// LLM-powered router that uses a model to make routing decisions
