@@ -191,8 +191,8 @@ impl ModelSelector {
         }
 
         // Generate random number in range [0, total_weight)
-        let mut rng = rand::thread_rng();
-        let random_weight = rng.gen_range(0.0..total_weight);
+        let mut rng = rand::rng();
+        let random_weight = rng.random_range(0.0..total_weight);
 
         // Select endpoint using cumulative weight distribution within priority tier
         let mut cumulative_weight = 0.0;
