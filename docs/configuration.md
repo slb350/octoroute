@@ -193,7 +193,7 @@ Result: A gets 33% traffic, B gets 67% traffic, C gets 0% traffic (lower priorit
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 ```
 
 ### Fields
@@ -208,11 +208,10 @@ router_model = "balanced"
   - Values: `"low"`, `"normal"`, `"high"`
   - Default: `"normal"` (if not specified)
 
-- `router_model` (string, required): Specifies which tier should be used for LLM-based routing
+- `router_tier` (string, optional): Which tier the LLM/hybrid router uses to make decisions
   - Values: `"fast"`, `"balanced"`, `"deep"`
-  - **Note**: Currently not implemented. LLM-based routing always uses the Balanced tier regardless of this setting.
-  - This field is validated but the value is not consulted at runtime.
-  - Recommended: Keep as `"balanced"` for future compatibility
+  - Default: `"balanced"` when omitted
+  - Validation: The selected tier must have at least one endpoint (e.g., `[[models.fast]]` when `router_tier="fast"`), otherwise startup fails with a configuration error
 
 ### Routing Strategies
 
@@ -374,7 +373,7 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 
 [observability]
 log_level = "info"
@@ -453,7 +452,7 @@ priority = 1  # Fallback only
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 fast = 20
@@ -505,7 +504,7 @@ priority = 1
 [routing]
 strategy = "rule"  # Rule-only for minimum latency
 default_importance = "low"  # Bias toward fast tier
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 fast = 10
@@ -555,7 +554,7 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 fast = 60

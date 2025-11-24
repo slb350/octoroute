@@ -41,7 +41,7 @@ priority = 1
 [routing]
 strategy = "rule"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 
 [observability]
 log_level = "debug"
@@ -283,4 +283,136 @@ async fn test_health_checker_state_consistency_under_load() {
         .await
         .unwrap();
     assert!(health_checker.is_healthy("fast-health-test").await);
+}
+
+/// Test background health checker recovery from transient failures
+///
+/// Addresses PR #4 Medium Priority Issue #18.
+///
+/// **Scenario**:
+/// 1. Background health checking is running
+/// 2. Some endpoints fail health checks (transient network issues)
+/// 3. Manual health updates continue working during the issue
+/// 4. Endpoints recover (network restored)
+/// 5. Background task continues functioning normally
+///
+/// **Verifies**: Health state remains consistent through failure/recovery cycles.
+#[tokio::test]
+async fn test_background_health_checker_recovery_from_transient_failure() {
+    use tokio::time::sleep;
+
+    let config = Arc::new(create_test_config());
+    let state = AppState::new(config.clone()).expect("AppState::new should succeed");
+    let health_checker = state.selector().health_checker();
+
+    // Initial state: all endpoints healthy
+    assert!(health_checker.is_healthy("fast-health-test").await);
+    assert!(health_checker.is_healthy("balanced-1").await);
+    assert!(health_checker.is_healthy("deep-1").await);
+
+    // Simulate transient failures (e.g., network glitch)
+    // Cycle 1: Mark endpoints as failed
+    for _ in 0..3 {
+        health_checker
+            .mark_failure("fast-health-test")
+            .await
+            .expect("Should mark failure");
+        health_checker
+            .mark_failure("balanced-1")
+            .await
+            .expect("Should mark failure");
+    }
+
+    // Verify endpoints are unhealthy
+    assert!(
+        !health_checker.is_healthy("fast-health-test").await,
+        "fast endpoint should be unhealthy after 3 failures"
+    );
+    assert!(
+        !health_checker.is_healthy("balanced-1").await,
+        "balanced endpoint should be unhealthy after 3 failures"
+    );
+
+    // Deep endpoint remains healthy (not affected by transient issue)
+    assert!(
+        health_checker.is_healthy("deep-1").await,
+        "deep endpoint should still be healthy"
+    );
+
+    // Simulate network recovery - endpoints start succeeding again
+    // This mimics the actual production scenario where network issues resolve
+    health_checker
+        .mark_success("fast-health-test")
+        .await
+        .expect("Should mark success after recovery");
+    health_checker
+        .mark_success("balanced-1")
+        .await
+        .expect("Should mark success after recovery");
+
+    // Verify immediate recovery (single success resets consecutive failures)
+    assert!(
+        health_checker.is_healthy("fast-health-test").await,
+        "fast endpoint should recover immediately after success"
+    );
+    assert!(
+        health_checker.is_healthy("balanced-1").await,
+        "balanced endpoint should recover immediately after success"
+    );
+
+    // Simulate another failure cycle to test resilience
+    for _ in 0..2 {
+        // Only 2 failures this time (not enough to mark unhealthy)
+        health_checker
+            .mark_failure("fast-health-test")
+            .await
+            .expect("Should mark failure");
+    }
+
+    // Should still be healthy (needs 3 consecutive failures)
+    assert!(
+        health_checker.is_healthy("fast-health-test").await,
+        "fast endpoint should still be healthy after only 2 failures"
+    );
+
+    // Verify consecutive failure count is tracked correctly
+    let statuses = health_checker.get_all_statuses().await;
+    let fast_status = statuses
+        .iter()
+        .find(|s| s.name() == "fast-health-test")
+        .expect("Should find fast endpoint");
+
+    assert_eq!(
+        fast_status.consecutive_failures(),
+        2,
+        "Should track 2 consecutive failures"
+    );
+
+    // Another success resets the count
+    health_checker
+        .mark_success("fast-health-test")
+        .await
+        .expect("Should mark success");
+
+    let statuses = health_checker.get_all_statuses().await;
+    let fast_status = statuses
+        .iter()
+        .find(|s| s.name() == "fast-health-test")
+        .expect("Should find fast endpoint");
+
+    assert_eq!(
+        fast_status.consecutive_failures(),
+        0,
+        "Success should reset consecutive failures to 0"
+    );
+
+    // Allow background task to run briefly
+    sleep(Duration::from_millis(100)).await;
+
+    // Verify all endpoints remain in expected state
+    assert!(health_checker.is_healthy("fast-health-test").await);
+    assert!(health_checker.is_healthy("balanced-1").await);
+    assert!(health_checker.is_healthy("deep-1").await);
+
+    // No explicit shutdown needed - handled by Drop when test ends
 }

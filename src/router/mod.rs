@@ -11,18 +11,68 @@ pub use llm_based::{LlmBasedRouter, LlmRouter};
 pub use rule_based::RuleBasedRouter;
 
 use crate::error::AppResult;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 /// Target model selection (generic tiers)
 ///
 /// Maps to config.toml: models.fast, models.balanced, models.deep
 /// Model-specific details (size, name, endpoint) are in configuration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum TargetModel {
     Fast,
     Balanced,
     Deep,
+}
+
+impl<'de> Deserialize<'de> for TargetModel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "fast" => Ok(TargetModel::Fast),
+            "balanced" => Ok(TargetModel::Balanced),
+            "deep" => Ok(TargetModel::Deep),
+            _ => {
+                // Provide actionable error messages with common mistake detection
+                let suggestion = if s.to_lowercase() == "fast" {
+                    "Did you mean 'fast' (lowercase)?"
+                } else if s.to_lowercase() == "balanced" || s == "balance" {
+                    "Did you mean 'balanced' (lowercase, with 'd')?"
+                } else if s.to_lowercase() == "deep" {
+                    "Did you mean 'deep' (lowercase)?"
+                } else {
+                    "Valid options: 'fast', 'balanced', or 'deep'"
+                };
+
+                Err(de::Error::custom(format!(
+                    "Invalid router_tier '{}'. Must be 'fast', 'balanced', or 'deep' (lowercase only). \n\
+                     {}\n\
+                     \n\
+                     Common mistakes:\n\
+                     - Capitalization: 'FAST' or 'Fast' should be 'fast'\n\
+                     - Typos: 'balance' should be 'balanced'\n\
+                     - Invalid values: Only 'fast', 'balanced', and 'deep' are supported\n\
+                     \n\
+                     See config.toml documentation for tier selection guidance.",
+                    s, suggestion
+                )))
+            }
+        }
+    }
+}
+
+impl Default for TargetModel {
+    /// Returns Balanced as the sensible default for router tier selection
+    ///
+    /// Balanced provides the best trade-off between routing accuracy and latency:
+    /// - Fast (8B): May misroute complex requests, sacrificing accuracy for speed
+    /// - Balanced (30B): Good routing decisions with acceptable latency (~100-500ms)
+    /// - Deep (120B): Highest accuracy but excessive latency (~2-5s), rarely justified
+    fn default() -> Self {
+        TargetModel::Balanced
+    }
 }
 
 /// Routing strategy used to make a routing decision
@@ -55,20 +105,35 @@ impl RoutingStrategy {
 /// than returning a tuple.
 ///
 /// Fields are private to enable future validation logic and maintain
-/// encapsulation. Use accessor methods `target()` and `strategy()` to
-/// read the values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// encapsulation. Use accessor methods `target()`, `strategy()`, and
+/// `warnings()` to read the values.
+///
+/// ## Warnings
+///
+/// The `warnings` field surfaces non-fatal issues encountered during routing
+/// (e.g., health tracking failures) that users should be aware of. Warnings
+/// are included in the response but don't prevent successful routing.
+///
+/// Note: Not Copy because warnings is `Vec<String>`. Use clone() if needed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RoutingDecision {
     /// Which model tier to use
     target: TargetModel,
     /// Which routing strategy made the decision
     strategy: RoutingStrategy,
+    /// Non-fatal warnings encountered during routing (omitted if empty)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
 }
 
 impl RoutingDecision {
-    /// Create a new routing decision
+    /// Create a new routing decision with no warnings
     pub fn new(target: TargetModel, strategy: RoutingStrategy) -> Self {
-        Self { target, strategy }
+        Self {
+            target,
+            strategy,
+            warnings: Vec::new(),
+        }
     }
 
     /// Get the target model tier for this routing decision
@@ -79,6 +144,26 @@ impl RoutingDecision {
     /// Get the routing strategy that made this decision
     pub fn strategy(&self) -> RoutingStrategy {
         self.strategy
+    }
+
+    /// Get the warnings collected during routing
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// Add a warning to this routing decision (builder pattern)
+    ///
+    /// Warnings surface non-fatal issues (like health tracking failures)
+    /// to users while still allowing the request to succeed.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let decision = RoutingDecision::new(TargetModel::Fast, RoutingStrategy::Rule)
+    ///     .with_warning("Health tracking degraded".to_string());
+    /// ```
+    pub fn with_warning(mut self, warning: String) -> Self {
+        self.warnings.push(warning);
+        self
     }
 }
 

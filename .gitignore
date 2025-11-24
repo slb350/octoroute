@@ -3,6 +3,10 @@ CLAUDE.md
 agents.md
 .claude/
 
+# Working documents (keep local only)
+plan.md
+KICKSTART_PROMPT.md
+
 # Rust
 target/
 Cargo.lock
@@ -14,6 +18,11 @@ dist/
 *.so
 *.dylib
 *.dll
+
+# Executables (prevent accidental commits of test binaries)
+/method
+/method[0-9]
+/method[0-9][0-9]
 
 # IDE
 .vscode/

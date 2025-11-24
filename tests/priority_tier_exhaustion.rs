@@ -8,6 +8,11 @@ use octoroute::models::{ExclusionSet, ModelSelector};
 use octoroute::router::TargetModel;
 use std::sync::Arc;
 
+/// Helper to create test metrics
+fn test_metrics() -> Arc<octoroute::metrics::Metrics> {
+    Arc::new(octoroute::metrics::Metrics::new().expect("should create metrics"))
+}
+
 fn create_priority_test_config() -> Config {
     let toml = r#"
 [server]
@@ -45,7 +50,7 @@ max_tokens = 8192
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
     toml::from_str(toml).expect("should parse TOML")
 }
@@ -65,7 +70,7 @@ async fn test_priority_tier_exhaustion_falls_back_to_lower_priority() {
     // 3. Verify service continues (doesn't fail when preferred tier unavailable)
 
     let config = Arc::new(create_priority_test_config());
-    let selector = ModelSelector::new(config.clone());
+    let selector = ModelSelector::new(config.clone(), test_metrics());
 
     // Initially, should select from priority 3 tier
     let no_exclude = ExclusionSet::new();
@@ -150,7 +155,7 @@ async fn test_all_priorities_unhealthy_returns_none() {
     // Verify that when ALL endpoints (all priorities) are unhealthy, selector returns None
 
     let config = Arc::new(create_priority_test_config());
-    let selector = ModelSelector::new(config.clone());
+    let selector = ModelSelector::new(config.clone(), test_metrics());
 
     // Mark ALL fast endpoints unhealthy
     for endpoint_name in ["fast-priority-3-a", "fast-priority-3-b", "fast-priority-1"] {

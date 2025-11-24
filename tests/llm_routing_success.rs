@@ -12,6 +12,11 @@ use octoroute::models::ModelSelector;
 use octoroute::router::{HybridRouter, Importance, RouteMetadata, RoutingStrategy, TaskType};
 use std::sync::Arc;
 
+/// Helper to create test metrics
+fn test_metrics() -> Arc<octoroute::metrics::Metrics> {
+    Arc::new(octoroute::metrics::Metrics::new().expect("should create metrics"))
+}
+
 #[tokio::test]
 async fn test_hybrid_router_uses_llm_strategy_on_fallback() {
     // This test verifies that when rule-based routing returns None,
@@ -48,14 +53,18 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
 
     let config: Config = toml::from_str(config_toml).expect("should parse config");
     let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
-    let router =
-        HybridRouter::new(config, selector.clone()).expect("HybridRouter::new should succeed");
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
+    let router = HybridRouter::new(
+        config,
+        selector.clone(),
+        Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+    )
+    .expect("HybridRouter::new should succeed");
 
     // Mark all non-balanced endpoints as unhealthy to force LLM fallback
     // With the new design, rule router tries default_tier() if no rule matches
@@ -146,13 +155,18 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
 
     let config: Config = toml::from_str(config_toml).expect("should parse config");
     let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
-    let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
+    let router = HybridRouter::new(
+        config,
+        selector,
+        Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+    )
+    .expect("HybridRouter::new should succeed");
 
     // Create metadata that MATCHES a rule
     // (casual_chat + low importance + small tokens → Fast tier)
@@ -253,12 +267,12 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
 
     let config: Config = toml::from_str(config_toml).expect("should parse config");
     let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
 
     // Mark Fast and Deep endpoints as unhealthy to force LLM fallback
     // (Rule router will try default_tier() and fail if only Balanced is healthy)
@@ -281,7 +295,12 @@ router_model = "balanced"
     assert!(!health_checker.is_healthy("balanced-1").await);
     assert!(!health_checker.is_healthy("balanced-2").await);
 
-    let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
+    let router = HybridRouter::new(
+        config,
+        selector,
+        Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+    )
+    .expect("HybridRouter::new should succeed");
 
     // Create metadata that triggers LLM fallback
     let metadata = RouteMetadata {
@@ -302,10 +321,14 @@ router_model = "balanced"
     let error = result.unwrap_err();
     let error_msg = format!("{}", error);
 
-    // Error should mention balanced tier and indicate no healthy endpoints
+    // Error should mention balanced tier OR hybrid routing failure (new wrapped error)
+    // When hybrid routing wraps the error, it may not include "balanced" in top-level message
+    let mentions_balanced = error_msg.contains("balanced") || error_msg.contains("Balanced");
+    let mentions_hybrid_failure = error_msg.contains("Hybrid routing failed");
+
     assert!(
-        error_msg.contains("balanced") || error_msg.contains("Balanced"),
-        "Error should mention balanced tier, got: {}",
+        mentions_balanced || mentions_hybrid_failure,
+        "Error should mention balanced tier or hybrid routing failure, got: {}",
         error_msg
     );
 
@@ -362,12 +385,12 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
 
     let config: Config = toml::from_str(config_toml).expect("should parse config");
     let config = Arc::new(config);
-    let selector = Arc::new(ModelSelector::new(config.clone()));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
 
     // Mark Fast and Deep endpoints as unhealthy to force LLM fallback
     let health_checker = selector.health_checker();
@@ -391,7 +414,12 @@ router_model = "balanced"
     assert!(!health_checker.is_healthy("balanced-unhealthy").await);
     assert!(health_checker.is_healthy("balanced-healthy").await);
 
-    let router = HybridRouter::new(config, selector).expect("HybridRouter::new should succeed");
+    let router = HybridRouter::new(
+        config,
+        selector,
+        Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+    )
+    .expect("HybridRouter::new should succeed");
 
     // Create metadata that triggers LLM fallback (no rule match)
     let metadata = RouteMetadata {

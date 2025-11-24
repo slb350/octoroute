@@ -27,6 +27,24 @@ pub enum BackgroundTaskStatus {
     PermanentlyFailed,
 }
 
+/// Per-endpoint health tracking failure information
+///
+/// Tracks persistent failures in health tracking operations (mark_success, mark_failure)
+/// to provide operators with visibility into observability system degradation.
+#[derive(Debug, Clone)]
+pub struct HealthTrackingFailure {
+    /// Name of the endpoint experiencing tracking failures
+    pub endpoint_name: String,
+    /// Number of consecutive tracking failures for this endpoint
+    pub consecutive_failures: u32,
+    /// The last error message encountered
+    pub last_error: String,
+    /// When the last tracking failure occurred
+    pub last_failure_time: Instant,
+}
+
+const MAX_TRACKED_FAILURES: usize = 10; // Limit to prevent unbounded growth
+
 /// Metrics for monitoring the health checking system itself
 ///
 /// Tracks the background task's health to enable external monitoring
@@ -45,6 +63,10 @@ struct HealthMetricsState {
     restart_count: u32,
     /// When the background task last failed (if applicable)
     last_failure_time: Option<Instant>,
+    /// Per-endpoint health tracking failures
+    /// Key: endpoint name, Value: tracking failure info
+    /// Limited to MAX_TRACKED_FAILURES entries (LRU eviction)
+    tracking_failures: HashMap<String, HealthTrackingFailure>,
 }
 
 impl Default for HealthMetrics {
@@ -62,6 +84,7 @@ impl HealthMetrics {
                 background_task_status: BackgroundTaskStatus::Running,
                 restart_count: 0,
                 last_failure_time: None,
+                tracking_failures: HashMap::new(),
             })),
         }
     }
@@ -116,7 +139,15 @@ impl HealthMetrics {
     ///
     /// Returns false if:
     /// - Task is permanently failed
-    /// - More than 60 seconds since last successful check (2x the 30s interval)
+    /// - No successful health checks have completed yet (prevents false positive)
+    /// - Last successful check is stale (>60 seconds old, 2x the 30s check interval)
+    ///
+    /// ## Staleness Detection
+    ///
+    /// Health data is considered stale if more than `HEALTH_CHECK_STALE_THRESHOLD_SECS`
+    /// (60 seconds) have elapsed since the last successful check. This is 2x the check
+    /// interval (`HEALTH_CHECK_INTERVAL_SECS` = 30s), allowing one missed check before
+    /// marking the background task as unhealthy.
     pub async fn is_background_task_healthy(&self) -> bool {
         let state = self.state.read().await;
 
@@ -128,21 +159,92 @@ impl HealthMetrics {
         if let Some(last_check) = state.last_successful_check {
             let elapsed = Instant::now().duration_since(last_check);
             if elapsed > Duration::from_secs(HEALTH_CHECK_STALE_THRESHOLD_SECS) {
+                tracing::warn!(
+                    elapsed_seconds = elapsed.as_secs(),
+                    threshold_seconds = HEALTH_CHECK_STALE_THRESHOLD_SECS,
+                    last_check = ?last_check,
+                    "Background health check data is stale (no successful check in {}s, threshold: {}s). \
+                    Health checker may be stalled or overloaded.",
+                    elapsed.as_secs(),
+                    HEALTH_CHECK_STALE_THRESHOLD_SECS
+                );
                 return false; // No successful check in threshold time (2x the interval)
             }
+            true // Recent successful check - system is healthy
         } else {
-            // No successful check yet - give it some time to start
-            // This is only false if it's been running for a while with no checks
-            return state.background_task_status == BackgroundTaskStatus::Running;
+            // No successful check yet - system starting up
+            // If background task is Running, assume healthy during warmup period
+            // This prevents false negatives during startup before first health check completes
+            state.background_task_status == BackgroundTaskStatus::Running
         }
+    }
 
-        true
+    /// Record a health tracking failure for an endpoint
+    ///
+    /// Tracks consecutive failures to provide operators with visibility into
+    /// observability system degradation. Limited to MAX_TRACKED_FAILURES entries.
+    pub async fn record_tracking_failure(&self, endpoint_name: &str, error_message: &str) {
+        let mut state = self.state.write().await;
+
+        state
+            .tracking_failures
+            .entry(endpoint_name.to_string())
+            .and_modify(|f| {
+                f.consecutive_failures += 1;
+                f.last_error = error_message.to_string();
+                f.last_failure_time = Instant::now();
+            })
+            .or_insert(HealthTrackingFailure {
+                endpoint_name: endpoint_name.to_string(),
+                consecutive_failures: 1,
+                last_error: error_message.to_string(),
+                last_failure_time: Instant::now(),
+            });
+
+        // Enforce MAX_TRACKED_FAILURES limit using LRU eviction
+        // Remove oldest entry if we exceed the limit
+        if state.tracking_failures.len() > MAX_TRACKED_FAILURES
+            && let Some(oldest_key) = state
+                .tracking_failures
+                .iter()
+                .min_by_key(|(_, v)| v.last_failure_time)
+                .map(|(k, _)| k.clone())
+        {
+            state.tracking_failures.remove(&oldest_key);
+        }
+    }
+
+    /// Clear tracking failures for an endpoint (called on successful tracking operation)
+    pub async fn clear_tracking_failure(&self, endpoint_name: &str) {
+        let mut state = self.state.write().await;
+        state.tracking_failures.remove(endpoint_name);
+    }
+
+    /// Get all current health tracking failures
+    ///
+    /// Returns a snapshot of all endpoints currently experiencing health tracking issues.
+    /// Used by /health endpoint to expose tracking failures to operators.
+    pub async fn get_tracking_failures(&self) -> Vec<HealthTrackingFailure> {
+        let state = self.state.read().await;
+        state.tracking_failures.values().cloned().collect()
+    }
+
+    /// Check if there are any health tracking failures
+    ///
+    /// Returns true if any endpoints are experiencing health tracking issues.
+    pub async fn has_tracking_failures(&self) -> bool {
+        let state = self.state.read().await;
+        !state.tracking_failures.is_empty()
     }
 }
 
 /// Errors that can occur during health checking operations
 #[derive(Error, Debug)]
 pub enum HealthError {
+    /// Endpoint name not found in configuration
+    ///
+    /// Indicates a programming error (endpoint name mismatch) or race condition
+    /// (config reloaded during request). Should never occur under normal operation.
     #[error("Unknown endpoint: {0}")]
     UnknownEndpoint(String),
 
@@ -155,6 +257,35 @@ pub enum HealthError {
         "Failed to create HTTP client: {0}. This indicates a systemic issue (TLS config, resource exhaustion)."
     )]
     HttpClientCreationFailed(String),
+
+    /// Invalid endpoint URL configuration
+    ///
+    /// The base_url is malformed or contains invalid components (query parameters,
+    /// fragments) that would cause health check failures. This is a configuration error.
+    #[error("Invalid endpoint URL for '{endpoint}': {base_url}. {details}")]
+    InvalidEndpointUrl {
+        endpoint: String,
+        base_url: String,
+        details: String,
+    },
+}
+
+impl HealthError {
+    /// Get the error type as a string label for metrics
+    ///
+    /// Returns a consistent snake_case string matching the error variant:
+    /// - `UnknownEndpoint` → "unknown_endpoint"
+    /// - `HttpClientCreationFailed` → "http_client_failed"
+    /// - `InvalidEndpointUrl` → "invalid_url"
+    ///
+    /// Used for Prometheus metric labels to categorize health tracking failures.
+    pub fn error_type(&self) -> &'static str {
+        match self {
+            HealthError::UnknownEndpoint(_) => "unknown_endpoint",
+            HealthError::HttpClientCreationFailed(_) => "http_client_failed",
+            HealthError::InvalidEndpointUrl { .. } => "invalid_url",
+        }
+    }
 }
 
 /// Health status for a single endpoint
@@ -217,6 +348,8 @@ pub struct HealthChecker {
     health_status: Arc<RwLock<HashMap<String, EndpointHealth>>>,
     config: Arc<Config>,
     metrics: Arc<HealthMetrics>,
+    /// Reference to application-wide Prometheus metrics for surfacing health tracking failures
+    app_metrics: Option<Arc<crate::metrics::Metrics>>,
     /// Background health checking task handle for graceful shutdown
     background_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -227,6 +360,14 @@ impl std::fmt::Debug for HealthChecker {
             .field("health_status", &"<RwLock<HashMap>>")
             .field("config", &"<Config>")
             .field("metrics", &"<HealthMetrics>")
+            .field(
+                "app_metrics",
+                &if self.app_metrics.is_some() {
+                    "<Some(Metrics)>"
+                } else {
+                    "<None>"
+                },
+            )
             .field("background_task", &"<Mutex<JoinHandle>>")
             .finish()
     }
@@ -270,6 +411,70 @@ impl HealthChecker {
             health_status: Arc::new(RwLock::new(health_status)),
             config,
             metrics: Arc::new(HealthMetrics::new()),
+            app_metrics: None,
+            background_task: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Create a new HealthChecker with Prometheus metrics integration
+    ///
+    /// This constructor enables surfacing of health tracking failures to operators
+    /// via the `/health` endpoint and Prometheus metrics. When mark_success or
+    /// mark_failure operations fail in the background health checking task, the
+    /// failure is incremented in `health_tracking_failures_total`.
+    ///
+    /// # Arguments
+    /// * `config` - Application configuration with model endpoints
+    /// * `app_metrics` - Prometheus metrics collector for surfacing failures
+    ///
+    /// # Example
+    /// ```ignore
+    /// let config = Arc::new(Config::load()?);
+    /// let metrics = Arc::new(Metrics::new()?);
+    /// let checker = Arc::new(HealthChecker::new_with_metrics(config, metrics));
+    /// checker.start_background_checks();
+    /// ```
+    pub fn new_with_metrics(
+        config: Arc<Config>,
+        app_metrics: Arc<crate::metrics::Metrics>,
+    ) -> Self {
+        let mut health_status = HashMap::new();
+
+        // Initialize all fast endpoints
+        for endpoint in &config.models.fast {
+            health_status.insert(
+                endpoint.name().to_string(),
+                EndpointHealth::new(endpoint.name().to_string(), endpoint.base_url().to_string()),
+            );
+        }
+
+        // Initialize all balanced endpoints
+        for endpoint in &config.models.balanced {
+            health_status.insert(
+                endpoint.name().to_string(),
+                EndpointHealth::new(endpoint.name().to_string(), endpoint.base_url().to_string()),
+            );
+        }
+
+        // Initialize all deep endpoints
+        for endpoint in &config.models.deep {
+            health_status.insert(
+                endpoint.name().to_string(),
+                EndpointHealth::new(endpoint.name().to_string(), endpoint.base_url().to_string()),
+            );
+        }
+
+        tracing::info!(
+            total_endpoints = health_status.len(),
+            has_metrics = true,
+            "HealthChecker initialized with Prometheus metrics integration"
+        );
+
+        Self {
+            health_status: Arc::new(RwLock::new(health_status)),
+            config,
+            metrics: Arc::new(HealthMetrics::new()),
+            app_metrics: Some(app_metrics),
             background_task: Arc::new(Mutex::new(None)),
         }
     }
@@ -281,6 +486,8 @@ impl HealthChecker {
 
     /// Check if an endpoint is currently healthy
     ///
+    /// Returns `false` for unknown endpoints (with warning logged).
+    ///
     /// # Performance
     /// - **Time complexity**: O(1) HashMap lookup
     /// - **Space complexity**: O(1)
@@ -288,10 +495,23 @@ impl HealthChecker {
     /// - **Expected latency**: <1μs
     pub async fn is_healthy(&self, endpoint_name: &str) -> bool {
         let status = self.health_status.read().await;
-        status
-            .get(endpoint_name)
-            .map(|h| h.healthy)
-            .unwrap_or(false)
+
+        match status.get(endpoint_name) {
+            Some(h) => h.healthy,
+            None => {
+                // DEFENSIVE: Log unknown endpoint checks
+                // This catches typos, race conditions (config reload mid-request),
+                // or stale endpoint references from calling code.
+                tracing::warn!(
+                    endpoint_name = %endpoint_name,
+                    available_endpoints = ?status.keys().collect::<Vec<_>>(),
+                    "Unknown endpoint checked for health - returning false. \
+                    This may indicate a typo in endpoint name, config reload race condition, \
+                    or stale endpoint reference."
+                );
+                false
+            }
+        }
     }
 
     /// Mark an endpoint as having failed
@@ -309,7 +529,16 @@ impl HealthChecker {
     pub async fn mark_failure(&self, endpoint_name: &str) -> Result<(), HealthError> {
         let mut status = self.health_status.write().await;
 
-        // Get mutable reference to endpoint health, returning error if unknown
+        // Defense-in-depth: Validate endpoint name exists in health_status
+        //
+        // This check catches programming errors where routing logic passes an endpoint
+        // name that wasn't registered during HealthChecker initialization. Possible causes:
+        // - Config was modified after HealthChecker creation (shouldn't happen)
+        // - Routing logic has a typo or name mismatch
+        // - Endpoint was removed from config but routing code wasn't updated
+        //
+        // Without this check, we'd panic on unwrap or silently do nothing, making
+        // bugs harder to diagnose. Explicit error allows observability via metrics.
         let health = match status.get_mut(endpoint_name) {
             Some(h) => h,
             None => {
@@ -333,6 +562,7 @@ impl HealthChecker {
                 // Log only on transition to unhealthy
                 tracing::warn!(
                     endpoint_name = %health.name,
+                    endpoint_url = %health.base_url,
                     consecutive_failures = health.consecutive_failures,
                     "Endpoint marked as unhealthy after 3 consecutive failures"
                 );
@@ -341,6 +571,7 @@ impl HealthChecker {
         } else {
             tracing::debug!(
                 endpoint_name = %health.name,
+                endpoint_url = %health.base_url,
                 consecutive_failures = health.consecutive_failures,
                 "Endpoint failure recorded (still healthy)"
             );
@@ -363,7 +594,16 @@ impl HealthChecker {
     pub async fn mark_success(&self, endpoint_name: &str) -> Result<(), HealthError> {
         let mut status = self.health_status.write().await;
 
-        // Get mutable reference to endpoint health, returning error if unknown
+        // Defense-in-depth: Validate endpoint name exists in health_status
+        //
+        // This check catches programming errors where routing logic passes an endpoint
+        // name that wasn't registered during HealthChecker initialization. Possible causes:
+        // - Config was modified after HealthChecker creation (shouldn't happen)
+        // - Routing logic has a typo or name mismatch
+        // - Endpoint was removed from config but routing code wasn't updated
+        //
+        // Without this check, we'd panic on unwrap or silently do nothing, making
+        // bugs harder to diagnose. Explicit error allows observability via metrics.
         let health = match status.get_mut(endpoint_name) {
             Some(h) => h,
             None => {
@@ -388,11 +628,13 @@ impl HealthChecker {
             // Log recovery
             tracing::info!(
                 endpoint_name = %health.name,
+                endpoint_url = %health.base_url,
                 "Endpoint recovered to healthy state"
             );
         } else {
             tracing::debug!(
                 endpoint_name = %health.name,
+                endpoint_url = %health.base_url,
                 "Endpoint health check succeeded"
             );
         }
@@ -427,12 +669,37 @@ impl HealthChecker {
                 HealthError::HttpClientCreationFailed(e.to_string())
             })?;
 
-        // IMPORTANT: Health check URL construction (fixed bug in commit 64c913d)
-        // base_url already includes /v1 (e.g., "http://host:port/v1")
-        // We append "/models" to get "http://host:port/v1/models"
-        // DO NOT append "/v1/models" - that would create "http://host:port/v1/v1/models" (404!)
-        // Historical note: This bug previously caused all endpoints to fail after 90 seconds.
-        let url = format!("{}/models", endpoint.base_url());
+        // IMPORTANT: Health check URL construction
+        // Config validation (config.rs:523-534) ENFORCES that base_url ends with "/v1"
+        // (e.g., "http://host:port/v1"). We append "/models" to get "http://host:port/v1/models"
+        // DO NOT append "/v1/models" - config validation prevents this but historically
+        // this bug caused all endpoints to fail after 90 seconds.
+        //
+        // HISTORICAL BUG (Jan 2025): base_url without /v1 suffix caused "/models" → 404
+        // FIX: Config validation now enforces base_url ends with /v1 (config.rs:527-534)
+        // This prevents double-/v1 bug that caused endpoints to fail after 90 seconds.
+
+        // Validate base_url is a properly formatted URL
+        // This catches malformed URLs and URLs with unwanted components
+        let base_url = endpoint.base_url();
+        let parsed_url =
+            reqwest::Url::parse(base_url).map_err(|e| HealthError::InvalidEndpointUrl {
+                endpoint: endpoint.name().to_string(),
+                base_url: base_url.to_string(),
+                details: format!("Invalid URL format: {}", e),
+            })?;
+
+        // Check for unwanted URL components (query params, fragments)
+        // These would create malformed health check URLs and cause cryptic failures
+        if parsed_url.query().is_some() || parsed_url.fragment().is_some() {
+            return Err(HealthError::InvalidEndpointUrl {
+                endpoint: endpoint.name().to_string(),
+                base_url: base_url.to_string(),
+                details: "base_url should not contain query parameters or fragments".to_string(),
+            });
+        }
+
+        let url = format!("{}/models", base_url);
 
         match client.head(&url).send().await {
             Ok(response) => {
@@ -474,35 +741,129 @@ impl HealthChecker {
                 Ok(true) => {
                     // Endpoint is healthy
                     if let Err(e) = self.mark_success(endpoint.name()).await {
-                        tracing::error!(
-                            endpoint_name = %endpoint.name(),
-                            error = %e,
-                            "Failed to update health status - this should never happen"
-                        );
+                        // Surface the failure via Prometheus metrics if available with labels
+                        if let Some(ref app_metrics) = self.app_metrics {
+                            app_metrics.health_tracking_failure(endpoint.name(), e.error_type());
+                        }
+
+                        match &e {
+                            HealthError::HttpClientCreationFailed(msg) => {
+                                // SYSTEMIC ERROR: HTTP client creation failed (TLS config, resource exhaustion).
+                                // This error originates from check_endpoint() when reqwest::Client::builder().build()
+                                // fails. It indicates a system-wide issue affecting ALL endpoints.
+                                //
+                                // Response: Log error, surface via metrics, continue checking other endpoints
+                                // (they may also fail, but we want complete failure visibility).
+                                tracing::error!(
+                                    endpoint_name = %endpoint.name(),
+                                    error = %msg,
+                                    "SYSTEMIC: HTTP client creation failed during health check. \
+                                    This indicates TLS configuration issues or resource exhaustion. \
+                                    Continuing to check other endpoints for complete visibility."
+                                );
+                                continue;
+                            }
+                            HealthError::UnknownEndpoint(name) => {
+                                // TRANSIENT: Log and continue (may be config reload race)
+                                tracing::error!(
+                                    endpoint_name = %endpoint.name(),
+                                    unknown_name = %name,
+                                    "Health tracking failed: unknown endpoint (may be config reload race)"
+                                );
+                                continue; // Skip to next endpoint instead of panicking
+                            }
+                            HealthError::InvalidEndpointUrl {
+                                endpoint,
+                                base_url,
+                                details,
+                            } => {
+                                // CONFIGURATION ERROR: Log and continue
+                                tracing::error!(
+                                    endpoint = %endpoint,
+                                    base_url = %base_url,
+                                    details = %details,
+                                    "Health tracking failed: invalid endpoint URL configuration"
+                                );
+                                continue; // Skip to next endpoint
+                            }
+                        }
                     }
                 }
                 Ok(false) => {
                     // Endpoint is unhealthy
                     if let Err(e) = self.mark_failure(endpoint.name()).await {
-                        tracing::error!(
-                            endpoint_name = %endpoint.name(),
-                            error = %e,
-                            "Failed to update health status - this should never happen"
-                        );
+                        // Surface the failure via Prometheus metrics if available with labels
+                        if let Some(ref app_metrics) = self.app_metrics {
+                            app_metrics.health_tracking_failure(endpoint.name(), e.error_type());
+                        }
+
+                        match &e {
+                            HealthError::HttpClientCreationFailed(msg) => {
+                                // SYSTEMIC ERROR: HTTP client creation failed (TLS config, resource exhaustion).
+                                // This error originates from check_endpoint() when reqwest::Client::builder().build()
+                                // fails. It indicates a system-wide issue affecting ALL endpoints.
+                                //
+                                // Response: Log error, surface via metrics, continue checking other endpoints
+                                // (they may also fail, but we want complete failure visibility).
+                                tracing::error!(
+                                    endpoint_name = %endpoint.name(),
+                                    error = %msg,
+                                    "SYSTEMIC: HTTP client creation failed during health check. \
+                                    This indicates TLS configuration issues or resource exhaustion. \
+                                    Continuing to check other endpoints for complete visibility."
+                                );
+                                continue;
+                            }
+                            HealthError::UnknownEndpoint(name) => {
+                                // TRANSIENT: Log and continue (may be config reload race)
+                                tracing::error!(
+                                    endpoint_name = %endpoint.name(),
+                                    unknown_name = %name,
+                                    "Health tracking failed: unknown endpoint (may be config reload race)"
+                                );
+                                continue; // Skip to next endpoint instead of panicking
+                            }
+                            HealthError::InvalidEndpointUrl {
+                                endpoint,
+                                base_url,
+                                details,
+                            } => {
+                                // CONFIGURATION ERROR: Log and continue
+                                tracing::error!(
+                                    endpoint = %endpoint,
+                                    base_url = %base_url,
+                                    details = %details,
+                                    "Health tracking failed: invalid endpoint URL configuration"
+                                );
+                                continue; // Skip to next endpoint
+                            }
+                        }
                     }
                 }
                 Err(HealthError::HttpClientCreationFailed(msg)) => {
-                    // Systemic failure - HTTP client creation failed
-                    // This will affect ALL endpoints, so we log the error and exit early
-                    // rather than marking individual endpoints as failed
+                    // SYSTEMIC ERROR: HTTP client creation failed
+                    // This indicates TLS config error or resource exhaustion, but we should
+                    // mark the endpoint unhealthy and continue checking other endpoints
+                    // instead of panicking and crashing the server.
                     tracing::error!(
+                        endpoint_name = %endpoint.name(),
                         error = %msg,
-                        "FATAL: HTTP client creation failed. All subsequent health checks \
-                        will fail. This is a systemic issue, not an endpoint-specific problem. \
-                        Background health checking cannot continue."
+                        "HTTP client creation failed during endpoint health check. \
+                        Marking endpoint unhealthy until resolved. This indicates a systemic issue \
+                        (TLS config error, resource exhaustion). Continuing to check other endpoints."
                     );
-                    // Exit the loop early - don't check remaining endpoints
-                    return;
+
+                    // Mark endpoint as unhealthy
+                    if let Err(e) = self.mark_failure(endpoint.name()).await {
+                        tracing::error!(
+                            endpoint_name = %endpoint.name(),
+                            error = %e,
+                            "Failed to mark endpoint unhealthy after HTTP client creation failure"
+                        );
+                    }
+
+                    // Continue checking other endpoints
+                    continue;
                 }
                 Err(e) => {
                     // Other errors (currently none, but future-proofing)
@@ -565,6 +926,11 @@ impl HealthChecker {
                             restart_count = restart_count,
                             "Background health check task terminated unexpectedly"
                         );
+
+                        // Record failure in metrics for operator visibility
+                        if let Some(ref app_metrics) = self.app_metrics {
+                            app_metrics.background_task_failure("unexpected_termination");
+                        }
                     }
                     Err(e) => {
                         // Task panicked
@@ -573,6 +939,11 @@ impl HealthChecker {
                             restart_count = restart_count,
                             "Background health check task panicked"
                         );
+
+                        // Record failure in metrics for operator visibility
+                        if let Some(ref app_metrics) = self.app_metrics {
+                            app_metrics.background_task_failure("panic");
+                        }
                     }
                 }
 
@@ -584,19 +955,24 @@ impl HealthChecker {
 
                     tracing::error!(
                         max_attempts = MAX_BACKGROUND_TASK_RESTARTS,
-                        "DEGRADED: Background health check task failed {} times. \
-                        Health monitoring is now DISABLED to prevent infinite crash-loops. \
-                        Server will continue serving requests but without health monitoring. \
-                        Endpoints will not recover from failures automatically. \
-                        Operator intervention required - check TLS configuration, resource limits, and logs.",
+                        "FATAL: Background health check task failed {} times. \
+                        Cannot operate safely without health monitoring. \
+                        Panicking to shut down server and force operator intervention. \
+                        Check TLS configuration, resource limits, DNS resolution, and logs. \
+                        Process supervisor (systemd/Docker) should restart the server.",
                         MAX_BACKGROUND_TASK_RESTARTS
                     );
 
-                    // Graceful degradation: Disable health checking instead of panicking.
-                    // This prevents infinite crash-loops under process supervisors (systemd/Docker)
-                    // when the failure is systemic (e.g., corrupted TLS certs, resource exhaustion).
-                    // Server continues serving requests but without automatic endpoint recovery.
-                    break;
+                    // FAIL FAST: Server cannot operate safely without health checks.
+                    // The process supervisor (systemd/Docker/Kubernetes) should restart the server.
+                    // This prevents silent degradation where the server appears healthy but
+                    // cannot recover failed endpoints, leading to poor user experience.
+                    panic!(
+                        "Background health checking permanently failed after {} attempts. \
+                        Server cannot operate without health monitoring. \
+                        Operator intervention required - check TLS config, resource limits, DNS resolution.",
+                        MAX_BACKGROUND_TASK_RESTARTS
+                    );
                 }
 
                 // Record restart attempt in metrics
@@ -698,7 +1074,7 @@ priority = 1
 [routing]
 strategy = "rule"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
         toml::from_str(toml).expect("should parse TOML config")
     }
@@ -864,10 +1240,12 @@ router_model = "balanced"
     async fn test_health_metrics_is_healthy_when_running() {
         let metrics = HealthMetrics::new();
 
-        // Should be healthy initially (no checks yet, but status is Running)
+        // Should be HEALTHY during startup warmup (background task is Running)
+        // This prevents false negatives that would cause load balancers to mark
+        // the server as DOWN during normal startup
         assert!(metrics.is_background_task_healthy().await);
 
-        // Should be healthy after successful check
+        // Should remain healthy after successful check
         metrics.record_successful_check().await;
         assert!(metrics.is_background_task_healthy().await);
     }
@@ -902,5 +1280,29 @@ router_model = "balanced"
         metrics.record_successful_check().await;
         assert_eq!(metrics.status().await, BackgroundTaskStatus::Running);
         assert!(metrics.is_background_task_healthy().await);
+    }
+
+    /// Test that health returns true during startup warmup when background task is Running
+    ///
+    /// During startup, before the first health check completes, we should return true
+    /// if the background task is Running. This prevents false negatives that would cause:
+    /// - Load balancers marking server as DOWN during startup
+    /// - K8s readiness probes failing and preventing traffic
+    /// - Spurious monitoring alerts during deployments
+    ///
+    /// Once the first check completes, we switch to staleness-based health verification.
+    #[tokio::test]
+    async fn test_health_returns_true_during_startup_warmup() {
+        let metrics = HealthMetrics::new();
+
+        // Initially, task is Running but no checks have completed yet
+        assert_eq!(metrics.status().await, BackgroundTaskStatus::Running);
+
+        // Should return true during startup warmup (background task is Running)
+        // This prevents false negatives before first health check completes
+        assert!(
+            metrics.is_background_task_healthy().await,
+            "Should return true during startup warmup when background task is Running"
+        );
     }
 }

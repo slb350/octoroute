@@ -10,7 +10,7 @@
 
 mod balanced;
 
-pub use balanced::BalancedSelector;
+pub use balanced::TierSelector;
 
 use crate::config::{Config, ModelEndpoint};
 use crate::models::endpoint_name::{EndpointName, ExclusionSet};
@@ -39,9 +39,13 @@ pub struct ModelSelector {
 impl ModelSelector {
     /// Create a new ModelSelector from configuration
     ///
-    /// Automatically creates and starts background health checking.
-    pub fn new(config: Arc<Config>) -> Self {
-        let health_checker = Arc::new(HealthChecker::new(config.clone()));
+    /// Automatically creates and starts background health checking with metrics integration.
+    ///
+    /// # Arguments
+    /// * `config` - Application configuration
+    /// * `metrics` - Prometheus metrics for surfacing health tracking failures
+    pub fn new(config: Arc<Config>, metrics: Arc<crate::metrics::Metrics>) -> Self {
+        let health_checker = Arc::new(HealthChecker::new_with_metrics(config.clone(), metrics));
 
         // Start background health checking
         health_checker.clone().start_background_checks();
@@ -168,19 +172,22 @@ impl ModelSelector {
         let total_weight: f64 = highest_priority_endpoints.iter().map(|e| e.weight()).sum();
 
         // Defensive check: Config validation guarantees all weights are positive.
-        // This can only occur due to memory corruption.
+        // This can only occur due to memory corruption - panic immediately.
         if total_weight <= 0.0 {
-            tracing::error!(
-                tier = ?target,
-                priority = max_priority,
-                total_weight = total_weight,
-                endpoints_count = highest_priority_endpoints.len(),
-                "MEMORY CORRUPTION DETECTED: All endpoints in priority tier {} have total weight {}. \
-                Config validation prevents this at startup, so this indicates memory corruption. \
-                Refusing to select endpoint - failing request to expose issue.",
-                max_priority, total_weight
+            panic!(
+                "MEMORY CORRUPTION DETECTED: All endpoints in priority tier {} for {:?} have \
+                total weight {}. Config validation guarantees positive weights at startup. \
+                This indicates memory corruption (buffer overflow, use-after-free) or a critical \
+                bug in endpoint management. Cannot safely continue operation. \
+                Endpoints: {:?}",
+                max_priority,
+                target,
+                total_weight,
+                highest_priority_endpoints
+                    .iter()
+                    .map(|ep| (ep.name(), ep.weight()))
+                    .collect::<Vec<_>>()
             );
-            return None;
         }
 
         // Generate random number in range [0, total_weight)
@@ -358,7 +365,7 @@ priority = 1
 [routing]
 strategy = "rule"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
     toml::from_str(toml).expect("should parse TOML config")
 }

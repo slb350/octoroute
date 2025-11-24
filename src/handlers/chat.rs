@@ -116,6 +116,11 @@ impl From<crate::router::TargetModel> for ModelTier {
 ///
 /// Fields are private to enforce construction through the validated `new()` constructor.
 /// This ensures `model_name` always matches an actual endpoint from configuration.
+///
+/// ## Warnings
+///
+/// The `warnings` field surfaces non-fatal issues (e.g., health tracking failures)
+/// to users. Warnings are omitted from JSON if empty.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatResponse {
     /// Model's response content
@@ -126,6 +131,9 @@ pub struct ChatResponse {
     model_name: String,
     /// Which routing strategy made the decision (Rule or Llm)
     routing_strategy: RoutingStrategy,
+    /// Non-fatal warnings encountered during routing (omitted if empty)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
 }
 
 impl ChatResponse {
@@ -150,6 +158,33 @@ impl ChatResponse {
             model_tier: tier.into(),
             model_name: endpoint.name().to_string(),
             routing_strategy,
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Create a new ChatResponse with warnings
+    ///
+    /// Like `new()` but includes warnings collected during routing (e.g., health tracking failures).
+    ///
+    /// # Arguments
+    /// * `content` - The model's response text
+    /// * `endpoint` - The endpoint that generated the response (guarantees valid model_name)
+    /// * `tier` - The tier used for routing (fast, balanced, deep)
+    /// * `routing_strategy` - Which routing strategy was used (Rule or Llm)
+    /// * `warnings` - Non-fatal warnings to surface to the user
+    pub fn new_with_warnings(
+        content: String,
+        endpoint: &ModelEndpoint,
+        tier: TargetModel,
+        routing_strategy: RoutingStrategy,
+        warnings: Vec<String>,
+    ) -> Self {
+        Self {
+            content,
+            model_tier: tier.into(),
+            model_name: endpoint.name().to_string(),
+            routing_strategy,
+            warnings,
         }
     }
 
@@ -172,6 +207,11 @@ impl ChatResponse {
     pub fn routing_strategy(&self) -> RoutingStrategy {
         self.routing_strategy
     }
+
+    /// Get the warnings collected during routing
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
 }
 
 /// Custom Deserialize implementation for ChatResponse that validates fields
@@ -189,6 +229,8 @@ impl<'de> Deserialize<'de> for ChatResponse {
             model_tier: ModelTier,
             model_name: String,
             routing_strategy: RoutingStrategy,
+            #[serde(default)]
+            warnings: Vec<String>,
         }
 
         let raw = RawChatResponse::deserialize(deserializer)?;
@@ -208,6 +250,7 @@ impl<'de> Deserialize<'de> for ChatResponse {
             model_tier: raw.model_tier,
             model_name: raw.model_name,
             routing_strategy: raw.routing_strategy,
+            warnings: raw.warnings,
         })
     }
 }
@@ -274,6 +317,8 @@ pub async fn handler(
     // NOTE: record_request() counts routing decisions, NOT successful responses.
     //       record_model_invocation() (called later on success) counts actual model queries.
     //       This distinction allows tracking routing overhead separately from query success rate.
+    //
+    // NOTE: Metrics recording now fails fast (no longer surfaced as warnings).
     {
         let metrics = state.metrics();
 
@@ -288,35 +333,34 @@ pub async fn handler(
             RoutingStrategy::Llm => crate::metrics::Strategy::Llm,
         };
 
-        // Log-and-continue on metrics recording errors (observability should never break requests)
-        // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
-        // Errors can only occur from Prometheus internal issues (registry problems, etc.).
+        // Record metrics - don't fail user requests if metrics fail
+        // Metrics are for observability, not core functionality.
+        // Common failure causes: cardinality explosion, registry lock contention,
+        // descriptor mismatch. These should be logged but not block user requests.
         if let Err(e) = metrics.record_request(tier_enum, strategy_enum) {
+            metrics.metrics_recording_failure("record_request");
             tracing::error!(
                 request_id = %request_id,
                 error = %e,
                 tier = ?tier_enum,
                 strategy = ?strategy_enum,
-                "Metrics recording failed (non-fatal): {}. Request will continue. \
-                This indicates an internal Prometheus error (not a cardinality issue). \
-                Monitor this error - frequent occurrence requires investigation.",
-                e
+                "Metrics recording failed. Common causes: cardinality explosion, \
+                registry lock contention, or descriptor mismatch. \
+                Observability degraded but request continues."
             );
-            // DO NOT return error - metrics are non-critical
         }
 
         if let Err(e) = metrics.record_routing_duration(strategy_enum, routing_duration_ms) {
+            metrics.metrics_recording_failure("record_routing_duration");
             tracing::error!(
                 request_id = %request_id,
                 error = %e,
                 strategy = ?strategy_enum,
                 duration_ms = routing_duration_ms,
-                "Metrics recording failed (non-fatal): {}. Request will continue. \
-                This indicates an internal Prometheus error (not a cardinality issue). \
-                Monitor this error - frequent occurrence requires investigation.",
-                e
+                "Metrics recording failed. Common causes: cardinality explosion, \
+                registry lock contention, or descriptor mismatch. \
+                Observability degraded but request continues."
             );
-            // DO NOT return error - metrics are non-critical
         }
     }
 
@@ -342,14 +386,20 @@ pub async fn handler(
     // - Request-scoped exclusion ensures no wasted retries on known-bad endpoints in THIS request
     // - Global health tracking prevents all requests from hitting persistently failing endpoints
     // - Without request-scoped: Could retry the same failed endpoint on attempts 1, 2, 3
-    //   (Example with **equal-weight** endpoints: With 2 endpoints where 1 is down, there's a
-    //   50% chance per attempt of selecting the broken one. Probability of hitting it on
-    //   all 3 attempts: 0.5³ = 12.5%.
     //
-    //   **IMPORTANT**: This probability changes dramatically with weighted selection. If one
-    //   endpoint has weight=10 and the other weight=1, the high-weight endpoint will be
-    //   selected ~91% of the time, making the failure probability much higher.
-    //   Request-scoped exclusion eliminates this waste by forcing different endpoints.)
+    //   Example with 2 endpoints (A, B) where B is down - probability of hitting B on all 3 attempts:
+    //
+    //   Formula: Given weights w_A and w_B, probability of selecting B is:
+    //     p_B = w_B / (w_A + w_B)
+    //
+    //   Probability of hitting B on k consecutive attempts: (p_B)^k
+    //
+    //   - Equal weights (w_A = w_B): p_B = 0.5, so (0.5)³ = 12.5% failure probability
+    //   - Weighted (w_A = 10×w_B): p_B = 1/11 ≈ 0.09, so (0.09)³ ≈ 0.07% failure probability
+    //   - **Worst case (w_B = 10×w_A)**: p_B = 10/11 ≈ 0.91, so (0.91)³ ≈ 75% failure probability!
+    //
+    //   Request-scoped exclusion eliminates this waste entirely by forcing different endpoints
+    //   after the first failure, regardless of weights.
     // - Without global health: Every request would independently discover failing endpoints
     //
     // RETRY FLOW:
@@ -359,16 +409,21 @@ pub async fn handler(
     // 4. On failure: mark_failure() + add to exclusion set → try next endpoint
     // 5. After MAX_RETRIES attempts: return error to user
     //
-    // EXAMPLE WITH 2 ENDPOINTS (fast-1, fast-2) WHERE fast-1 IS DOWN:
-    // - Attempt 1: Select fast-1 (50% chance), fail → add to exclusion, mark_failure (1/3)
+    // EXAMPLE WITH 2 EQUAL-WEIGHT ENDPOINTS (fast-1, fast-2) WHERE fast-1 IS DOWN:
+    // - Attempt 1: Select fast-1 (50% chance with equal weights), fail → add to exclusion, mark_failure (1/3)
     // - Attempt 2: Select fast-2 (100% chance, fast-1 excluded), succeed → return response
     // - If fast-1 fails 2 more times across future requests → marked unhealthy globally
     // - All future requests will only see fast-2 until background health check recovers fast-1
     //
     // ═══════════════════════════════════════════════════════════════════════════════
     const MAX_RETRIES: usize = 3;
+    const RETRY_BACKOFF_MS: u64 = 100; // Base backoff: 100ms, doubles each retry
     let mut last_error = None;
     let mut failed_endpoints = ExclusionSet::new();
+
+    // Collect non-fatal warnings to surface to users
+    // Examples: health tracking failures, metrics recording failures
+    let mut warnings: Vec<String> = Vec::new();
 
     for attempt in 1..=MAX_RETRIES {
         // Select endpoint from target tier (with health filtering + priority + exclusion)
@@ -403,6 +458,13 @@ pub async fn handler(
                     attempt,
                     MAX_RETRIES
                 )));
+
+                // Add exponential backoff before retry
+                if attempt < MAX_RETRIES {
+                    let backoff_ms = RETRY_BACKOFF_MS
+                        .saturating_mul(2_u64.saturating_pow((attempt as u32).saturating_sub(1)));
+                    tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                }
                 continue; // Try again (may have different healthy endpoints)
             }
         };
@@ -432,51 +494,42 @@ pub async fn handler(
             Ok(response_text) => {
                 // Success! Mark endpoint as healthy to enable immediate recovery
                 //
-                // DEFENSIVE CHECK: mark_success should never fail in normal operation because endpoint
-                // names come from ModelSelector which only returns valid endpoints. However, we check
-                // explicitly to catch rare edge cases (race conditions, config reload mid-request, or bugs).
-                // If it fails, propagate the error to expose the issue immediately rather than silently
-                // continuing with inconsistent health state.
-                state
+                // Health tracking failures are non-fatal - we already have a valid response
+                // from the LLM. Log warnings for operator visibility but don't fail the request.
+                // This ensures observability issues don't impact user-facing requests.
+                if let Err(e) = state
                     .selector()
                     .health_checker()
                     .mark_success(endpoint.name())
                     .await
-                    .map_err(|e| {
-                        use crate::models::health::HealthError;
-                        match e {
-                            HealthError::UnknownEndpoint(ref name) => {
-                                tracing::error!(
-                                    request_id = %request_id,
-                                    endpoint_name = %endpoint.name(),
-                                    unknown_name = %name,
-                                    selected_tier = ?decision.target(),
-                                    attempt = attempt,
-                                    "DEFENSIVE ERROR: mark_success called with unknown endpoint name. \
-                                    Endpoint names come from ModelSelector which only returns valid endpoints. \
-                                    This indicates a serious bug (race condition, naming mismatch, or config \
-                                    reload during request). Failing request to expose issue."
-                                );
-                            }
-                            HealthError::HttpClientCreationFailed(ref msg) => {
-                                tracing::error!(
-                                    request_id = %request_id,
-                                    endpoint_name = %endpoint.name(),
-                                    error = %msg,
-                                    selected_tier = ?decision.target(),
-                                    attempt = attempt,
-                                    "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
-                                    This indicates a systemic issue (TLS configuration, resource exhaustion) \
-                                    affecting ALL endpoints, not an individual endpoint problem. \
-                                    Failing request to expose issue."
-                                );
-                            }
-                        }
-                        AppError::HealthCheckFailed {
-                            endpoint: endpoint.name().to_string(),
-                            reason: format!("mark_success failed: {}. This should not happen.", e),
-                        }
-                    })?;
+                {
+                    // Log error for operator visibility with detailed context
+                    tracing::warn!(
+                        request_id = %request_id,
+                        endpoint_name = %endpoint.name(),
+                        error = %e,
+                        selected_tier = ?decision.target(),
+                        attempt = attempt,
+                        "Health tracking skipped: {} (request continues with successful response)",
+                        e
+                    );
+
+                    // Record health tracking failure in metrics for monitoring with labels
+                    state
+                        .metrics()
+                        .health_tracking_failure(endpoint.name(), e.error_type());
+
+                    // Surface health tracking failure to user as a warning
+                    // This provides immediate feedback that health state may be stale
+                    let warning_msg = format!(
+                        "Health tracking failed: {} (endpoint health state may be stale)",
+                        e
+                    );
+                    warnings.push(warning_msg);
+
+                    // DON'T fail the request - we already have a valid LLM response
+                    // Users should receive their response even if health tracking fails
+                }
 
                 tracing::info!(
                     request_id = %request_id,
@@ -484,20 +537,17 @@ pub async fn handler(
                     response_length = response_text.len(),
                     model_tier = ?decision.target(),
                     attempt = attempt,
+                    warnings_count = decision.warnings().len(),
                     "Request completed successfully"
                 );
 
-                let response = ChatResponse::new(
-                    response_text,
-                    &endpoint,
-                    decision.target(),
-                    decision.strategy(),
-                );
-
-                // Record successful model invocation
+                // Record successful model invocation BEFORE constructing response
                 // NOTE: This is only recorded on SUCCESS, unlike record_request() which is
                 //       recorded before the query attempt. This allows tracking success rate:
                 //       success_rate = model_invocations_total / requests_total
+                //
+                // Moved here (before response construction) so metrics warnings can be
+                // included in the response warnings field.
                 {
                     let metrics = state.metrics();
                     let tier_enum = match decision.target() {
@@ -506,21 +556,47 @@ pub async fn handler(
                         TargetModel::Deep => crate::metrics::Tier::Deep,
                     };
 
-                    // Log-and-continue on metrics recording errors (observability should never break requests)
-                    // NOTE: With type-safe enums, cardinality errors are now IMPOSSIBLE at compile time.
+                    // Metrics recording failures are non-fatal - they're for operator observability
+                    // and should not impact user-facing requests. Log warnings for monitoring but
+                    // don't fail requests when observability systems have issues.
                     if let Err(e) = metrics.record_model_invocation(tier_enum) {
+                        // Record the metrics failure itself
+                        metrics.metrics_recording_failure("record_model_invocation");
+
+                        // Log error for operator visibility
                         tracing::error!(
                             request_id = %request_id,
                             error = %e,
                             tier = ?tier_enum,
-                            "Metrics recording failed (non-fatal): {}. Request will continue. \
-                            This indicates an internal Prometheus error (not a cardinality issue). \
-                            Monitor this error - frequent occurrence requires investigation.",
-                            e
+                            "Metrics recording failed (Prometheus internal error). \
+                            Observability degraded but request continues."
                         );
-                        // DO NOT return error - metrics are non-critical
+
+                        // DON'T fail the request - metrics are for operators, not users
+                        // Users should receive their valid LLM response even if metrics fail
                     }
                 }
+
+                // Collect all warnings: routing decision warnings + health tracking warnings
+                let mut all_warnings: Vec<String> = decision.warnings().to_vec();
+                all_warnings.extend(warnings);
+
+                let response = if all_warnings.is_empty() {
+                    ChatResponse::new(
+                        response_text,
+                        &endpoint,
+                        decision.target(),
+                        decision.strategy(),
+                    )
+                } else {
+                    ChatResponse::new_with_warnings(
+                        response_text,
+                        &endpoint,
+                        decision.target(),
+                        decision.strategy(),
+                        all_warnings,
+                    )
+                };
 
                 return Ok(Json(response));
             }
@@ -541,52 +617,43 @@ pub async fn handler(
                 // After 3 consecutive failures (across all requests), endpoint becomes unhealthy
                 // and won't be selected by ANY request until it recovers.
                 //
-                // DEFENSIVE CHECK: mark_failure should never fail in normal operation because endpoint
-                // names come from ModelSelector which only returns valid endpoints. However, we check
-                // explicitly to catch rare edge cases (race conditions, config reload mid-request, or bugs).
-                // If it fails, propagate the error to expose the issue immediately rather than silently
-                // continuing with inconsistent health state.
-                state
+                // Health tracking failures are non-fatal - the request can still continue
+                // to retry with other endpoints. Log warnings for operator visibility but
+                // don't fail the request. This ensures observability issues don't prevent
+                // request retries and recovery.
+                if let Err(e) = state
                     .selector()
                     .health_checker()
                     .mark_failure(endpoint.name())
                     .await
-                    .map_err(|e| {
-                        use crate::models::health::HealthError;
-                        match e {
-                            HealthError::UnknownEndpoint(ref name) => {
-                                tracing::error!(
-                                    request_id = %request_id,
-                                    endpoint_name = %endpoint.name(),
-                                    unknown_name = %name,
-                                    selected_tier = ?decision.target(),
-                                    attempt = attempt,
-                                    "DEFENSIVE ERROR: mark_failure called with unknown endpoint name. \
-                                    Endpoint won't be marked unhealthy and will continue receiving traffic. \
-                                    Endpoint names come from ModelSelector which only returns valid endpoints. \
-                                    This indicates a serious bug (race condition or naming mismatch). \
-                                    Failing request to expose issue."
-                                );
-                            }
-                            HealthError::HttpClientCreationFailed(ref msg) => {
-                                tracing::error!(
-                                    request_id = %request_id,
-                                    endpoint_name = %endpoint.name(),
-                                    error = %msg,
-                                    selected_tier = ?decision.target(),
-                                    attempt = attempt,
-                                    "SYSTEMIC ERROR: HTTP client creation failed during health tracking. \
-                                    This indicates a systemic issue (TLS configuration, resource exhaustion) \
-                                    affecting ALL endpoints, not an individual endpoint problem. \
-                                    Failing request to expose issue."
-                                );
-                            }
-                        }
-                        AppError::HealthCheckFailed {
-                            endpoint: endpoint.name().to_string(),
-                            reason: format!("mark_failure failed: {}. This should not happen.", e),
-                        }
-                    })?;
+                {
+                    // Log error for operator visibility with detailed context
+                    tracing::warn!(
+                        request_id = %request_id,
+                        endpoint_name = %endpoint.name(),
+                        error = %e,
+                        selected_tier = ?decision.target(),
+                        attempt = attempt,
+                        "Health tracking skipped: {} (request continues with retry logic)",
+                        e
+                    );
+
+                    // Record health tracking failure in metrics for monitoring with labels
+                    state
+                        .metrics()
+                        .health_tracking_failure(endpoint.name(), e.error_type());
+
+                    // Surface health tracking failure to user as a warning
+                    // This provides immediate feedback that health state may be stale
+                    let warning_msg = format!(
+                        "Health tracking failed: {} (endpoint health state may be stale)",
+                        e
+                    );
+                    warnings.push(warning_msg);
+
+                    // DON'T fail the request - we can still retry with other endpoints
+                    // Endpoint will still be excluded from this request via failed_endpoints set
+                }
 
                 // Exclude this endpoint from subsequent retry attempts in THIS REQUEST ONLY.
                 // This is request-scoped exclusion - prevents retrying the same endpoint
@@ -594,6 +661,13 @@ pub async fn handler(
                 failed_endpoints.insert(EndpointName::from(&endpoint));
 
                 last_error = Some(e);
+
+                // Add exponential backoff before retry
+                if attempt < MAX_RETRIES {
+                    let backoff_ms = RETRY_BACKOFF_MS
+                        .saturating_mul(2_u64.saturating_pow((attempt as u32).saturating_sub(1)));
+                    tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                }
 
                 // Continue to next attempt (will select different endpoint due to exclusion)
             }
@@ -609,7 +683,31 @@ pub async fn handler(
     );
 
     Err(last_error.unwrap_or_else(|| {
-        AppError::Internal(format!("All {} retry attempts exhausted", MAX_RETRIES))
+        // DEFENSIVE BUG DETECTION: Retry loop exhausted without recording an error
+        // The retry loop MUST set last_error on every failure path.
+        // Reaching this code indicates a missing error assignment in retry logic.
+        tracing::error!(
+            request_id = %request_id,
+            tier = ?decision.target(),
+            max_retries = MAX_RETRIES,
+            excluded_endpoints = ?failed_endpoints,
+            "BUG: Retry loop exhausted but last_error is None. \
+            The retry loop has a missing error assignment path."
+        );
+
+        // Return error instead of panicking - servers should not crash on requests
+        // This allows the user to receive an error response and operators to diagnose
+        AppError::Internal(format!(
+            "Request failed after {} retry attempts. All endpoints for tier {:?} \
+            were exhausted. Failed endpoints: {:?}. \
+            Please report this issue (retry loop bug - no error recorded).",
+            MAX_RETRIES,
+            decision.target(),
+            failed_endpoints
+                .iter()
+                .map(|ep| ep.as_str())
+                .collect::<Vec<_>>()
+        ))
     }))
 }
 
@@ -642,10 +740,10 @@ async fn try_query_model(
                 error = %e,
                 "Failed to build AgentOptions from endpoint configuration"
             );
-            AppError::ModelQueryFailed {
+            AppError::ModelQuery(crate::error::ModelQueryError::AgentOptionsConfigError {
                 endpoint: endpoint.base_url().to_string(),
-                reason: format!("Failed to configure AgentOptions: {}", e),
-            }
+                details: format!("{}", e),
+            })
         })?;
 
     tracing::debug!(
@@ -668,10 +766,13 @@ async fn try_query_model(
     // The timeout wraps the ENTIRE operation per attempt: connection establishment,
     // query initiation, and streaming all response chunks.
     //
-    // **BILLING IMPACT**: When timeout triggers, Tokio cancels the Future, which drops the HTTP
-    // stream and closes the connection to the endpoint. However, the endpoint may continue processing
-    // the request (we don't send HTTP cancellation signals), so timeouts are billed as full requests
-    // by most LLM APIs.
+    // **BILLING IMPACT & RESPONSE HANDLING**:
+    // - Tokio cancels the Future, drops the HTTP stream, and closes the connection
+    // - **Partial responses are discarded** - users never receive incomplete/corrupted responses
+    // - **Endpoint continues processing** (no HTTP cancellation signal sent)
+    // - **Timeouts are billed as full requests** by most LLM APIs
+    // - **Health tracking**: Timeout counts as a failure (mark_failure called)
+    // - **Total worst-case cost**: 3 retries × 30s timeout = 90s of API time billed
     //
     // Users pay for 90 seconds of API time in worst-case (3 timeouts × 30s), even though each attempt
     // only consumed ~5 seconds before timing out. If you're seeing frequent timeouts, consider
@@ -692,10 +793,11 @@ async fn try_query_model(
                         error = %e,
                         "Failed to query model"
                     );
-                    AppError::ModelQueryFailed {
+                    AppError::ModelQuery(crate::error::ModelQueryError::StreamError {
                         endpoint: endpoint.base_url().to_string(),
-                        reason: format!("{}", e),
-                    }
+                        bytes_received: 0,
+                        error_message: format!("{}", e),
+                    })
                 })?;
 
             // Collect response from stream

@@ -2,6 +2,7 @@
 //!
 //! Parses TOML configuration files and provides typed access to settings.
 
+use crate::router::TargetModel;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::str::FromStr;
@@ -106,13 +107,174 @@ fn default_priority() -> u8 {
     1
 }
 
+/// Router query timeout configuration per tier
+///
+/// Allows different timeout values for router queries based on model size.
+/// Larger models (Deep tier) typically need more time to analyze routing decisions.
+///
+/// # Encapsulation
+///
+/// Fields are private to prevent post-validation mutation. Use `new()` constructor
+/// for validated construction and accessor methods for field access.
+///
+/// This matches the `TimeoutsConfig` pattern for consistency.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RouterTimeouts {
+    /// Timeout for Fast tier router queries (in seconds)
+    ///
+    /// Recommended: 5-10s for 8B models
+    fast: u64,
+    /// Timeout for Balanced tier router queries (in seconds)
+    ///
+    /// Recommended: 10-15s for 30B models
+    balanced: u64,
+    /// Timeout for Deep tier router queries (in seconds)
+    ///
+    /// Recommended: 15-30s for 120B models
+    deep: u64,
+}
+
+impl Default for RouterTimeouts {
+    /// Default router timeouts: 10s for all tiers
+    ///
+    /// Conservative default that works for most deployments.
+    /// Operators can tune based on their hardware and model performance.
+    fn default() -> Self {
+        Self {
+            fast: 10,
+            balanced: 10,
+            deep: 10,
+        }
+    }
+}
+
+impl RouterTimeouts {
+    /// Create a new RouterTimeouts with validation
+    ///
+    /// # Arguments
+    ///
+    /// * `fast` - Timeout for Fast tier router queries (in seconds)
+    /// * `balanced` - Timeout for Balanced tier router queries (in seconds)
+    /// * `deep` - Timeout for Deep tier router queries (in seconds)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any timeout is 0 (zero timeouts cause immediate failures)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use octoroute::config::RouterTimeouts;
+    ///
+    /// let timeouts = RouterTimeouts::new(5, 10, 20).expect("valid timeouts");
+    /// assert_eq!(timeouts.fast(), 5);
+    /// ```
+    pub fn new(fast: u64, balanced: u64, deep: u64) -> Result<Self, String> {
+        let timeouts = Self {
+            fast,
+            balanced,
+            deep,
+        };
+        timeouts.validate()?;
+        Ok(timeouts)
+    }
+
+    /// Get the Fast tier timeout in seconds
+    pub fn fast(&self) -> u64 {
+        self.fast
+    }
+
+    /// Get the Balanced tier timeout in seconds
+    pub fn balanced(&self) -> u64 {
+        self.balanced
+    }
+
+    /// Get the Deep tier timeout in seconds
+    pub fn deep(&self) -> u64 {
+        self.deep
+    }
+
+    /// Validate that all timeouts are positive (> 0)
+    ///
+    /// Zero or negative timeouts are invalid and will cause immediate failures.
+    fn validate(&self) -> Result<(), String> {
+        if self.fast == 0 {
+            return Err("router_timeouts.fast must be greater than 0".to_string());
+        }
+        if self.balanced == 0 {
+            return Err("router_timeouts.balanced must be greater than 0".to_string());
+        }
+        if self.deep == 0 {
+            return Err("router_timeouts.deep must be greater than 0".to_string());
+        }
+        Ok(())
+    }
+}
+
 /// Routing configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RoutingConfig {
     pub strategy: RoutingStrategy,
     #[serde(default)]
     pub default_importance: crate::router::Importance,
-    pub router_model: String,
+    /// Which tier (Fast/Balanced/Deep) to use for LLM routing decisions
+    ///
+    /// Defaults to Balanced if not specified (recommended for most use cases).
+    ///
+    /// # Validation
+    ///
+    /// **Format Validation (Deserialization Time)**:
+    /// - Serde's `TargetModel` enum deserializer validates format matches
+    ///   "fast", "balanced", or "deep" (case-sensitive lowercase)
+    /// - Invalid formats like "FAST" or "fasst" are rejected immediately
+    ///   with clear deserialization errors
+    ///
+    /// **Availability Validation (Config Loading Time)**:
+    /// - `Config::validate()` ensures ALL tiers have at least one endpoint
+    ///   (lines 686-716), preventing routing failures regardless of router_tier
+    /// - This catches misconfiguration (e.g., router_tier="deep" but no
+    ///   [[models.deep]] endpoints) at config load time, not runtime
+    ///
+    /// Field is private to prevent post-validation mutation. Use `router_tier()` accessor.
+    #[serde(default)]
+    router_tier: TargetModel,
+    /// Router query timeout configuration per tier
+    ///
+    /// Defaults to 10s for all tiers if not specified (backward compatible).
+    /// Can be customized per tier to accommodate different model response times.
+    #[serde(default)]
+    pub router_timeouts: RouterTimeouts,
+}
+
+impl RoutingConfig {
+    /// Get the router tier for LLM-based routing decisions
+    ///
+    /// The router tier determines which model tier (Fast/Balanced/Deep) is used
+    /// to make routing decisions in LLM and Hybrid strategies.
+    ///
+    /// # Returns
+    /// The configured router tier (validated during config loading)
+    pub fn router_tier(&self) -> TargetModel {
+        self.router_tier
+    }
+
+    /// Get the router query timeout for a specific tier
+    ///
+    /// Returns the configured timeout (in seconds) for router queries
+    /// to the specified tier.
+    ///
+    /// # Arguments
+    /// * `tier` - The model tier to get the timeout for
+    ///
+    /// # Returns
+    /// Timeout in seconds (u64)
+    pub fn router_timeout_for_tier(&self, tier: TargetModel) -> u64 {
+        match tier {
+            TargetModel::Fast => self.router_timeouts.fast(),
+            TargetModel::Balanced => self.router_timeouts.balanced(),
+            TargetModel::Deep => self.router_timeouts.deep(),
+        }
+    }
 }
 
 /// Routing strategy enum
@@ -147,7 +309,8 @@ fn default_log_level() -> String {
 /// Per-tier timeout overrides
 ///
 /// Allows configuring different timeouts for each model tier.
-/// If a tier timeout is None, the global `server.request_timeout_seconds` is used.
+/// If a tier timeout is not specified in the config file, the global
+/// `server.request_timeout_seconds` is used as the default.
 ///
 /// # Custom Deserialization
 ///
@@ -181,18 +344,23 @@ impl TimeoutsConfig {
     ///
     /// Returns an error if any timeout is zero or exceeds 300 seconds.
     ///
-    /// # Defense-in-Depth
+    /// # Configuration Sanity Check
     ///
-    /// The upper bound check (timeout > 300) also handles extreme values like `u64::MAX`
-    /// (18446744073709551615), which would fail this check. This prevents arithmetic
-    /// overflow in timeout calculations and ensures reasonable timeout values.
+    /// The 300-second (5-minute) upper bound enforces reasonable timeout values:
+    /// - Prevents typos (e.g., 3000 instead of 30 seconds)
+    /// - Catches unit confusion (milliseconds vs seconds)
+    /// - Ensures timely failure detection (5+ minute timeouts hide issues)
+    ///
+    /// This is a **configuration policy**, not a technical limitation. Values above
+    /// 300 seconds are rejected to maintain predictable system behavior and prevent
+    /// excessive resource holding during network issues.
     pub fn new(
         fast: Option<u64>,
         balanced: Option<u64>,
         deep: Option<u64>,
     ) -> crate::error::AppResult<Self> {
         // Validate each timeout (0, 300] seconds
-        // NOTE: Upper bound also prevents u64::MAX and other extreme values
+        // NOTE: Upper bound enforces configuration policy (5-minute max)
         for (tier_name, timeout_opt) in [("fast", fast), ("balanced", balanced), ("deep", deep)] {
             if let Some(timeout) = timeout_opt {
                 if timeout == 0 {
@@ -204,7 +372,7 @@ impl TimeoutsConfig {
                 if timeout > 300 {
                     return Err(crate::error::AppError::Config(format!(
                         "timeouts.{} cannot exceed 300 seconds (5 minutes), got {}. \
-                        This limit prevents connection pool exhaustion and arithmetic overflow.",
+                        This configuration policy prevents connection pool exhaustion and ensures timely failure detection.",
                         tier_name, timeout
                     )));
                 }
@@ -314,26 +482,55 @@ impl Config {
     pub fn from_file<P: AsRef<Path>>(path: P) -> crate::error::AppResult<Self> {
         let path_display = path.as_ref().display().to_string();
 
-        let content = std::fs::read_to_string(path.as_ref()).map_err(|e| {
-            crate::error::AppError::Config(format!(
-                "Failed to read config file '{}': {}",
-                path_display, e
-            ))
+        // Phase 1: Read file (preserves io::Error context)
+        let content = std::fs::read_to_string(path.as_ref()).map_err(|source| {
+            let remediation = match source.kind() {
+                std::io::ErrorKind::NotFound => {
+                    let current_dir = std::env::current_dir()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|_| "<unknown>".to_string());
+                    format!(
+                        "\nFile not found. Check that:\n\
+                        1. Path '{}' is correct\n\
+                        2. File exists and is readable\n\
+                        3. Current working directory is: {}",
+                        path_display, current_dir
+                    )
+                }
+                std::io::ErrorKind::PermissionDenied => {
+                    format!(
+                        "\nPermission denied. Check that:\n\
+                        1. File '{}' has read permissions (chmod +r)\n\
+                        2. Parent directories have execute permissions (chmod +x)\n\
+                        3. Process runs as user with file access",
+                        path_display
+                    )
+                }
+                _ => String::new(),
+            };
+
+            crate::error::AppError::ConfigFileRead {
+                path: path_display.clone(),
+                source,
+                remediation,
+            }
         })?;
 
-        let config = Self::from_str(&content).map_err(|e| {
-            crate::error::AppError::Config(format!(
-                "Failed to parse config file '{}': {}",
-                path_display, e
-            ))
+        // Phase 2: Parse TOML (preserves toml::de::Error context)
+        let config: Self = toml::from_str(&content).map_err(|source| {
+            crate::error::AppError::ConfigParseFailed {
+                path: path_display.clone(),
+                source,
+            }
         })?;
 
-        config.validate().map_err(|e| {
-            crate::error::AppError::Config(format!(
-                "Config file '{}' validation failed: {}",
-                path_display, e
-            ))
-        })?;
+        // Phase 3: Validate parsed config (provides contextual reason)
+        config
+            .validate()
+            .map_err(|e| crate::error::AppError::ConfigValidationFailed {
+                path: path_display,
+                reason: e.to_string(),
+            })?;
 
         Ok(config)
     }
@@ -370,7 +567,19 @@ impl Config {
     }
 
     /// Validate configuration after parsing
-    fn validate(&self) -> crate::error::AppResult<()> {
+    ///
+    /// This is called automatically by `from_file()`, but can also be called
+    /// explicitly when constructing Config via other means (e.g., in tests).
+    pub fn validate(&self) -> crate::error::AppResult<()> {
+        // ═══════════════════════════════════════════════════════════════════════
+        // Phase 1: Model Endpoint Field Validation
+        // ═══════════════════════════════════════════════════════════════════════
+        //
+        // Validates individual endpoint configuration fields across all tiers:
+        //   - max_tokens: must fit in u32 (API compatibility)
+        //   - base_url: must start with http:// or https://, must end with /v1
+        //   - temperature: must be finite number between 0.0 and 2.0
+        //
         // Validate ModelEndpoint fields across all tiers
         for (tier_name, endpoints) in [
             ("fast", &self.models.fast),
@@ -399,7 +608,16 @@ impl Config {
                     )));
                 }
 
-                // Validate max_tokens: must not exceed u32::MAX (required for open-agent-sdk)
+                // Validate max_tokens: must not exceed u32::MAX
+                //
+                // **SDK Compatibility & Defensive Validation**:
+                // open-agent-sdk requires max_tokens to fit in u32 for API compatibility.
+                // Values must be <= 4,294,967,295 (u32::MAX).
+                //
+                // This single check also provides defensive validation: no LLM supports >4 billion
+                // tokens, so the u32::MAX limit naturally prevents configuration errors like setting
+                // usize::MAX on 64-bit systems (which would be silently truncated). The check
+                // simultaneously ensures API correctness and reasonable configuration limits.
                 if endpoint.max_tokens > u32::MAX as usize {
                     return Err(crate::error::AppError::Config(format!(
                         "Configuration error: Endpoint '{}' in tier '{}' has max_tokens={} which exceeds u32::MAX ({}). \
@@ -422,15 +640,11 @@ impl Config {
                     )));
                 }
 
-                // Validate base_url: must end with /v1
-                // This is required because health checks append "/models" to get "/v1/models"
-                // Without this validation, users might configure "http://host:port" which would
-                // result in health checks trying "/models" (404) instead of "/v1/models"
+                // Validate base_url: must end with /v1 (OpenAI API compatibility)
                 if !endpoint.base_url.ends_with("/v1") {
                     return Err(crate::error::AppError::Config(format!(
                         "Configuration error: Endpoint '{}' in tier '{}' has invalid base_url '{}'. \
-                        base_url must end with '/v1' (e.g., 'http://host:port/v1'). \
-                        This is required for health checks to work correctly.",
+                        base_url must end with '/v1' (e.g., 'http://host:port/v1') for OpenAI API compatibility.",
                         endpoint.name, tier_name, endpoint.base_url
                     )));
                 }
@@ -450,32 +664,52 @@ impl Config {
             }
         }
 
-        // Validate that each model tier has at least one endpoint
+        // ═══════════════════════════════════════════════════════════════════════
+        // Phase 2: All-Tier Availability Validation
+        // ═══════════════════════════════════════════════════════════════════════
+        //
+        // P1 FIX: Require ALL tiers (Fast/Balanced/Deep) to have at least one endpoint.
+        //
+        // RATIONALE: Both RuleBasedRouter and LlmBasedRouter can route to ANY tier
+        // based on request characteristics. If a tier is empty and gets selected,
+        // requests fail at runtime with "No available healthy endpoints" instead
+        // of failing at startup validation.
+        //
+        // This validation ensures config errors are caught at startup, not runtime.
+        //
+        // Note: router_tier format is already validated during deserialization (Phase 1).
+
+        // Check Fast tier
         if self.models.fast.is_empty() {
             return Err(crate::error::AppError::Config(
-                "Configuration error: models.fast must contain at least one model endpoint"
-                    .to_string(),
-            ));
-        }
-        if self.models.balanced.is_empty() {
-            return Err(crate::error::AppError::Config(
-                "Configuration error: models.balanced must contain at least one model endpoint"
-                    .to_string(),
-            ));
-        }
-        if self.models.deep.is_empty() {
-            return Err(crate::error::AppError::Config(
-                "Configuration error: models.deep must contain at least one model endpoint"
+                "Configuration error: models.fast has no endpoints. \
+                All three tiers (fast, balanced, deep) must have at least one endpoint \
+                because routers can select any tier based on request characteristics. \
+                See config.toml or tests for configuration examples."
                     .to_string(),
             ));
         }
 
-        // Validate router_model is valid
-        if !["fast", "balanced", "deep"].contains(&self.routing.router_model.as_str()) {
-            return Err(crate::error::AppError::Config(format!(
-                "Configuration error: routing.router_model must be 'fast', 'balanced', or 'deep', got '{}'",
-                self.routing.router_model
-            )));
+        // Check Balanced tier
+        if self.models.balanced.is_empty() {
+            return Err(crate::error::AppError::Config(
+                "Configuration error: models.balanced has no endpoints. \
+                All three tiers (fast, balanced, deep) must have at least one endpoint \
+                because routers can select any tier based on request characteristics. \
+                See config.toml or tests for configuration examples."
+                    .to_string(),
+            ));
+        }
+
+        // Check Deep tier
+        if self.models.deep.is_empty() {
+            return Err(crate::error::AppError::Config(
+                "Configuration error: models.deep has no endpoints. \
+                All three tiers (fast, balanced, deep) must have at least one endpoint \
+                because routers can select any tier based on request characteristics. \
+                See config.toml or tests for configuration examples."
+                    .to_string(),
+            ));
         }
 
         // Validate request timeout
@@ -495,6 +729,43 @@ impl Config {
         // implementation, which calls the validated constructor at parse time.
         // No duplicate validation needed here.
 
+        // Validate router query timeouts
+        self.routing
+            .router_timeouts
+            .validate()
+            .map_err(|e| crate::error::AppError::Config(format!("Configuration error: {}", e)))?;
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Phase 3: HTTP Client Creation Validation
+        // ═══════════════════════════════════════════════════════════════════════
+        //
+        // CRITICAL FIX: Validate that HTTP client can be created (catches TLS errors early)
+        //
+        // RATIONALE: TLS configuration errors (invalid certificates, missing CA bundle, etc.)
+        // would previously cause panics in the background health checking task, crashing
+        // the entire server. By validating client creation at startup, we:
+        //   1. Fail fast with a clear error message to operators
+        //   2. Prevent server crashes during health checks
+        //   3. Give operators actionable feedback to fix TLS issues
+        //
+        // This check does not make actual HTTP requests - it only validates that
+        // the HTTP client can be constructed with the system's TLS libraries.
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .map_err(|e| {
+                crate::error::AppError::Config(format!(
+                    "Failed to create HTTP client (TLS configuration error): {}.\n\
+                    This usually indicates:\n\
+                    - Invalid or expired TLS certificates\n\
+                    - Missing CA certificate bundle\n\
+                    - Incompatible system TLS libraries\n\
+                    \n\
+                    Please check your system's TLS configuration and certificates.",
+                    e
+                ))
+            })?;
+
         Ok(())
     }
 }
@@ -503,8 +774,26 @@ impl FromStr for Config {
     type Err = crate::error::AppError;
 
     fn from_str(toml_str: &str) -> Result<Self, Self::Err> {
-        toml::from_str(toml_str)
-            .map_err(|e| crate::error::AppError::Config(format!("Invalid TOML: {}", e)))
+        let config: Config = toml::from_str(toml_str).map_err(|source| {
+            // Provide context about where parsing failed
+            // The source error already contains line/column information from toml crate
+            // We enhance the path field to indicate this is from string parsing and
+            // provide size information to help identify which config string failed
+            let path_with_context = format!(
+                "<string> ({} bytes, {} lines)",
+                toml_str.len(),
+                toml_str.lines().count()
+            );
+
+            crate::error::AppError::ConfigParseFailed {
+                path: path_with_context,
+                source,
+            }
+        })?;
+
+        // Validate config before returning
+        config.validate()?;
+        Ok(config)
     }
 }
 
@@ -553,7 +842,7 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 
 [observability]
 log_level = "info"
@@ -604,7 +893,7 @@ log_level = "info"
             config.routing.default_importance,
             crate::router::Importance::Normal
         );
-        assert_eq!(config.routing.router_model, "balanced");
+        assert_eq!(config.routing.router_tier(), TargetModel::Balanced);
     }
 
     #[test]
@@ -616,19 +905,23 @@ log_level = "info"
     #[test]
     fn test_routing_strategy_enum_values() {
         assert_eq!(
-            serde_json::from_str::<RoutingStrategy>(r#""rule""#).unwrap(),
+            serde_json::from_str::<RoutingStrategy>(r#""rule""#)
+                .expect("Test operation should succeed"),
             RoutingStrategy::Rule
         );
         assert_eq!(
-            serde_json::from_str::<RoutingStrategy>(r#""llm""#).unwrap(),
+            serde_json::from_str::<RoutingStrategy>(r#""llm""#)
+                .expect("Test operation should succeed"),
             RoutingStrategy::Llm
         );
         assert_eq!(
-            serde_json::from_str::<RoutingStrategy>(r#""hybrid""#).unwrap(),
+            serde_json::from_str::<RoutingStrategy>(r#""hybrid""#)
+                .expect("Test operation should succeed"),
             RoutingStrategy::Hybrid
         );
         assert_eq!(
-            serde_json::from_str::<RoutingStrategy>(r#""tool""#).unwrap(),
+            serde_json::from_str::<RoutingStrategy>(r#""tool""#)
+                .expect("Test operation should succeed"),
             RoutingStrategy::Tool
         );
     }
@@ -658,7 +951,7 @@ max_tokens = 8192
 [routing]
 strategy = "rule"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
 
         let config = Config::from_str(minimal_config).expect("should parse minimal config");
@@ -670,18 +963,7 @@ router_model = "balanced"
     }
 
     #[test]
-    fn test_config_validation_empty_fast_tier_fails() {
-        // Create a config with empty fast tier programmatically
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
-        config.models.fast.clear(); // Empty the fast tier
-
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("models.fast"));
-    }
-
-    #[test]
-    fn test_config_validation_invalid_router_model_fails() {
+    fn test_config_validation_invalid_router_tier_fails() {
         let config_str = r#"
 [server]
 host = "127.0.0.1"
@@ -704,20 +986,112 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_model = "invalid"
+router_tier = "invalid"
 "#;
 
-        let config = Config::from_str(config_str).unwrap();
+        // Serde should reject invalid router_tier at deserialization time
+        let result = Config::from_str(config_str);
+        assert!(
+            result.is_err(),
+            "Should fail to deserialize invalid router_tier"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("router_tier") || err_msg.contains("invalid"));
+        assert!(
+            err_msg.contains("fast") || err_msg.contains("balanced") || err_msg.contains("deep"),
+            "Error should list valid values"
+        );
+    }
+
+    #[test]
+    fn test_config_validation_router_tier_with_no_endpoints_fails() {
+        // Parse config with router_tier="deep" and LLM strategy
+        let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-1"
+base_url = "http://localhost:11434/v1"
+max_tokens = 2048
+weight = 1.0
+priority = 1
+
+[[models.balanced]]
+name = "balanced-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 4096
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "deep-1"
+base_url = "http://localhost:8080/v1"
+max_tokens = 8192
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "llm"
+default_importance = "normal"
+router_tier = "deep"
+"#;
+        let mut config = Config::from_str(config_str).expect("Test operation should succeed");
+
+        // Clear deep endpoints to test validation
+        config.models.deep.clear();
+
         let result = config.validate();
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("router_model"));
-        assert!(err_msg.contains("invalid"));
+        assert!(err_msg.contains("deep") || err_msg.contains("Deep"));
+        assert!(err_msg.contains("endpoint"));
+    }
+
+    #[test]
+    fn test_config_router_tier_defaults_to_balanced() {
+        // Test that configs without router_tier field use Balanced as default
+        // This ensures backward compatibility with configs that don't specify router_tier
+        let config_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[[models.fast]]
+name = "test-fast"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+
+[[models.balanced]]
+name = "test-balanced"
+base_url = "http://localhost:1235/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "test-deep"
+base_url = "http://localhost:1236/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+# router_tier omitted - should default to balanced
+"#;
+
+        let config: Config =
+            toml::from_str(config_str).expect("should parse config without router_tier");
+
+        assert_eq!(
+            config.routing.router_tier(),
+            TargetModel::Balanced,
+            "router_tier should default to Balanced when omitted"
+        );
     }
 
     #[test]
     fn test_config_validation_negative_weight_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.models.fast[0].weight = -1.0; // Invalid: negative weight
 
         let result = config.validate();
@@ -729,7 +1103,7 @@ router_model = "invalid"
 
     #[test]
     fn test_config_validation_zero_weight_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.models.balanced[0].weight = 0.0; // Invalid: zero weight
 
         let result = config.validate();
@@ -741,7 +1115,7 @@ router_model = "invalid"
 
     #[test]
     fn test_config_validation_nan_weight_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.models.deep[0].weight = f64::NAN; // Invalid: NaN weight
 
         let result = config.validate();
@@ -752,7 +1126,7 @@ router_model = "invalid"
 
     #[test]
     fn test_config_validation_zero_max_tokens_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.models.fast[0].max_tokens = 0; // Invalid: zero max_tokens
 
         let result = config.validate();
@@ -764,7 +1138,7 @@ router_model = "invalid"
 
     #[test]
     fn test_config_validation_invalid_base_url_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.models.balanced[0].base_url = "ftp://invalid.com".to_string(); // Invalid: not http/https
 
         let result = config.validate();
@@ -776,7 +1150,7 @@ router_model = "invalid"
 
     #[test]
     fn test_config_validation_missing_protocol_base_url_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.models.deep[0].base_url = "localhost:1234/v1".to_string(); // Invalid: missing protocol
 
         let result = config.validate();
@@ -788,7 +1162,7 @@ router_model = "invalid"
 
     #[test]
     fn test_config_validation_base_url_must_end_with_v1() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.models.fast[0].base_url = "http://localhost:1234".to_string(); // Invalid: missing /v1
 
         let result = config.validate();
@@ -796,12 +1170,12 @@ router_model = "invalid"
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("base_url"));
         assert!(err_msg.contains("/v1"));
-        assert!(err_msg.contains("health checks"));
+        assert!(err_msg.contains("OpenAI API"));
     }
 
     #[test]
     fn test_config_validation_zero_timeout_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.server.request_timeout_seconds = 0; // Invalid: zero timeout
 
         let result = config.validate();
@@ -816,7 +1190,7 @@ router_model = "invalid"
 
     #[test]
     fn test_config_validation_excessive_timeout_fails() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.server.request_timeout_seconds = 301; // Invalid: exceeds 300 second limit
 
         let result = config.validate();
@@ -831,7 +1205,7 @@ router_model = "invalid"
 
     #[test]
     fn test_config_validation_valid_timeout_succeeds() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
 
         // Test lower bound (1 second)
         config.server.request_timeout_seconds = 1;
@@ -873,7 +1247,7 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 fast = 15
@@ -912,7 +1286,7 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 fast = 15
@@ -935,22 +1309,9 @@ fast = 15
         assert_eq!(config.timeouts.deep, None);
     }
 
-    // REMOVED: test_config_validation_per_tier_timeout_too_low_fails
-    // REMOVED: test_config_validation_per_tier_timeout_too_high_fails
-    // REMOVED: test_config_validation_per_tier_timeouts_valid_succeeds
-    //
-    // These tests tested the OLD behavior where timeouts.fast/balanced/deep fields were
-    // public and could be modified after construction, with validation happening later
-    // during validate(). This created a temporal gap where invalid TimeoutsConfig
-    // instances could exist.
-    //
-    // With Issue #3 fix (custom Deserialize), these fields are now PRIVATE and validation
-    // happens DURING deserialization. Invalid values are rejected immediately at parse time.
-    // See new tests: test_timeouts_config_deserialization_* for the CORRECT behavior.
-
     #[test]
     fn test_config_timeout_for_tier_uses_override() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.server.request_timeout_seconds = 30; // Global default
         config.timeouts.fast = Some(15);
         config.timeouts.balanced = Some(45);
@@ -973,7 +1334,7 @@ fast = 15
 
     #[test]
     fn test_config_timeout_for_tier_uses_global_default() {
-        let config = Config::from_str(TEST_CONFIG).unwrap();
+        let config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         // No per-tier overrides, should use global default (30s)
 
         assert_eq!(
@@ -992,7 +1353,7 @@ fast = 15
 
     #[test]
     fn test_config_timeout_for_tier_mixed_overrides() {
-        let mut config = Config::from_str(TEST_CONFIG).unwrap();
+        let mut config = Config::from_str(TEST_CONFIG).expect("Test operation should succeed");
         config.server.request_timeout_seconds = 40; // Global default
         config.timeouts.fast = Some(20); // Override only fast tier
 
@@ -1040,7 +1401,7 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 fast = 0
@@ -1083,7 +1444,7 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 deep = 301
@@ -1126,7 +1487,7 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 fast = 15
@@ -1139,7 +1500,7 @@ deep = 60
             result.is_ok(),
             "Config parsing should succeed with valid timeouts (1-300)"
         );
-        let config = result.unwrap();
+        let config = result.expect("Test operation should succeed");
         assert_eq!(config.timeouts.fast(), Some(15));
         assert_eq!(config.timeouts.balanced(), Some(30));
         assert_eq!(config.timeouts.deep(), Some(60));
@@ -1170,7 +1531,7 @@ max_tokens = 16384
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 
 [timeouts]
 fast = 1
@@ -1182,7 +1543,7 @@ deep = 300
             result.is_ok(),
             "Config parsing should succeed with boundary values 1 and 300"
         );
-        let config = result.unwrap();
+        let config = result.expect("Test operation should succeed");
         assert_eq!(config.timeouts.fast(), Some(1));
         assert_eq!(config.timeouts.deep(), Some(300));
     }

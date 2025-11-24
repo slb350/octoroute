@@ -59,7 +59,7 @@ strategy = "hybrid"
 default_importance = "normal"
 
 # Which model to use for LLM-based routing decisions
-router_model = "balanced"
+router_tier = "balanced"
 
 [observability]
 # Log level: "trace", "debug", "info", "warn", "error"

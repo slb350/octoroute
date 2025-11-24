@@ -4,6 +4,11 @@
 //! empty tiers, and concurrency safety.
 
 use super::*;
+
+/// Helper to create test metrics
+fn test_metrics() -> Arc<crate::metrics::Metrics> {
+    Arc::new(crate::metrics::Metrics::new().expect("should create metrics"))
+}
 use crate::models::endpoint_name::ExclusionSet;
 use crate::models::selector::ModelSelector;
 use crate::router::TargetModel;
@@ -12,7 +17,7 @@ use std::sync::Arc;
 #[tokio::test]
 async fn test_selector_new_creates_selector() {
     let config = Arc::new(create_test_config());
-    let selector = ModelSelector::new(config);
+    let selector = ModelSelector::new(config, test_metrics());
 
     // Verify we can create a selector
     assert_eq!(selector.endpoint_count(TargetModel::Fast), 2);
@@ -23,7 +28,7 @@ async fn test_selector_new_creates_selector() {
 #[tokio::test]
 async fn test_selector_select_returns_endpoint() {
     let config = Arc::new(create_test_config());
-    let selector = ModelSelector::new(config);
+    let selector = ModelSelector::new(config, test_metrics());
 
     // Should return some endpoint for each tier (no exclusions)
     let no_exclude = ExclusionSet::new();
@@ -50,7 +55,7 @@ async fn test_selector_select_returns_endpoint() {
 #[tokio::test]
 async fn test_selector_single_endpoint_tier() {
     let config = Arc::new(create_test_config());
-    let selector = ModelSelector::new(config);
+    let selector = ModelSelector::new(config, test_metrics());
 
     // Balanced tier has only one endpoint, should return same one
     let no_exclude = ExclusionSet::new();
@@ -70,7 +75,7 @@ async fn test_selector_single_endpoint_tier() {
 #[tokio::test]
 async fn test_selector_endpoint_count() {
     let config = Arc::new(create_test_config());
-    let selector = ModelSelector::new(config);
+    let selector = ModelSelector::new(config, test_metrics());
 
     assert_eq!(selector.endpoint_count(TargetModel::Fast), 2);
     assert_eq!(selector.endpoint_count(TargetModel::Balanced), 1);
@@ -101,10 +106,10 @@ max_tokens = 8192
 
 [routing]
 strategy = "rule"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
     let config: Config = toml::from_str(toml_config).expect("should parse TOML");
-    let selector = ModelSelector::new(Arc::new(config));
+    let selector = ModelSelector::new(Arc::new(config), test_metrics());
 
     let no_exclude = ExclusionSet::new();
     let result = selector.select(TargetModel::Fast, &no_exclude).await;
@@ -114,7 +119,7 @@ router_model = "balanced"
 #[tokio::test]
 async fn test_selector_concurrent_weighted_selection() {
     let config = Arc::new(create_test_config());
-    let selector = Arc::new(ModelSelector::new(config));
+    let selector = Arc::new(ModelSelector::new(config, test_metrics()));
 
     // Spawn 10 concurrent tasks selecting from Fast tier (which has 2 endpoints)
     let mut handles = vec![];

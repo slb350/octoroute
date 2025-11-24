@@ -9,6 +9,11 @@ use octoroute::router::hybrid::HybridRouter;
 use octoroute::router::{Importance, RouteMetadata, TaskType};
 use std::sync::Arc;
 
+/// Helper to create test metrics
+fn test_metrics() -> Arc<octoroute::metrics::Metrics> {
+    Arc::new(octoroute::metrics::Metrics::new().expect("should create metrics"))
+}
+
 fn test_config() -> Arc<Config> {
     let config_toml = r#"
 [server]
@@ -40,7 +45,7 @@ priority = 1
 [routing]
 strategy = "hybrid"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
 
     let config: Config = toml::from_str(config_toml).expect("should parse config");
@@ -55,8 +60,15 @@ async fn test_concurrent_routing_requests_same_metadata() {
     // All should succeed and return the same routing decision.
 
     let config = test_config();
-    let selector = Arc::new(ModelSelector::new(config.clone()));
-    let router = Arc::new(HybridRouter::new(config, selector).expect("should create router"));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
+    let router = Arc::new(
+        HybridRouter::new(
+            config,
+            selector,
+            Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+        )
+        .expect("should create router"),
+    );
 
     // Metadata that will match rule-based routing (casual chat -> Fast)
     let meta = RouteMetadata {
@@ -110,8 +122,15 @@ async fn test_concurrent_routing_requests_different_metadata() {
     // that the router correctly handles different routing decisions concurrently.
 
     let config = test_config();
-    let selector = Arc::new(ModelSelector::new(config.clone()));
-    let router = Arc::new(HybridRouter::new(config, selector).expect("should create router"));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
+    let router = Arc::new(
+        HybridRouter::new(
+            config,
+            selector,
+            Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+        )
+        .expect("should create router"),
+    );
 
     // Create different metadata profiles
     let metadata_profiles = [
@@ -182,8 +201,15 @@ async fn test_concurrent_routing_high_load() {
     // the router handles high concurrency without panics or deadlocks.
 
     let config = test_config();
-    let selector = Arc::new(ModelSelector::new(config.clone()));
-    let router = Arc::new(HybridRouter::new(config, selector).expect("should create router"));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
+    let router = Arc::new(
+        HybridRouter::new(
+            config,
+            selector,
+            Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+        )
+        .expect("should create router"),
+    );
 
     let meta = RouteMetadata {
         token_estimate: 256,
@@ -229,9 +255,15 @@ async fn test_concurrent_llm_routing_with_health_updates() {
     // triggers LLM fallback (CasualChat + High importance is ambiguous).
 
     let config = test_config();
-    let selector = Arc::new(ModelSelector::new(config.clone()));
-    let router =
-        Arc::new(HybridRouter::new(config, selector.clone()).expect("should create router"));
+    let selector = Arc::new(ModelSelector::new(config.clone(), test_metrics()));
+    let router = Arc::new(
+        HybridRouter::new(
+            config,
+            selector.clone(),
+            Arc::new(octoroute::metrics::Metrics::new().unwrap()),
+        )
+        .expect("should create router"),
+    );
 
     // Metadata that triggers LLM fallback (CasualChat + High is ambiguous)
     // This ensures concurrent LLM queries, not just rule-based routing

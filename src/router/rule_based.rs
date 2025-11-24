@@ -114,6 +114,11 @@ impl RuleBasedRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Helper to create test metrics
+    fn test_metrics() -> Arc<crate::metrics::Metrics> {
+        Arc::new(crate::metrics::Metrics::new().expect("should create metrics"))
+    }
     use crate::config::Config;
     use std::sync::Arc;
 
@@ -152,7 +157,7 @@ priority = 1
 [routing]
 strategy = "rule"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 
 [observability]
 log_level = "info"
@@ -164,7 +169,7 @@ log_level = "info"
     async fn test_router_creates() {
         let router = RuleBasedRouter::new();
         let config = test_config();
-        let selector = ModelSelector::new(config);
+        let selector = ModelSelector::new(config, test_metrics());
 
         // Request with no rule match should return None (not default tier)
         let result = router
@@ -457,7 +462,7 @@ log_level = "info"
         // RED: This test will fail until we update the signature
         let router = RuleBasedRouter::new();
         let config = test_config();
-        let selector = ModelSelector::new(config);
+        let selector = ModelSelector::new(config, test_metrics());
 
         // CasualChat + High importance has no rule match (see line 103)
         let meta = RouteMetadata::new(100)
@@ -482,7 +487,7 @@ log_level = "info"
         // Verify that rule matches still return Some(decision)
         let router = RuleBasedRouter::new();
         let config = test_config();
-        let selector = ModelSelector::new(config);
+        let selector = ModelSelector::new(config, test_metrics());
 
         // CasualChat + Normal + <256 tokens matches Rule 1 → Fast
         let meta = RouteMetadata::new(100)

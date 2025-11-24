@@ -49,7 +49,16 @@ impl AppState {
     /// - Llm/Hybrid strategy is selected but no balanced tier endpoints are configured
     /// - Router construction fails for any other reason
     pub fn new(config: Arc<Config>) -> AppResult<Self> {
-        let selector = Arc::new(ModelSelector::new(config.clone()));
+        // Initialize metrics first so we can pass them to health checker and routers
+        let metrics = {
+            let m = crate::metrics::Metrics::new()
+                .map_err(|e| AppError::Internal(format!("Failed to initialize metrics: {}", e)))?;
+            tracing::info!("Metrics collection enabled");
+            Arc::new(m)
+        };
+
+        // Create selector with metrics integration for health tracking
+        let selector = Arc::new(ModelSelector::new(config.clone(), metrics.clone()));
 
         // Construct router based on config.routing.strategy
         let router = match config.routing.strategy {
@@ -59,31 +68,35 @@ impl AppState {
                 Arc::new(Router::Rule(RuleBasedRouter::new()))
             }
             RoutingStrategy::Llm => {
-                // LLM-only routing: balanced tier required
-                tracing::info!("Initializing LLM-based router (requires balanced tier)");
-                if config.models.balanced.is_empty() {
-                    return Err(AppError::Config(
-                        "LLM routing strategy selected but no balanced tier endpoints configured. \
-                        Either add balanced tier endpoints or change routing.strategy to 'rule'."
-                            .to_string(),
-                    ));
-                }
-                let llm_router = LlmBasedRouter::new(selector.clone())?;
+                // LLM-only routing: router tier required
+                // Serde validates router_tier format at deserialization time
+                let router_tier = config.routing.router_tier();
+                let router_timeout_secs = config.routing.router_timeout_for_tier(router_tier);
+
+                tracing::info!(
+                    "Initializing LLM-based router with {:?} tier for routing decisions (timeout: {}s)",
+                    router_tier,
+                    router_timeout_secs
+                );
+
+                let llm_router = LlmBasedRouter::new(
+                    selector.clone(),
+                    router_tier,
+                    router_timeout_secs,
+                    metrics.clone(),
+                )?;
                 Arc::new(Router::Llm(llm_router))
             }
             RoutingStrategy::Hybrid => {
-                // Hybrid routing: balanced tier required for LLM fallback
+                // Hybrid routing: router tier required for LLM fallback
+                // Serde validates router_tier format at deserialization time
                 tracing::info!(
-                    "Initializing hybrid router (rule-based with LLM fallback, requires balanced tier)"
+                    "Initializing hybrid router (rule-based with LLM fallback using {:?} tier)",
+                    config.routing.router_tier()
                 );
-                if config.models.balanced.is_empty() {
-                    return Err(AppError::Config(
-                        "Hybrid routing strategy selected but no balanced tier endpoints configured. \
-                        Either add balanced tier endpoints or change routing.strategy to 'rule'."
-                            .to_string(),
-                    ));
-                }
-                let hybrid_router = HybridRouter::new(config.clone(), selector.clone())?;
+
+                let hybrid_router =
+                    HybridRouter::new(config.clone(), selector.clone(), metrics.clone())?;
                 Arc::new(Router::Hybrid(hybrid_router))
             }
             RoutingStrategy::Tool => {
@@ -92,13 +105,6 @@ impl AppState {
                         .to_string(),
                 ));
             }
-        };
-
-        let metrics = {
-            let m = crate::metrics::Metrics::new()
-                .map_err(|e| AppError::Internal(format!("Failed to initialize metrics: {}", e)))?;
-            tracing::info!("Metrics collection enabled");
-            Arc::new(m)
         };
 
         Ok(Self {
@@ -171,7 +177,7 @@ priority = 1
 [routing]
 strategy = "rule"
 default_importance = "normal"
-router_model = "balanced"
+router_tier = "balanced"
 "#;
         toml::from_str(toml).expect("should parse TOML config")
     }

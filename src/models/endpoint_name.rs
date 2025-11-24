@@ -10,16 +10,22 @@ use std::collections::HashSet;
 ///
 /// Prevents typos and wrong-tier endpoint names in exclusion sets.
 ///
-/// # Preferred Usage
-/// - **Production code with Config**: Use `EndpointName::new(name, config)` for validated construction
-/// - **Production code with ModelEndpoint**: Use `EndpointName::from(endpoint)` (always valid)
-/// - **Test code**: Use string conversions `From<String>` or `From<&str>`, but be aware they don't validate
+/// # Usage Patterns
 ///
-/// # Validation
+/// **Production code** (validation enforced):
+/// - `EndpointName::new(name, config)` - Validated construction, returns `Result`
+/// - `EndpointName::from(&endpoint)` - Always valid (endpoint comes from config)
+///
+/// **Test code only** (no validation):
+/// - `EndpointName::from("test-endpoint")` - Test-only unvalidated construction
+/// - `EndpointName::from(String::from("test"))` - Test-only unvalidated construction
+///
+/// # Type Safety Guarantees
+///
 /// - `new()`: Validates at construction time, returns `Result`
 /// - `From<&ModelEndpoint>`: Always valid (endpoint comes from config)
-/// - `From<String>` and `From<&str>`: No validation - invalid names cause runtime errors
-///   (`HealthError::UnknownEndpoint`) when used with health checking methods
+/// - `From<String>` and `From<&str>`: **Test-only** (`#[cfg(test)]`) to prevent
+///   production code from bypassing validation
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct EndpointName(String);
 
@@ -76,25 +82,39 @@ impl From<&ModelEndpoint> for EndpointName {
     }
 }
 
+/// Test-only unvalidated conversions
+///
+/// These conversions are intentionally restricted to test code to prevent
+/// production code from bypassing validation. In tests, we often need to
+/// create EndpointNames with arbitrary values for testing error paths.
+///
+/// **Production code should use**:
+/// - `EndpointName::from(&endpoint)` for validated ModelEndpoint references
+/// - `EndpointName::new(name, config)` for validated string construction
+#[cfg(test)]
 impl From<String> for EndpointName {
-    /// Create an EndpointName from a String
-    ///
-    /// Note: This does NOT validate that the endpoint exists in the configuration.
-    /// Prefer `EndpointName::from(&endpoint)` in production code.
+    /// Create an EndpointName from a String (test-only, no validation)
     fn from(name: String) -> Self {
         Self(name)
     }
 }
 
+#[cfg(test)]
 impl From<&str> for EndpointName {
-    /// Create an EndpointName from a string slice
-    ///
-    /// Note: This does NOT validate that the endpoint exists in the configuration.
-    /// Prefer `EndpointName::from(&endpoint)` in production code.
+    /// Create an EndpointName from a string slice (test-only, no validation)
     fn from(name: &str) -> Self {
         Self(name.to_string())
     }
 }
 
 /// Type alias for exclusion sets used in retry logic
+///
+/// **IMPORTANT**: Exclusions are request-scoped, NOT global. An ExclusionSet
+/// exists only for the duration of a single request (function call) and is
+/// discarded when the function returns. Endpoints excluded during one request's
+/// retries are available again for the next request.
+///
+/// This prevents retry loops from hitting the same failed endpoint repeatedly
+/// within a single request, while allowing the health checker to independently
+/// track endpoint health and recover failed endpoints across requests.
 pub type ExclusionSet = HashSet<EndpointName>;
