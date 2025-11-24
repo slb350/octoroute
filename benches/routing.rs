@@ -9,9 +9,9 @@
 //! - Token estimation: Single-digit nanoseconds (simple character counting, highly optimized)
 //!
 //! **Note**: Actual measurements vary with compiler version, CPU architecture, and system load.
-//! Run `cargo bench --features metrics` or `just bench` to measure on your system.
+//! Run `cargo bench` or `just bench` to measure on your system.
 //!
-//! Run with: `cargo bench --features metrics` or `just bench`
+//! Run with: `cargo bench` or `just bench`
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use octoroute::{
