@@ -356,19 +356,30 @@ impl LlmBasedRouter {
                             max_retries = MAX_ROUTER_RETRIES,
                             total_configured_endpoints = total_configured,
                             failed_endpoints = ?failed_endpoints,
+                            last_error = ?last_error,
                             "COMPLETE EXHAUSTION: All {} {:?} tier endpoints failed for routing. \
                             All endpoints tried in this request returned errors. Check endpoint health.",
                             total_configured, router_tier
                         );
+
+                        // Preserve the last error's details (timeout, etc.) in the exhaustion message
+                        // This ensures operators see WHY endpoints failed, not just that they failed
+                        let detailed_cause = if let Some(ref err) = last_error {
+                            format!("Last failure: {}", err)
+                        } else {
+                            "No error details available".to_string()
+                        };
+
                         last_error = Some(AppError::RoutingFailed(format!(
                             "All {} {:?} tier endpoints exhausted for routing (attempt {}/{}). \
-                            Failed endpoints: {}. \
+                            Failed endpoints: {}. {}. \
                             Check endpoint connectivity and health.",
                             total_configured,
                             router_tier,
                             attempt,
                             MAX_ROUTER_RETRIES,
-                            failed_names_str
+                            failed_names_str,
+                            detailed_cause
                         )));
 
                         // Add exponential backoff before retry
@@ -392,21 +403,31 @@ impl LlmBasedRouter {
                             failed_endpoints_count = excluded_count,
                             healthy_but_unavailable_count = healthy_count,
                             failed_endpoints = ?failed_endpoints,
+                            last_error = ?last_error,
                             "TRANSIENT: No available {:?} tier endpoints (configured: {}, failed: {}, \
                             healthy but unavailable: {}). Endpoints may be recovering from failures. \
                             Waiting for health checker recovery.",
                             router_tier, total_configured, excluded_count, healthy_count
                         );
+
+                        // Preserve the last error's details (timeout, etc.) in the transient failure message
+                        let detailed_cause = if let Some(ref err) = last_error {
+                            format!("Last failure: {}", err)
+                        } else {
+                            "No error details available".to_string()
+                        };
+
                         last_error = Some(AppError::RoutingFailed(format!(
                             "No available {:?} tier endpoints (configured: {}, failed: {}, \
                             healthy but temporarily unavailable: {}, attempt {}/{}). \
-                            Endpoints may recover shortly.",
+                            {}. Endpoints may recover shortly.",
                             router_tier,
                             total_configured,
                             excluded_count,
                             healthy_count,
                             attempt,
-                            MAX_ROUTER_RETRIES
+                            MAX_ROUTER_RETRIES,
+                            detailed_cause
                         )));
 
                         // Add exponential backoff before retry
