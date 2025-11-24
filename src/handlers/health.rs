@@ -178,8 +178,8 @@ router_tier = "balanced"
     async fn test_health_handler_shows_degraded_when_metrics_recording_fails() {
         let state = create_test_state();
 
-        // Increment metrics_recording_failures metric
-        state.metrics().metrics_recording_failure();
+        // Increment metrics_recording_failures metric with test label
+        state.metrics().metrics_recording_failure("record_request");
 
         let (status, Json(response)) = handler(State(state)).await;
 
@@ -200,7 +200,7 @@ router_tier = "balanced"
         state
             .metrics()
             .health_tracking_failure("test-endpoint", "unknown_endpoint");
-        state.metrics().metrics_recording_failure();
+        state.metrics().metrics_recording_failure("record_request");
 
         let (status, Json(response)) = handler(State(state)).await;
 

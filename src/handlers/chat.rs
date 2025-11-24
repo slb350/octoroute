@@ -338,7 +338,7 @@ pub async fn handler(
         // Common failure causes: cardinality explosion, registry lock contention,
         // descriptor mismatch. These should be logged but not block user requests.
         if let Err(e) = metrics.record_request(tier_enum, strategy_enum) {
-            metrics.metrics_recording_failure();
+            metrics.metrics_recording_failure("record_request");
             tracing::error!(
                 request_id = %request_id,
                 error = %e,
@@ -351,7 +351,7 @@ pub async fn handler(
         }
 
         if let Err(e) = metrics.record_routing_duration(strategy_enum, routing_duration_ms) {
-            metrics.metrics_recording_failure();
+            metrics.metrics_recording_failure("record_routing_duration");
             tracing::error!(
                 request_id = %request_id,
                 error = %e,
@@ -561,7 +561,7 @@ pub async fn handler(
                     // don't fail requests when observability systems have issues.
                     if let Err(e) = metrics.record_model_invocation(tier_enum) {
                         // Record the metrics failure itself
-                        metrics.metrics_recording_failure();
+                        metrics.metrics_recording_failure("record_model_invocation");
 
                         // Log error for operator visibility
                         tracing::error!(

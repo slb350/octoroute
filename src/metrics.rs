@@ -16,8 +16,7 @@
 //! ```
 
 use prometheus::{
-    CounterVec, Encoder, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, Opts, Registry,
-    TextEncoder,
+    CounterVec, Encoder, HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry, TextEncoder,
 };
 use std::sync::Arc;
 
@@ -102,7 +101,7 @@ pub struct Metrics {
     routing_duration: HistogramVec,
     model_invocations: CounterVec,
     health_tracking_failures: IntCounterVec,
-    metrics_recording_failures: IntCounter,
+    metrics_recording_failures: IntCounterVec,
 }
 
 impl Metrics {
@@ -170,11 +169,19 @@ impl Metrics {
             &["endpoint", "error_type"],
         )?;
 
-        // Counter: Metrics recording operation failures
-        let metrics_recording_failures = IntCounter::new(
-            "octoroute_metrics_recording_failures_total",
-            "Total number of metrics recording operation failures (record_request/record_routing_duration/record_model_invocation errors). \
-            Indicates Prometheus internal errors - frequent failures require investigation.",
+        // Counter: Metrics recording operation failures with operation label
+        //
+        // Labels:
+        // - operation: Which metric operation failed (record_request, record_routing_duration, record_model_invocation)
+        //
+        // Cardinality: 3 operations = 3 time series (bounded by operation count)
+        let metrics_recording_failures = IntCounterVec::new(
+            Opts::new(
+                "octoroute_metrics_recording_failures_total",
+                "Total number of metrics recording operation failures (record_request/record_routing_duration/record_model_invocation errors) by operation. \
+                Indicates Prometheus internal errors - frequent failures require investigation.",
+            ),
+            &["operation"],
         )?;
 
         // Register all metrics
@@ -372,7 +379,7 @@ impl Metrics {
         let metric_families = self.registry.gather();
         metric_families
             .iter()
-            .find(|mf| mf.get_name() == "octoroute_health_tracking_failures_total")
+            .find(|mf| mf.name() == "octoroute_health_tracking_failures_total")
             .map(|mf| {
                 mf.get_metric()
                     .iter()
@@ -410,16 +417,38 @@ impl Metrics {
     /// - Operators may not detect routing issues or performance degradation
     /// - Request continues normally (metrics are non-critical to functionality)
     /// - Failure is logged for investigation
-    pub fn metrics_recording_failure(&self) {
-        self.metrics_recording_failures.inc();
+    ///
+    /// ## Parameters
+    ///
+    /// - `operation`: Name of the metric operation that failed - must be one of:
+    ///   - "record_request": Request counter recording failed
+    ///   - "record_routing_duration": Routing duration histogram recording failed
+    ///   - "record_model_invocation": Model invocation counter recording failed
+    pub fn metrics_recording_failure(&self, operation: &str) {
+        self.metrics_recording_failures
+            .with_label_values(&[operation])
+            .inc();
     }
 
-    /// Get the current count of metrics recording failures
+    /// Get the current count of metrics recording failures across all operations
     ///
     /// Returns the total number of metrics recording operation failures since startup.
     /// Used by the /health endpoint to report metrics system status.
+    ///
+    /// Note: This sums across all label combinations (all operations).
     pub fn metrics_recording_failures_count(&self) -> u64 {
-        self.metrics_recording_failures.get()
+        // Gather metrics from registry and sum metrics_recording_failures across all labels
+        let metric_families = self.registry.gather();
+        metric_families
+            .iter()
+            .find(|mf| mf.name() == "octoroute_metrics_recording_failures_total")
+            .map(|mf| {
+                mf.get_metric()
+                    .iter()
+                    .map(|m| m.counter.value.unwrap_or(0.0) as u64)
+                    .sum()
+            })
+            .unwrap_or(0)
     }
 
     /// Gather all metrics and encode them in Prometheus text format
@@ -500,7 +529,7 @@ mod tests {
             .record_model_invocation(Tier::Fast)
             .expect("Test operation should succeed");
         metrics.health_tracking_failure("test-endpoint", "unknown_endpoint"); // Increment health tracking failures with test labels
-        metrics.metrics_recording_failure(); // Increment metrics recording failures
+        metrics.metrics_recording_failure("record_request"); // Increment metrics recording failures with test label
 
         let metric_families = metrics.registry.gather();
         // Should have 5 metric families: requests_total, routing_duration, model_invocations, health_tracking_failures, metrics_recording_failures

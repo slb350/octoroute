@@ -14,15 +14,15 @@ use octoroute::metrics::{Metrics, Strategy, Tier};
 fn test_metrics_has_recording_failures_counter() {
     let metrics = Metrics::new().expect("should create metrics");
 
-    // Should have a method to increment recording failures
-    metrics.metrics_recording_failure();
+    // Should have a method to increment recording failures with operation label
+    metrics.metrics_recording_failure("record_request");
 
-    // Should have a method to get the count
+    // Should have a method to get the count (sums across all labels)
     let count = metrics.metrics_recording_failures_count();
     assert_eq!(count, 1, "Counter should increment to 1");
 
     // Increment again
-    metrics.metrics_recording_failure();
+    metrics.metrics_recording_failure("record_request");
     let count = metrics.metrics_recording_failures_count();
     assert_eq!(count, 2, "Counter should increment to 2");
 }
@@ -41,8 +41,8 @@ fn test_metrics_recording_failure_tracking() {
         "Initial count should be 0"
     );
 
-    // Simulate a metrics recording failure
-    metrics.metrics_recording_failure();
+    // Simulate a metrics recording failure with operation label
+    metrics.metrics_recording_failure("record_request");
 
     // Count should increment
     assert_eq!(
@@ -53,7 +53,7 @@ fn test_metrics_recording_failure_tracking() {
 
     // Multiple failures
     for _ in 0..5 {
-        metrics.metrics_recording_failure();
+        metrics.metrics_recording_failure("record_request");
     }
 
     assert_eq!(
@@ -96,9 +96,9 @@ fn test_successful_metrics_dont_increment_failure_counter() {
 fn test_metrics_recording_failures_in_prometheus_output() {
     let metrics = Metrics::new().expect("should create metrics");
 
-    // Simulate some failures
+    // Simulate some failures with operation label
     for _ in 0..3 {
-        metrics.metrics_recording_failure();
+        metrics.metrics_recording_failure("record_request");
     }
 
     // Gather metrics
@@ -110,10 +110,12 @@ fn test_metrics_recording_failures_in_prometheus_output() {
         "Prometheus output should include metrics_recording_failures_total counter"
     );
 
-    // Should show the count
+    // Should show the count with operation label
+    // Format: octoroute_metrics_recording_failures_total{operation="record_request"} 3
     assert!(
-        output.contains("octoroute_metrics_recording_failures_total 3"),
-        "Counter should show value of 3, got:\n{}",
+        output
+            .contains("octoroute_metrics_recording_failures_total{operation=\"record_request\"} 3"),
+        "Counter should show value of 3 with operation label, got:\n{}",
         output
     );
 }

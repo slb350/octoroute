@@ -15,7 +15,6 @@
 //! - Enables endpoint-specific alerting and debugging
 
 use octoroute::metrics::Metrics;
-use prometheus::Registry;
 
 /// RED PHASE: Test that health_tracking_failure() accepts endpoint and error_type labels
 ///
@@ -42,7 +41,7 @@ fn test_health_tracking_failure_metric_has_labels() {
     // Find the health_tracking_failures metric
     let health_tracking_metric = metric_families
         .iter()
-        .find(|mf| mf.get_name() == "octoroute_health_tracking_failures_total")
+        .find(|mf| mf.name() == "octoroute_health_tracking_failures_total")
         .expect("should find health_tracking_failures_total metric");
 
     // Verify it's a counter
@@ -68,15 +67,15 @@ fn test_health_tracking_failure_metric_has_labels() {
         // Extract label values
         let endpoint = labels
             .iter()
-            .find(|l| l.get_name() == "endpoint")
+            .find(|l| l.name() == "endpoint")
             .expect("should have endpoint label")
-            .get_value();
+            .value();
 
         let error_type = labels
             .iter()
-            .find(|l| l.get_name() == "error_type")
+            .find(|l| l.name() == "error_type")
             .expect("should have error_type label")
-            .get_value();
+            .value();
 
         let count = metric.get_counter().value.unwrap_or(0.0) as u64;
 
@@ -125,7 +124,7 @@ fn test_health_tracking_error_types_are_consistent() {
     let metric_families = metrics.registry.gather();
     let health_tracking_metric = metric_families
         .iter()
-        .find(|mf| mf.get_name() == "octoroute_health_tracking_failures_total")
+        .find(|mf| mf.name() == "octoroute_health_tracking_failures_total")
         .expect("should find metric");
 
     // Should have one metric per error type
@@ -160,7 +159,7 @@ fn test_health_tracking_failure_total_count() {
     let metric_families = metrics.registry.gather();
     let health_tracking_metric = metric_families
         .iter()
-        .find(|mf| mf.get_name() == "octoroute_health_tracking_failures_total")
+        .find(|mf| mf.name() == "octoroute_health_tracking_failures_total")
         .expect("should find metric");
 
     let total_count: u64 = health_tracking_metric
