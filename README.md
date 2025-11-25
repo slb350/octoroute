@@ -33,21 +33,49 @@ Running multiple LLM sizes on your homelab is powerful, but routing requests man
 
 ### Prerequisites
 
-- Rust 1.90+ (Edition 2024)
 - At least one local LLM endpoint (Ollama, LM Studio, llama.cpp, etc.)
 - Optional: Multiple model sizes (8B, 30B, 120B) for intelligent routing
+- Optional: Rust 1.90+ (only needed if building from source)
 
 ### Installation
 
+**Option 1: Pre-built binaries (fastest)**
+
+Download from [GitHub Releases](https://github.com/slb350/octoroute/releases/latest):
+
 ```bash
-# Clone the repository
+# Linux x86_64
+curl -LO https://github.com/slb350/octoroute/releases/latest/download/octoroute-linux-x86_64.tar.gz
+tar -xzf octoroute-linux-x86_64.tar.gz
+
+# Linux ARM64 (Raspberry Pi, etc.)
+curl -LO https://github.com/slb350/octoroute/releases/latest/download/octoroute-linux-aarch64.tar.gz
+tar -xzf octoroute-linux-aarch64.tar.gz
+
+# macOS Apple Silicon
+curl -LO https://github.com/slb350/octoroute/releases/latest/download/octoroute-macos-aarch64.tar.gz
+tar -xzf octoroute-macos-aarch64.tar.gz
+
+# macOS Intel
+curl -LO https://github.com/slb350/octoroute/releases/latest/download/octoroute-macos-x86_64.tar.gz
+tar -xzf octoroute-macos-x86_64.tar.gz
+
+# Run
+./octoroute
+```
+
+**Option 2: Cargo install (requires Rust)**
+
+```bash
+cargo install octoroute
+```
+
+**Option 3: Build from source**
+
+```bash
 git clone https://github.com/slb350/octoroute.git
 cd octoroute
-
-# Build the project
 cargo build --release
-
-# Run the server
 ./target/release/octoroute
 ```
 
