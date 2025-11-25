@@ -6,7 +6,9 @@ use axum::{
     Router, middleware,
     routing::{get, post},
 };
+use clap::Parser;
 use octoroute::{
+    cli::{Cli, Command, generate_config_template},
     config::Config,
     handlers::{self, AppState},
     middleware::request_id_middleware,
@@ -16,8 +18,55 @@ use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
+
+    // Handle subcommands
+    if let Some(command) = cli.command {
+        match command {
+            Command::Config { output } => {
+                return handle_config_command(output);
+            }
+        }
+    }
+
+    // No subcommand - start the server
+    run_server(&cli.config).await
+}
+
+/// Handle the `config` subcommand - generate template configuration
+fn handle_config_command(output: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let template = generate_config_template();
+
+    match output {
+        Some(path) => {
+            // Check if file already exists
+            if std::path::Path::new(&path).exists() {
+                return Err(format!(
+                    "File '{}' already exists. Remove it first or choose a different name.",
+                    path
+                )
+                .into());
+            }
+            std::fs::write(&path, template)?;
+            eprintln!("Configuration template written to: {}", path);
+            eprintln!(
+                "Edit the file to configure your model endpoints, then run: octoroute --config {}",
+                path
+            );
+        }
+        None => {
+            // Print to stdout
+            print!("{}", template);
+        }
+    }
+
+    Ok(())
+}
+
+/// Run the Octoroute server
+async fn run_server(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
-    let config = Config::from_file("config.toml")?;
+    let config = Config::from_file(config_path)?;
 
     // Initialize telemetry
     telemetry::init(&config.observability.log_level);
@@ -54,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse::<std::net::IpAddr>()
         .map_err(|e| {
             format!(
-                "Invalid IP address '{}' in config.toml: {}. Expected format: 0.0.0.0 or 127.0.0.1",
+                "Invalid IP address '{}' in config: {}. Expected format: 0.0.0.0 or 127.0.0.1",
                 config.server.host, e
             )
         })?;
