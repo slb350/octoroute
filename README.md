@@ -181,9 +181,10 @@ cargo build --release
 ```
 
 **Available metrics:**
-- `octoroute_requests_total{tier, strategy}` - Request counts by tier (fast/balanced/deep) and routing strategy (rule/llm)
-- `octoroute_routing_duration_ms{strategy}` - Routing decision latency histogram (buckets: 0.1ms to 1000ms)
+- `octoroute_requests_total{tier, strategy}` - Request counts by tier and routing strategy
+- `octoroute_routing_duration_ms{strategy}` - Routing decision latency histogram
 - `octoroute_model_invocations_total{tier}` - Model invocations by tier
+- Plus 3 health/observability metrics (see [Observability Guide](docs/observability.md))
 
 **Prometheus scraping config:**
 
@@ -363,8 +364,9 @@ User Request → Router Tier (balanced/30B) analyzes request
 ### Prerequisites
 
 ```bash
-# Install Rust toolchain
-rustup toolchain install stable
+# Install Rust 1.90+ (required for Edition 2024)
+rustup toolchain install 1.90
+rustup default 1.90
 rustup component add rustfmt clippy
 
 # Install development tools
@@ -446,7 +448,7 @@ RUST_LOG=debug cargo run
 - ✅ CI/CD pipeline (GitHub Actions)
 - ✅ Comprehensive config validation
 - ✅ Development tooling (justfile with 20+ recipes)
-- ✅ **Comprehensive test coverage** (run `cargo test --all` to verify current count)
+- ✅ **Comprehensive test coverage** (235+ unit tests, 46 integration test files)
 - ✅ **Zero clippy warnings**
 - ✅ **Zero tech debt**
 
