@@ -1,0 +1,75 @@
+# Octoroute Configuration
+#
+# This file configures the HTTP server, model endpoints, routing strategy,
+# and observability settings for Octoroute.
+
+[server]
+host = "0.0.0.0"
+port = 3000
+request_timeout_seconds = 30
+
+# Fast model tier - for simple tasks, casual chat, quick Q&A
+# Multi-model support: Multiple endpoints for load balancing and failover
+# Phase 1: Simple round-robin selection
+# Phase 2: Weighted load balancing with health checks
+
+[[models.fast]]
+name = "qwen/qwen3-vl-8b"
+base_url = "http://192.168.1.67:1234/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0      # Load balancing weight (Phase 2)
+priority = 1      # Higher priority = tried first (Phase 2)
+
+[[models.fast]]
+name = "qwen/qwen3-vl-8b"
+base_url = "http://192.168.1.72:1234/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+# Balanced model tier - for coding, analysis, explanations
+[[models.balanced]]
+name = "qwen/qwen3-30b-a3b-2507"
+base_url = "http://192.168.1.61:1234/v1"
+max_tokens = 8192
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+# Deep model tier - for complex reasoning, creative writing, research
+[[models.deep]]
+name = "/home/steve/dev/llama.cpp/models/gpt-oss-120b-mxfp4.gguf"
+base_url = "https://strix-ai.localbrandonfamily.com/v1"
+max_tokens = 16384
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[routing]
+# Strategy options: "rule", "llm", "hybrid"
+# - rule: Fast pattern-based routing (no LLM overhead)
+# - llm: Intelligent routing using router tier model
+# - hybrid: Rule-based first, LLM fallback (recommended)
+strategy = "hybrid"
+
+# Default importance level if not specified in request
+default_importance = "normal"
+
+# Which model to use for LLM-based routing decisions
+router_tier = "balanced"
+
+[observability]
+# Log level: "trace", "debug", "info", "warn", "error"
+log_level = "info"
+
+# Note: Prometheus metrics are always enabled at /metrics on the main server port
+# See README.md for security recommendations (nginx reverse proxy, firewall rules)
+
+# Per-tier timeout overrides (optional)
+# If not specified, server.request_timeout_seconds is used
+[timeouts]
+fast = 15       # 8B models respond quickly
+balanced = 30   # 30B models moderate speed
+deep = 60       # 120B models need more time

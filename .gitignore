@@ -1,0 +1,62 @@
+# CLAUDE.md - Project documentation (keep local only)
+CLAUDE.md
+.claude/
+
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# Build artifacts
+dist/
+*.so
+*.dylib
+*.dll
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Test artifacts
+coverage/
+*.profraw
+*.profdata
+
+# Flamegraph
+flamegraph.svg
+perf.data
+perf.data.old
+
+
+# Added by cargo
+
+/target

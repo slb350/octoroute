@@ -1,0 +1,11 @@
+# Clippy configuration for Octoroute
+# Follow strict linting for zero tech debt
+
+# Cognitive complexity threshold
+cognitive-complexity-threshold = 30
+
+# Disallowed names (prevent placeholder variables)
+disallowed-names = ["foo", "bar", "baz", "tmp"]
+
+# MSRV for clippy
+msrv = "1.90"
