@@ -34,7 +34,8 @@ async-trait = "0.1"
 rand = "0.9"
 
 # HTTP client (for health checks)
-reqwest = { version = "0.12", features = ["json"] }
+# Use rustls for TLS - avoids OpenSSL dependency, enables easier cross-compilation
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # UUID generation (for request tracing)
 uuid = { version = "1", features = ["v4", "serde"] }
