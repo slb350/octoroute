@@ -220,4 +220,29 @@ mod tests {
         assert!(template.contains("[observability]"));
         assert!(template.contains("[timeouts]"));
     }
+
+    #[test]
+    fn template_deserializes_to_valid_config() {
+        use crate::config::Config;
+
+        let template = generate_config_template();
+
+        // Template must deserialize to full Config struct (not just TOML syntax)
+        let config: Config =
+            toml::from_str(template).expect("Template must deserialize to valid Config struct");
+
+        // Verify critical structure exists
+        assert!(
+            !config.models.fast.is_empty(),
+            "Template must include fast tier"
+        );
+        assert!(
+            !config.models.balanced.is_empty(),
+            "Template must include balanced tier"
+        );
+        assert!(
+            !config.models.deep.is_empty(),
+            "Template must include deep tier"
+        );
+    }
 }

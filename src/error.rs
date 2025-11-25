@@ -112,6 +112,27 @@ pub enum AppError {
     #[error("Config validation failed for '{path}': {reason}")]
     ConfigValidationFailed { path: String, reason: String },
 
+    /// Configuration file already exists (overwrite protection)
+    ///
+    /// Used by CLI config command when user attempts to write to an existing file.
+    /// Prevents accidental overwrites without explicit confirmation.
+    #[error(
+        "Configuration file '{path}' already exists. Remove it first or choose a different path."
+    )]
+    ConfigFileExists { path: String },
+
+    /// Failed to write config file to filesystem
+    ///
+    /// Mirrors ConfigFileRead pattern but for write operations.
+    /// Preserves io::Error context for debugging write failures.
+    #[error("Failed to write config file '{path}': {source}\n{remediation}")]
+    ConfigFileWrite {
+        path: String,
+        #[source]
+        source: std::io::Error,
+        remediation: String,
+    },
+
     #[error("Invalid request: {0}")]
     Validation(String),
 
@@ -182,6 +203,8 @@ impl IntoResponse for AppError {
             Self::ConfigValidationFailed { .. } => {
                 (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
             }
+            Self::ConfigFileExists { .. } => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            Self::ConfigFileWrite { .. } => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::RoutingFailed(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             Self::HybridRoutingFailed { .. } => {
                 (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
@@ -303,6 +326,64 @@ mod tests {
             response.status(),
             StatusCode::BAD_GATEWAY,
             "ModelQueryFailed must return 502 BAD_GATEWAY to indicate upstream server failure"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // CLI Error Tests (PR #8 fix)
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_config_file_exists_error_creates() {
+        let err = AppError::ConfigFileExists {
+            path: "/tmp/config.toml".to_string(),
+        };
+        assert!(err.to_string().contains("/tmp/config.toml"));
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn test_config_file_write_error_preserves_source() {
+        use std::error::Error;
+
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let err = AppError::ConfigFileWrite {
+            path: "/tmp/config.toml".to_string(),
+            source: io_err,
+            remediation: "Check permissions".to_string(),
+        };
+        assert!(
+            err.source().is_some(),
+            "ConfigFileWrite must preserve source error"
+        );
+    }
+
+    #[test]
+    fn test_config_file_exists_response_status() {
+        let err = AppError::ConfigFileExists {
+            path: "test.toml".to_string(),
+        };
+        let response = err.into_response();
+        assert_eq!(
+            response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "ConfigFileExists must return 500 INTERNAL_SERVER_ERROR"
+        );
+    }
+
+    #[test]
+    fn test_config_file_write_response_status() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "test");
+        let err = AppError::ConfigFileWrite {
+            path: "test.toml".to_string(),
+            source: io_err,
+            remediation: String::new(),
+        };
+        let response = err.into_response();
+        assert_eq!(
+            response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "ConfigFileWrite must return 500 INTERNAL_SERVER_ERROR"
         );
     }
 }

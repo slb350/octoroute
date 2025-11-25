@@ -10,6 +10,7 @@ use clap::Parser;
 use octoroute::{
     cli::{Cli, Command, generate_config_template},
     config::Config,
+    error::AppError,
     handlers::{self, AppState},
     middleware::request_id_middleware,
     telemetry,
@@ -24,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(command) = cli.command {
         match command {
             Command::Config { output } => {
-                return handle_config_command(output);
+                return handle_config_command(output).map_err(|e| e.into());
             }
         }
     }
@@ -34,20 +35,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Handle the `config` subcommand - generate template configuration
-fn handle_config_command(output: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+///
+/// Generates a template configuration file that operators can customize for their setup.
+///
+/// # Behavior
+///
+/// - **No output argument**: Prints template to stdout (suitable for piping/viewing)
+/// - **With output argument**: Writes to specified file with overwrite protection
+///
+/// # Errors
+///
+/// Returns `AppError::ConfigFileExists` if output file already exists.
+/// Returns `AppError::ConfigFileWrite` if file write fails (permissions, disk space, etc.).
+fn handle_config_command(output: Option<String>) -> Result<(), AppError> {
     let template = generate_config_template();
 
     match output {
         Some(path) => {
-            // Check if file already exists
+            // Check if file already exists (overwrite protection)
             if std::path::Path::new(&path).exists() {
-                return Err(format!(
-                    "File '{}' already exists. Remove it first or choose a different name.",
-                    path
-                )
-                .into());
+                return Err(AppError::ConfigFileExists { path });
             }
-            std::fs::write(&path, template)?;
+
+            // Write template with contextual error handling
+            std::fs::write(&path, template).map_err(|source| {
+                let remediation = match source.kind() {
+                    std::io::ErrorKind::PermissionDenied => format!(
+                        "\nPermission denied. Check that:\n\
+                        1. Parent directory has write permissions\n\
+                        2. Current user can write to: {}",
+                        std::path::Path::new(&path)
+                            .parent()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| ".".to_string())
+                    ),
+                    std::io::ErrorKind::NotFound => format!(
+                        "\nDirectory not found. Check that parent directory exists: {}",
+                        std::path::Path::new(&path)
+                            .parent()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| ".".to_string())
+                    ),
+                    _ => String::new(),
+                };
+                AppError::ConfigFileWrite {
+                    path: path.clone(),
+                    source,
+                    remediation,
+                }
+            })?;
+
             eprintln!("Configuration template written to: {}", path);
             eprintln!(
                 "Edit the file to configure your model endpoints, then run: octoroute --config {}",
