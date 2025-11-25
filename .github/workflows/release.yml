@@ -28,13 +28,13 @@ jobs:
             asset_name: octoroute-linux-aarch64
             use_cross: true
 
-          # macOS x86_64 (Intel)
+          # macOS x86_64 (Intel) - use macos-13 which is still Intel
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-13
             artifact_name: octoroute
             asset_name: octoroute-macos-x86_64
 
-          # macOS ARM64 (Apple Silicon)
+          # macOS ARM64 (Apple Silicon) - macos-latest is now ARM64
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact_name: octoroute
