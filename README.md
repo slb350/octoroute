@@ -81,7 +81,17 @@ cargo build --release
 
 ### Configuration
 
-Create a `config.toml` in the project root:
+Generate a starter config file:
+
+```bash
+# Print template to stdout
+octoroute config
+
+# Write template to file
+octoroute config -o config.toml
+```
+
+Or create a `config.toml` manually:
 
 ```toml
 [server]
@@ -449,14 +459,39 @@ See `just --list` for all 20+ available commands.
 ### Run locally
 
 ```bash
-# With cargo
+# With cargo (uses config.toml by default)
 cargo run
 
 # Or use release binary
 ./target/release/octoroute
 
+# With custom config file
+octoroute --config /path/to/custom-config.toml
+
 # With environment variables
 RUST_LOG=debug cargo run
+```
+
+### CLI Commands
+
+```bash
+# Start server (default: looks for config.toml)
+octoroute
+
+# Start server with custom config
+octoroute --config custom.toml
+
+# Generate config template to stdout
+octoroute config
+
+# Write config template to file
+octoroute config -o config.toml
+
+# Show version
+octoroute --version
+
+# Show help
+octoroute --help
 ```
 
 ---
@@ -476,7 +511,8 @@ RUST_LOG=debug cargo run
 - ✅ CI/CD pipeline (GitHub Actions)
 - ✅ Comprehensive config validation
 - ✅ Development tooling (justfile with 20+ recipes)
-- ✅ **Comprehensive test coverage** (235+ unit tests, 46 integration test files)
+- ✅ **CLI with config generation** (`octoroute config` and `--config` flag)
+- ✅ **Comprehensive test coverage** (242 unit tests, 46 integration test files)
 - ✅ **Zero clippy warnings**
 - ✅ **Zero tech debt**
 
@@ -552,7 +588,6 @@ Contributions welcome! Please see [Development Guide](docs/development.md) for g
 - Caching layer for repeated prompts
 - Web UI for routing visualization
 - More comprehensive benchmarks
-- Configurable config file path (currently hardcoded to `config.toml`)
 
 ---
 
