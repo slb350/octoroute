@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn test_config_file_write_response_status() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "test");
+        let io_err = std::io::Error::other("test");
         let err = AppError::ConfigFileWrite {
             path: "test.toml".to_string(),
             source: io_err,
