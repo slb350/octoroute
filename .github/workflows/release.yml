@@ -21,12 +21,12 @@ jobs:
             artifact_name: octoroute
             asset_name: octoroute-linux-x86_64
 
-          # Linux ARM64
+          # Linux ARM64 (using cross)
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             artifact_name: octoroute
             asset_name: octoroute-linux-aarch64
-            cross: true
+            use_cross: true
 
           # macOS x86_64 (Intel)
           - target: x86_64-apple-darwin
@@ -48,21 +48,17 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools
-        if: matrix.cross
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Build release binary
-        if: ${{ !matrix.cross }}
+        if: ${{ !matrix.use_cross }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Build release binary (cross)
-        if: matrix.cross
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --release --target ${{ matrix.target }}
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }}
 
       - name: Create tarball (Unix)
         run: |
