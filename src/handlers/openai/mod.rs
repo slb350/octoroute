@@ -6,7 +6,5 @@
 
 pub mod completions;
 pub mod models;
+pub mod streaming;
 pub mod types;
-
-// TODO: Add these modules as we implement them
-// pub mod streaming;
