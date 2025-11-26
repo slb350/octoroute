@@ -12,7 +12,7 @@ use axum::{
     Extension, Json,
     extract::State,
     response::{
-        IntoResponse,
+        IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
 };
@@ -49,7 +49,7 @@ pub async fn handler(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
     Json(request): Json<ChatCompletionRequest>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<Response, AppError> {
     tracing::debug!(
         request_id = %request_id,
         model = ?request.model(),
@@ -172,11 +172,13 @@ pub async fn handler(
         endpoint.name().to_string(),
     );
 
-    Ok(Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text(":\n\n"),
-    ))
+    Ok(Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text(":\n\n"),
+        )
+        .into_response())
 }
 
 /// Create an SSE stream from the model query

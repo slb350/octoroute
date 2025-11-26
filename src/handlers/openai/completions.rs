@@ -1,6 +1,6 @@
 //! OpenAI-compatible chat completions handler
 //!
-//! Handles POST /v1/chat/completions requests.
+//! Handles POST /v1/chat/completions requests (both streaming and non-streaming).
 
 use crate::config::Config;
 use crate::error::AppError;
@@ -8,7 +8,11 @@ use crate::handlers::AppState;
 use crate::middleware::RequestId;
 use crate::router::TargetModel;
 use crate::shared::query::{QueryConfig, execute_query_with_retry, record_routing_metrics};
-use axum::{Extension, Json, extract::State, response::IntoResponse};
+use axum::{
+    Extension, Json,
+    extract::State,
+    response::{IntoResponse, Response},
+};
 
 use super::types::{ChatCompletion, ChatCompletionRequest, ModelChoice};
 
@@ -17,7 +21,7 @@ use super::types::{ChatCompletion, ChatCompletionRequest, ModelChoice};
 /// OpenAI-compatible chat completions endpoint. Supports:
 /// - Model selection via tier names (auto, fast, balanced, deep) or specific model names
 /// - Automatic task type inference for routing
-/// - Non-streaming responses (streaming handled separately)
+/// - Both streaming (SSE) and non-streaming responses
 ///
 /// # Model Selection
 ///
@@ -28,18 +32,26 @@ use super::types::{ChatCompletion, ChatCompletionRequest, ModelChoice};
 ///
 /// # Response Format
 ///
-/// Returns OpenAI-compatible response with:
+/// **Non-streaming** (`stream: false` or omitted):
+/// Returns OpenAI-compatible JSON response with:
 /// - `id`: Unique completion ID
 /// - `object`: "chat.completion"
 /// - `created`: Unix timestamp
 /// - `model`: Name of model used
 /// - `choices`: Array with assistant message and finish_reason
 /// - `usage`: Token usage statistics (estimated)
+///
+/// **Streaming** (`stream: true`):
+/// Returns Server-Sent Events stream with chunks containing:
+/// - Initial: role announcement (`delta.role: "assistant"`)
+/// - Content: text deltas (`delta.content: "..."`)
+/// - Finish: completion signal (`finish_reason: "stop"`)
+/// - Done: `data: [DONE]`
 pub async fn handler(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
     Json(request): Json<ChatCompletionRequest>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<Response, AppError> {
     tracing::debug!(
         request_id = %request_id,
         model = ?request.model(),
@@ -48,11 +60,9 @@ pub async fn handler(
         "Received chat completions request"
     );
 
-    // For now, only support non-streaming (streaming will be added in Phase 5)
+    // Dispatch to streaming handler if requested
     if request.stream() {
-        return Err(AppError::Validation(
-            "Streaming not yet supported. Use stream: false".to_string(),
-        ));
+        return super::streaming::handler(State(state), Extension(request_id), Json(request)).await;
     }
 
     // Convert messages to a single prompt for routing and query
@@ -130,7 +140,7 @@ pub async fn handler(
         "Chat completion successful"
     );
 
-    Ok(Json(response))
+    Ok(Json(response).into_response())
 }
 
 /// Find an endpoint by name across all tiers

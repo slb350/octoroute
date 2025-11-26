@@ -126,10 +126,17 @@ async fn run_server(config_path: &str) -> Result<(), Box<dyn std::error::Error>>
 
     // Build router with state and middleware
     let app = Router::new()
+        // Legacy endpoints
         .route("/health", get(handlers::health::handler))
         .route("/chat", post(handlers::chat::handler))
         .route("/models", get(handlers::models::handler))
         .route("/metrics", get(handlers::metrics::handler))
+        // OpenAI-compatible endpoints
+        .route(
+            "/v1/chat/completions",
+            post(handlers::openai::completions::handler),
+        )
+        .route("/v1/models", get(handlers::openai::models::handler))
         .with_state(state)
         .layer(middleware::from_fn(request_id_middleware));
 
@@ -149,9 +156,12 @@ async fn run_server(config_path: &str) -> Result<(), Box<dyn std::error::Error>>
 
     tracing::info!("Listening on {}", addr);
     tracing::info!("Health check available at http://{}/health", addr);
-    tracing::info!("Chat endpoint available at http://{}/chat", addr);
-    tracing::info!("Models status available at http://{}/models", addr);
-    tracing::info!("Metrics endpoint available at http://{}/metrics", addr);
+    tracing::info!("Legacy chat endpoint at http://{}/chat", addr);
+    tracing::info!("Legacy models status at http://{}/models", addr);
+    tracing::info!("Metrics endpoint at http://{}/metrics", addr);
+    tracing::info!("OpenAI-compatible endpoints:");
+    tracing::info!("  POST http://{}/v1/chat/completions", addr);
+    tracing::info!("  GET  http://{}/v1/models", addr);
 
     // Start server with graceful shutdown
     let listener = tokio::net::TcpListener::bind(addr).await?;
