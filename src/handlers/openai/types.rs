@@ -1,0 +1,1025 @@
+//! OpenAI-compatible request and response types
+//!
+//! These types follow the OpenAI Chat Completions API specification.
+//! Validation is enforced during deserialization - invalid instances cannot exist.
+
+use crate::router::{Importance, RouteMetadata, TargetModel, TaskType};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Maximum allowed total content length across all messages (500K chars)
+const MAX_TOTAL_CONTENT_LENGTH: usize = 500_000;
+/// Maximum number of messages allowed
+const MAX_MESSAGES: usize = 100;
+
+// =============================================================================
+// Model Choice - Maps OpenAI `model` field to Octoroute tiers
+// =============================================================================
+
+/// Model selection for routing
+///
+/// Maps OpenAI `model` field to Octoroute's tier system.
+/// Supports tier-based selection and pass-through model names.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ModelChoice {
+    /// Auto-route based on request analysis (default)
+    #[default]
+    Auto,
+    /// Route to Fast tier (8B models)
+    Fast,
+    /// Route to Balanced tier (30B models)
+    Balanced,
+    /// Route to Deep tier (120B models)
+    Deep,
+    /// Pass-through: specific model name (bypasses routing)
+    Specific(String),
+}
+
+impl<'de> Deserialize<'de> for ModelChoice {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.to_lowercase().as_str() {
+            "auto" => ModelChoice::Auto,
+            "fast" => ModelChoice::Fast,
+            "balanced" => ModelChoice::Balanced,
+            "deep" => ModelChoice::Deep,
+            _ => ModelChoice::Specific(s),
+        })
+    }
+}
+
+impl Serialize for ModelChoice {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            ModelChoice::Auto => serializer.serialize_str("auto"),
+            ModelChoice::Fast => serializer.serialize_str("fast"),
+            ModelChoice::Balanced => serializer.serialize_str("balanced"),
+            ModelChoice::Deep => serializer.serialize_str("deep"),
+            ModelChoice::Specific(name) => serializer.serialize_str(name),
+        }
+    }
+}
+
+impl ModelChoice {
+    /// Convert to TargetModel if tier-based
+    ///
+    /// Returns `None` for Auto (requires routing) and Specific (bypass routing)
+    pub fn to_target_model(&self) -> Option<TargetModel> {
+        match self {
+            ModelChoice::Fast => Some(TargetModel::Fast),
+            ModelChoice::Balanced => Some(TargetModel::Balanced),
+            ModelChoice::Deep => Some(TargetModel::Deep),
+            ModelChoice::Auto | ModelChoice::Specific(_) => None,
+        }
+    }
+
+    /// Check if auto-routing should be used
+    pub fn requires_routing(&self) -> bool {
+        matches!(self, ModelChoice::Auto)
+    }
+
+    /// Check if this is a specific model name (bypass routing)
+    pub fn is_specific(&self) -> bool {
+        matches!(self, ModelChoice::Specific(_))
+    }
+
+    /// Get the specific model name if this is a Specific variant
+    pub fn specific_name(&self) -> Option<&str> {
+        match self {
+            ModelChoice::Specific(name) => Some(name),
+            _ => None,
+        }
+    }
+}
+
+// =============================================================================
+// Message Types
+// =============================================================================
+
+/// Message role in the conversation
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageRole {
+    System,
+    User,
+    Assistant,
+}
+
+/// A single message in the conversation
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatMessage {
+    role: MessageRole,
+    content: String,
+}
+
+impl ChatMessage {
+    /// Create a new message
+    pub fn new(role: MessageRole, content: impl Into<String>) -> Self {
+        Self {
+            role,
+            content: content.into(),
+        }
+    }
+
+    /// Get the role
+    pub fn role(&self) -> MessageRole {
+        self.role
+    }
+
+    /// Get the content
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    /// Get content length in characters (Unicode-aware)
+    pub fn content_length(&self) -> usize {
+        self.content.chars().count()
+    }
+}
+
+impl<'de> Deserialize<'de> for ChatMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawMessage {
+            role: MessageRole,
+            content: String,
+        }
+
+        let raw = RawMessage::deserialize(deserializer)?;
+
+        // Content can be empty for assistant messages (partial responses)
+        // but user/system messages should have content
+        if raw.content.trim().is_empty() && raw.role != MessageRole::Assistant {
+            return Err(serde::de::Error::custom(format!(
+                "{:?} message content cannot be empty",
+                raw.role
+            )));
+        }
+
+        Ok(ChatMessage {
+            role: raw.role,
+            content: raw.content,
+        })
+    }
+}
+
+// =============================================================================
+// Chat Completion Request
+// =============================================================================
+
+/// OpenAI-compatible chat completion request
+///
+/// Validation is enforced during deserialization - invalid instances cannot exist.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatCompletionRequest {
+    model: ModelChoice,
+    messages: Vec<ChatMessage>,
+    #[serde(default)]
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frequency_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<String>,
+}
+
+impl ChatCompletionRequest {
+    /// Get the model choice
+    pub fn model(&self) -> &ModelChoice {
+        &self.model
+    }
+
+    /// Get the messages
+    pub fn messages(&self) -> &[ChatMessage] {
+        &self.messages
+    }
+
+    /// Check if streaming is enabled
+    pub fn stream(&self) -> bool {
+        self.stream
+    }
+
+    /// Get temperature if set
+    pub fn temperature(&self) -> Option<f64> {
+        self.temperature
+    }
+
+    /// Get max_tokens if set
+    pub fn max_tokens(&self) -> Option<u32> {
+        self.max_tokens
+    }
+
+    /// Convert messages to a single prompt string for routing
+    ///
+    /// Combines all messages into a format suitable for routing analysis.
+    pub fn to_prompt_string(&self) -> String {
+        self.messages
+            .iter()
+            .map(|m| format!("{:?}: {}", m.role(), m.content()))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    /// Get just the last user message content (for simpler routing)
+    pub fn last_user_content(&self) -> Option<&str> {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| m.role() == MessageRole::User)
+            .map(|m| m.content())
+    }
+
+    /// Convert to RouteMetadata for routing decisions
+    ///
+    /// Uses auto-detection for task type based on message content.
+    pub fn to_route_metadata(&self) -> RouteMetadata {
+        let total_chars: usize = self.messages.iter().map(|m| m.content_length()).sum();
+        let token_estimate = total_chars / 4; // Simple heuristic
+
+        let task_type = self.infer_task_type();
+
+        RouteMetadata::new(token_estimate)
+            .with_importance(Importance::Normal)
+            .with_task_type(task_type)
+    }
+
+    /// Infer task type from message content
+    fn infer_task_type(&self) -> TaskType {
+        let last_user_content = self.last_user_content().unwrap_or("").to_lowercase();
+
+        // Code detection
+        if last_user_content.contains("code")
+            || last_user_content.contains("function")
+            || last_user_content.contains("implement")
+            || last_user_content.contains("```")
+            || last_user_content.contains("programming")
+            || last_user_content.contains("debug")
+        {
+            return TaskType::Code;
+        }
+
+        // Analysis detection
+        if last_user_content.contains("analyze")
+            || last_user_content.contains("analysis")
+            || last_user_content.contains("compare")
+            || last_user_content.contains("evaluate")
+        {
+            return TaskType::DeepAnalysis;
+        }
+
+        // Creative writing detection
+        if last_user_content.contains("write a story")
+            || last_user_content.contains("creative")
+            || last_user_content.contains("poem")
+            || last_user_content.contains("fiction")
+        {
+            return TaskType::CreativeWriting;
+        }
+
+        // Summary detection
+        if last_user_content.contains("summarize")
+            || last_user_content.contains("summary")
+            || last_user_content.contains("tldr")
+        {
+            return TaskType::DocumentSummary;
+        }
+
+        // Casual chat detection
+        if last_user_content.contains("hello")
+            || last_user_content.contains("hi ")
+            || last_user_content.contains("hey ")
+            || last_user_content.starts_with("how are")
+        {
+            return TaskType::CasualChat;
+        }
+
+        // Default to question/answer
+        TaskType::QuestionAnswer
+    }
+}
+
+impl<'de> Deserialize<'de> for ChatCompletionRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawRequest {
+            model: ModelChoice,
+            messages: Vec<ChatMessage>,
+            #[serde(default)]
+            stream: bool,
+            temperature: Option<f64>,
+            max_tokens: Option<u32>,
+            top_p: Option<f64>,
+            presence_penalty: Option<f64>,
+            frequency_penalty: Option<f64>,
+            user: Option<String>,
+        }
+
+        let raw = RawRequest::deserialize(deserializer)?;
+
+        // Validation 1: Messages array not empty
+        if raw.messages.is_empty() {
+            return Err(serde::de::Error::custom("messages array cannot be empty"));
+        }
+
+        // Validation 2: Message count limit
+        if raw.messages.len() > MAX_MESSAGES {
+            return Err(serde::de::Error::custom(format!(
+                "messages array cannot exceed {} messages (got {})",
+                MAX_MESSAGES,
+                raw.messages.len()
+            )));
+        }
+
+        // Validation 3: Total content length
+        let total_length: usize = raw.messages.iter().map(|m| m.content_length()).sum();
+        if total_length > MAX_TOTAL_CONTENT_LENGTH {
+            return Err(serde::de::Error::custom(format!(
+                "total content length exceeds {} characters (got {})",
+                MAX_TOTAL_CONTENT_LENGTH, total_length
+            )));
+        }
+
+        // Validation 4: Temperature range [0.0, 2.0]
+        if let Some(temp) = raw.temperature
+            && (!(0.0..=2.0).contains(&temp) || temp.is_nan())
+        {
+            return Err(serde::de::Error::custom(
+                "temperature must be between 0.0 and 2.0",
+            ));
+        }
+
+        // Validation 5: top_p range (0.0, 1.0]
+        if let Some(top_p) = raw.top_p
+            && (top_p <= 0.0 || top_p > 1.0 || top_p.is_nan())
+        {
+            return Err(serde::de::Error::custom(
+                "top_p must be between 0.0 (exclusive) and 1.0 (inclusive)",
+            ));
+        }
+
+        // Validation 6: presence_penalty range [-2.0, 2.0]
+        if let Some(pp) = raw.presence_penalty
+            && (!((-2.0)..=2.0).contains(&pp) || pp.is_nan())
+        {
+            return Err(serde::de::Error::custom(
+                "presence_penalty must be between -2.0 and 2.0",
+            ));
+        }
+
+        // Validation 7: frequency_penalty range [-2.0, 2.0]
+        if let Some(fp) = raw.frequency_penalty
+            && (!((-2.0)..=2.0).contains(&fp) || fp.is_nan())
+        {
+            return Err(serde::de::Error::custom(
+                "frequency_penalty must be between -2.0 and 2.0",
+            ));
+        }
+
+        // Validation 8: max_tokens > 0
+        if let Some(max) = raw.max_tokens
+            && max == 0
+        {
+            return Err(serde::de::Error::custom(
+                "max_tokens must be greater than 0",
+            ));
+        }
+
+        Ok(ChatCompletionRequest {
+            model: raw.model,
+            messages: raw.messages,
+            stream: raw.stream,
+            temperature: raw.temperature,
+            max_tokens: raw.max_tokens,
+            top_p: raw.top_p,
+            presence_penalty: raw.presence_penalty,
+            frequency_penalty: raw.frequency_penalty,
+            user: raw.user,
+        })
+    }
+}
+
+// =============================================================================
+// Chat Completion Response (Non-Streaming)
+// =============================================================================
+
+/// Finish reason for a completion
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinishReason {
+    Stop,
+    Length,
+    ContentFilter,
+}
+
+/// Usage statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Usage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
+impl Usage {
+    /// Create usage stats (estimates tokens from char count)
+    pub fn estimate(prompt_chars: usize, completion_chars: usize) -> Self {
+        let prompt_tokens = (prompt_chars / 4) as u32;
+        let completion_tokens = (completion_chars / 4) as u32;
+        Self {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+        }
+    }
+}
+
+/// Assistant message in response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantMessage {
+    pub role: MessageRole,
+    pub content: String,
+}
+
+impl AssistantMessage {
+    pub fn new(content: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: content.into(),
+        }
+    }
+}
+
+/// A single choice in the response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Choice {
+    pub index: u32,
+    pub message: AssistantMessage,
+    pub finish_reason: FinishReason,
+}
+
+/// OpenAI-compatible chat completion response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatCompletion {
+    pub id: String,
+    pub object: String,
+    pub created: i64,
+    pub model: String,
+    pub choices: Vec<Choice>,
+    pub usage: Usage,
+}
+
+impl ChatCompletion {
+    /// Create a new chat completion response
+    pub fn new(content: String, model_name: String, prompt_chars: usize) -> Self {
+        let completion_chars = content.chars().count();
+        let id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
+        let created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        Self {
+            id,
+            object: "chat.completion".to_string(),
+            created,
+            model: model_name,
+            choices: vec![Choice {
+                index: 0,
+                message: AssistantMessage::new(content),
+                finish_reason: FinishReason::Stop,
+            }],
+            usage: Usage::estimate(prompt_chars, completion_chars),
+        }
+    }
+}
+
+// =============================================================================
+// Chat Completion Chunk (Streaming)
+// =============================================================================
+
+/// Delta content in a streaming chunk
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Delta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+/// A single choice in a streaming chunk
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkChoice {
+    pub index: u32,
+    pub delta: Delta,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<FinishReason>,
+}
+
+/// OpenAI-compatible streaming chunk
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatCompletionChunk {
+    pub id: String,
+    pub object: String,
+    pub created: i64,
+    pub model: String,
+    pub choices: Vec<ChunkChoice>,
+}
+
+impl ChatCompletionChunk {
+    /// Create an initial chunk with role announcement
+    pub fn initial(id: &str, model: &str, created: i64) -> Self {
+        Self {
+            id: id.to_string(),
+            object: "chat.completion.chunk".to_string(),
+            created,
+            model: model.to_string(),
+            choices: vec![ChunkChoice {
+                index: 0,
+                delta: Delta {
+                    role: Some("assistant".to_string()),
+                    content: None,
+                },
+                finish_reason: None,
+            }],
+        }
+    }
+
+    /// Create a content chunk
+    pub fn content(id: &str, model: &str, created: i64, content: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            object: "chat.completion.chunk".to_string(),
+            created,
+            model: model.to_string(),
+            choices: vec![ChunkChoice {
+                index: 0,
+                delta: Delta {
+                    role: None,
+                    content: Some(content.to_string()),
+                },
+                finish_reason: None,
+            }],
+        }
+    }
+
+    /// Create a final chunk with finish reason
+    pub fn finish(id: &str, model: &str, created: i64) -> Self {
+        Self {
+            id: id.to_string(),
+            object: "chat.completion.chunk".to_string(),
+            created,
+            model: model.to_string(),
+            choices: vec![ChunkChoice {
+                index: 0,
+                delta: Delta::default(),
+                finish_reason: Some(FinishReason::Stop),
+            }],
+        }
+    }
+
+    /// Serialize to SSE data line format
+    pub fn to_sse_data(&self) -> String {
+        format!(
+            "data: {}\n\n",
+            serde_json::to_string(self).unwrap_or_default()
+        )
+    }
+
+    /// SSE termination message
+    pub fn done_sse() -> &'static str {
+        "data: [DONE]\n\n"
+    }
+}
+
+// =============================================================================
+// Models List Response
+// =============================================================================
+
+/// A model object for the models list endpoint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelObject {
+    pub id: String,
+    pub object: String,
+    pub created: i64,
+    pub owned_by: String,
+}
+
+impl ModelObject {
+    /// Create a new model object
+    pub fn new(id: impl Into<String>, owned_by: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            object: "model".to_string(),
+            created: 0, // OpenAI uses 0 for many models
+            owned_by: owned_by.into(),
+        }
+    }
+}
+
+/// Response for GET /v1/models
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelsListResponse {
+    pub object: String,
+    pub data: Vec<ModelObject>,
+}
+
+impl ModelsListResponse {
+    /// Create a models list response
+    pub fn new(models: Vec<ModelObject>) -> Self {
+        Self {
+            object: "list".to_string(),
+            data: models,
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -------------------------------------------------------------------------
+    // ModelChoice Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_model_choice_deserialize_auto() {
+        let json = r#""auto""#;
+        let model: ModelChoice = serde_json::from_str(json).unwrap();
+        assert_eq!(model, ModelChoice::Auto);
+    }
+
+    #[test]
+    fn test_model_choice_deserialize_tiers() {
+        assert_eq!(
+            serde_json::from_str::<ModelChoice>(r#""fast""#).unwrap(),
+            ModelChoice::Fast
+        );
+        assert_eq!(
+            serde_json::from_str::<ModelChoice>(r#""balanced""#).unwrap(),
+            ModelChoice::Balanced
+        );
+        assert_eq!(
+            serde_json::from_str::<ModelChoice>(r#""deep""#).unwrap(),
+            ModelChoice::Deep
+        );
+    }
+
+    #[test]
+    fn test_model_choice_deserialize_case_insensitive() {
+        assert_eq!(
+            serde_json::from_str::<ModelChoice>(r#""AUTO""#).unwrap(),
+            ModelChoice::Auto
+        );
+        assert_eq!(
+            serde_json::from_str::<ModelChoice>(r#""Fast""#).unwrap(),
+            ModelChoice::Fast
+        );
+        assert_eq!(
+            serde_json::from_str::<ModelChoice>(r#""BALANCED""#).unwrap(),
+            ModelChoice::Balanced
+        );
+    }
+
+    #[test]
+    fn test_model_choice_deserialize_specific() {
+        let json = r#""gpt-4o-mini""#;
+        let model: ModelChoice = serde_json::from_str(json).unwrap();
+        assert_eq!(model, ModelChoice::Specific("gpt-4o-mini".to_string()));
+    }
+
+    #[test]
+    fn test_model_choice_to_target_model() {
+        assert_eq!(ModelChoice::Fast.to_target_model(), Some(TargetModel::Fast));
+        assert_eq!(
+            ModelChoice::Balanced.to_target_model(),
+            Some(TargetModel::Balanced)
+        );
+        assert_eq!(ModelChoice::Deep.to_target_model(), Some(TargetModel::Deep));
+        assert_eq!(ModelChoice::Auto.to_target_model(), None);
+        assert_eq!(
+            ModelChoice::Specific("test".to_string()).to_target_model(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_model_choice_requires_routing() {
+        assert!(ModelChoice::Auto.requires_routing());
+        assert!(!ModelChoice::Fast.requires_routing());
+        assert!(!ModelChoice::Specific("test".to_string()).requires_routing());
+    }
+
+    #[test]
+    fn test_model_choice_is_specific() {
+        assert!(ModelChoice::Specific("test".to_string()).is_specific());
+        assert!(!ModelChoice::Auto.is_specific());
+        assert!(!ModelChoice::Fast.is_specific());
+    }
+
+    // -------------------------------------------------------------------------
+    // ChatMessage Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_chat_message_deserialize_user() {
+        let json = r#"{"role": "user", "content": "Hello!"}"#;
+        let msg: ChatMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.role(), MessageRole::User);
+        assert_eq!(msg.content(), "Hello!");
+    }
+
+    #[test]
+    fn test_chat_message_deserialize_system() {
+        let json = r#"{"role": "system", "content": "You are a helpful assistant."}"#;
+        let msg: ChatMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.role(), MessageRole::System);
+    }
+
+    #[test]
+    fn test_chat_message_rejects_empty_user_content() {
+        let json = r#"{"role": "user", "content": ""}"#;
+        let result = serde_json::from_str::<ChatMessage>(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_chat_message_allows_empty_assistant_content() {
+        // Assistant messages can be empty (partial responses)
+        let json = r#"{"role": "assistant", "content": ""}"#;
+        let result = serde_json::from_str::<ChatMessage>(json);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_chat_message_content_length_unicode() {
+        let msg = ChatMessage::new(MessageRole::User, "Hello 👋 世界");
+        // "Hello 👋 世界" = 10 characters (emoji and CJK count as 1 each)
+        assert_eq!(msg.content_length(), 10);
+    }
+
+    // -------------------------------------------------------------------------
+    // ChatCompletionRequest Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_request_deserialize_minimal() {
+        let json = r#"{
+            "model": "auto",
+            "messages": [{"role": "user", "content": "Hello!"}]
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.model(), &ModelChoice::Auto);
+        assert_eq!(req.messages().len(), 1);
+        assert!(!req.stream());
+    }
+
+    #[test]
+    fn test_request_deserialize_with_options() {
+        let json = r#"{
+            "model": "fast",
+            "messages": [{"role": "user", "content": "Hello!"}],
+            "stream": true,
+            "temperature": 0.7,
+            "max_tokens": 1000
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.model(), &ModelChoice::Fast);
+        assert!(req.stream());
+        assert_eq!(req.temperature(), Some(0.7));
+        assert_eq!(req.max_tokens(), Some(1000));
+    }
+
+    #[test]
+    fn test_request_rejects_empty_messages() {
+        let json = r#"{
+            "model": "auto",
+            "messages": []
+        }"#;
+        let result = serde_json::from_str::<ChatCompletionRequest>(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_request_rejects_invalid_temperature() {
+        let json = r#"{
+            "model": "auto",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "temperature": 3.0
+        }"#;
+        let result = serde_json::from_str::<ChatCompletionRequest>(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("temperature"));
+    }
+
+    #[test]
+    fn test_request_rejects_invalid_top_p() {
+        let json = r#"{
+            "model": "auto",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "top_p": 0.0
+        }"#;
+        let result = serde_json::from_str::<ChatCompletionRequest>(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("top_p"));
+    }
+
+    #[test]
+    fn test_request_rejects_zero_max_tokens() {
+        let json = r#"{
+            "model": "auto",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 0
+        }"#;
+        let result = serde_json::from_str::<ChatCompletionRequest>(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("max_tokens"));
+    }
+
+    #[test]
+    fn test_request_to_prompt_string() {
+        let json = r#"{
+            "model": "auto",
+            "messages": [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hello!"}
+            ]
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let prompt = req.to_prompt_string();
+        assert!(prompt.contains("System: You are helpful."));
+        assert!(prompt.contains("User: Hello!"));
+    }
+
+    #[test]
+    fn test_request_last_user_content() {
+        let json = r#"{
+            "model": "auto",
+            "messages": [
+                {"role": "user", "content": "First"},
+                {"role": "assistant", "content": "Response"},
+                {"role": "user", "content": "Second"}
+            ]
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.last_user_content(), Some("Second"));
+    }
+
+    #[test]
+    fn test_request_infer_task_type_code() {
+        let json = r#"{
+            "model": "auto",
+            "messages": [{"role": "user", "content": "Write a function to sort an array"}]
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let metadata = req.to_route_metadata();
+        assert_eq!(metadata.task_type, TaskType::Code);
+    }
+
+    #[test]
+    fn test_request_infer_task_type_analysis() {
+        let json = r#"{
+            "model": "auto",
+            "messages": [{"role": "user", "content": "Analyze this data and compare trends"}]
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let metadata = req.to_route_metadata();
+        assert_eq!(metadata.task_type, TaskType::DeepAnalysis);
+    }
+
+    #[test]
+    fn test_request_infer_task_type_default() {
+        let json = r#"{
+            "model": "auto",
+            "messages": [{"role": "user", "content": "What is the capital of France?"}]
+        }"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let metadata = req.to_route_metadata();
+        assert_eq!(metadata.task_type, TaskType::QuestionAnswer);
+    }
+
+    // -------------------------------------------------------------------------
+    // ChatCompletion Response Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_chat_completion_new() {
+        let response = ChatCompletion::new(
+            "Hello! How can I help?".to_string(),
+            "fast-1".to_string(),
+            10,
+        );
+
+        assert!(response.id.starts_with("chatcmpl-"));
+        assert_eq!(response.object, "chat.completion");
+        assert_eq!(response.model, "fast-1");
+        assert_eq!(response.choices.len(), 1);
+        assert_eq!(
+            response.choices[0].message.content,
+            "Hello! How can I help?"
+        );
+        assert_eq!(response.choices[0].finish_reason, FinishReason::Stop);
+    }
+
+    #[test]
+    fn test_chat_completion_serializes_correctly() {
+        let response = ChatCompletion::new("Test".to_string(), "model".to_string(), 4);
+        let json = serde_json::to_string(&response).unwrap();
+
+        assert!(json.contains("\"object\":\"chat.completion\""));
+        assert!(json.contains("\"finish_reason\":\"stop\""));
+        assert!(json.contains("\"role\":\"assistant\""));
+    }
+
+    // -------------------------------------------------------------------------
+    // ChatCompletionChunk Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_chunk_initial() {
+        let chunk = ChatCompletionChunk::initial("test-id", "model", 12345);
+        assert_eq!(chunk.object, "chat.completion.chunk");
+        assert_eq!(chunk.choices[0].delta.role, Some("assistant".to_string()));
+        assert!(chunk.choices[0].delta.content.is_none());
+        assert!(chunk.choices[0].finish_reason.is_none());
+    }
+
+    #[test]
+    fn test_chunk_content() {
+        let chunk = ChatCompletionChunk::content("test-id", "model", 12345, "Hello");
+        assert!(chunk.choices[0].delta.role.is_none());
+        assert_eq!(chunk.choices[0].delta.content, Some("Hello".to_string()));
+        assert!(chunk.choices[0].finish_reason.is_none());
+    }
+
+    #[test]
+    fn test_chunk_finish() {
+        let chunk = ChatCompletionChunk::finish("test-id", "model", 12345);
+        assert!(chunk.choices[0].delta.role.is_none());
+        assert!(chunk.choices[0].delta.content.is_none());
+        assert_eq!(chunk.choices[0].finish_reason, Some(FinishReason::Stop));
+    }
+
+    #[test]
+    fn test_chunk_to_sse_data() {
+        let chunk = ChatCompletionChunk::content("id", "model", 0, "Hi");
+        let sse = chunk.to_sse_data();
+        assert!(sse.starts_with("data: "));
+        assert!(sse.ends_with("\n\n"));
+        assert!(sse.contains("\"content\":\"Hi\""));
+    }
+
+    #[test]
+    fn test_done_sse() {
+        assert_eq!(ChatCompletionChunk::done_sse(), "data: [DONE]\n\n");
+    }
+
+    // -------------------------------------------------------------------------
+    // ModelsListResponse Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_models_list_response() {
+        let models = vec![
+            ModelObject::new("auto", "octoroute"),
+            ModelObject::new("fast", "octoroute"),
+        ];
+        let response = ModelsListResponse::new(models);
+
+        assert_eq!(response.object, "list");
+        assert_eq!(response.data.len(), 2);
+        assert_eq!(response.data[0].id, "auto");
+        assert_eq!(response.data[0].object, "model");
+    }
+
+    #[test]
+    fn test_model_object_serializes() {
+        let model = ModelObject::new("test-model", "owner");
+        let json = serde_json::to_string(&model).unwrap();
+        assert!(json.contains("\"id\":\"test-model\""));
+        assert!(json.contains("\"object\":\"model\""));
+        assert!(json.contains("\"owned_by\":\"owner\""));
+    }
+}
