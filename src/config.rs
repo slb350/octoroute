@@ -230,8 +230,8 @@ pub struct RoutingConfig {
     ///   with clear deserialization errors
     ///
     /// **Availability Validation (Config Loading Time)**:
-    /// - `Config::validate()` ensures ALL tiers have at least one endpoint
-    ///   (lines 686-716), preventing routing failures regardless of router_tier
+    /// - `Config::validate()` ensures ALL tiers have at least one endpoint,
+    ///   preventing routing failures regardless of router_tier
     /// - This catches misconfiguration (e.g., router_tier="deep" but no
     ///   [[models.deep]] endpoints) at config load time, not runtime
     ///
