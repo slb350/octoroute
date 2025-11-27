@@ -207,24 +207,6 @@ pub async fn handler(
         (endpoint, decision.target())
     };
 
-    // Record model invocation for observability (critical for monitoring streaming traffic)
-    let tier_enum = match target_tier {
-        crate::router::TargetModel::Fast => crate::metrics::Tier::Fast,
-        crate::router::TargetModel::Balanced => crate::metrics::Tier::Balanced,
-        crate::router::TargetModel::Deep => crate::metrics::Tier::Deep,
-    };
-    if let Err(e) = state.metrics().record_model_invocation(tier_enum) {
-        state
-            .metrics()
-            .metrics_recording_failure("record_model_invocation");
-        tracing::error!(
-            request_id = %request_id,
-            error = %e,
-            tier = ?tier_enum,
-            "Metrics recording failed. Observability degraded but request continues."
-        );
-    }
-
     // Build AgentOptions
     let options = open_agent::AgentOptions::builder()
         .model(endpoint.name())
@@ -267,6 +249,7 @@ pub async fn handler(
     );
 
     // Create the SSE stream (pass selector for health tracking, metrics for observability)
+    // Model invocation is recorded inside create_sse_stream on success only
     let stream = create_sse_stream(
         prompt,
         options,
@@ -275,6 +258,7 @@ pub async fn handler(
         created,
         request_id,
         endpoint.name().to_string(),
+        target_tier,
         state.selector_arc(),
         state.metrics(),
     );
@@ -306,6 +290,7 @@ fn create_sse_stream(
     created: i64,
     request_id: RequestId,
     endpoint_name: String,
+    target_tier: crate::router::TargetModel,
     selector: Arc<ModelSelector>,
     metrics: Arc<Metrics>,
 ) -> impl futures::Stream<Item = Result<Event, Infallible>> {
@@ -471,10 +456,10 @@ fn create_sse_stream(
             .flat_map(stream::iter)
         };
 
-        // Mark endpoint as healthy when stream completes successfully
-        // This runs after all events are sent, providing symmetric health tracking
+        // Mark endpoint as healthy and record model invocation when stream completes successfully
+        // This runs after all events are sent, providing symmetric health/metrics tracking
         // with the non-streaming handler (completions.rs)
-        // Only mark success if no error occurred during streaming
+        // Only mark success and record metrics if no error occurred during streaming
         let success_tracker = {
             let selector = selector.clone();
             let metrics = metrics.clone();
@@ -482,29 +467,47 @@ fn create_sse_stream(
             let request_id = request_id_for_finish;
             let error_occurred = error_occurred.clone();
             stream::once(async move {
-                // Only mark success if no error occurred
+                // Only mark success and record metrics if no error occurred
                 if error_occurred.load(Ordering::SeqCst) {
                     tracing::debug!(
                         request_id = %request_id,
                         endpoint_name = %endpoint_name,
-                        "Skipping health success tracking due to stream error"
+                        "Skipping health/metrics tracking due to stream error"
                     );
-                } else if let Err(e) = selector.health_checker().mark_success(&endpoint_name).await
-                {
-                    tracing::warn!(
-                        request_id = %request_id,
-                        endpoint_name = %endpoint_name,
-                        error = %e,
-                        "Health tracking failed for successful streaming completion"
-                    );
-                    // Record in metrics for observability parity with non-streaming handler
-                    metrics.health_tracking_failure(&endpoint_name, e.error_type());
                 } else {
-                    tracing::debug!(
-                        request_id = %request_id,
-                        endpoint_name = %endpoint_name,
-                        "Marked endpoint healthy after successful stream completion"
-                    );
+                    // Record model invocation only on success (parity with non-streaming handler)
+                    let tier_enum = match target_tier {
+                        crate::router::TargetModel::Fast => crate::metrics::Tier::Fast,
+                        crate::router::TargetModel::Balanced => crate::metrics::Tier::Balanced,
+                        crate::router::TargetModel::Deep => crate::metrics::Tier::Deep,
+                    };
+                    if let Err(e) = metrics.record_model_invocation(tier_enum) {
+                        metrics.metrics_recording_failure("record_model_invocation");
+                        tracing::error!(
+                            request_id = %request_id,
+                            error = %e,
+                            tier = ?tier_enum,
+                            "Metrics recording failed. Observability degraded but stream continues."
+                        );
+                    }
+
+                    // Mark endpoint as healthy
+                    if let Err(e) = selector.health_checker().mark_success(&endpoint_name).await {
+                        tracing::warn!(
+                            request_id = %request_id,
+                            endpoint_name = %endpoint_name,
+                            error = %e,
+                            "Health tracking failed for successful streaming completion"
+                        );
+                        // Record in metrics for observability parity with non-streaming handler
+                        metrics.health_tracking_failure(&endpoint_name, e.error_type());
+                    } else {
+                        tracing::debug!(
+                            request_id = %request_id,
+                            endpoint_name = %endpoint_name,
+                            "Marked endpoint healthy after successful stream completion"
+                        );
+                    }
                 }
                 // Return None to not emit any event - this is just for side effects
                 None::<Result<Event, Infallible>>

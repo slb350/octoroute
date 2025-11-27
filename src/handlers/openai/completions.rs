@@ -177,7 +177,31 @@ pub async fn handler(
 
         // Query the specific endpoint directly (no retry to different endpoints)
         let timeout_seconds = state.config().timeout_for_tier(tier);
-        let content = query_model(&endpoint, &prompt, timeout_seconds, request_id, 1, 1).await?;
+        let content = match query_model(&endpoint, &prompt, timeout_seconds, request_id, 1, 1).await
+        {
+            Ok(content) => content,
+            Err(e) => {
+                // Mark endpoint as failed for health tracking (parity with tier-based routing)
+                if let Err(health_err) = state
+                    .selector()
+                    .health_checker()
+                    .mark_failure(endpoint.name())
+                    .await
+                {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        endpoint_name = %endpoint.name(),
+                        query_error = %e,
+                        health_error = %health_err,
+                        "Health tracking failed while marking endpoint failure"
+                    );
+                    state
+                        .metrics()
+                        .health_tracking_failure(endpoint.name(), health_err.error_type());
+                }
+                return Err(e);
+            }
+        };
 
         // Record model invocation for observability (same as tier-based routing)
         let tier_enum = match tier {
