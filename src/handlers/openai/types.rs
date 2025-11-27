@@ -72,6 +72,34 @@ impl Serialize for ModelChoice {
 }
 
 impl ModelChoice {
+    /// Create a validated Specific variant
+    ///
+    /// Use this constructor instead of directly constructing `ModelChoice::Specific`
+    /// to ensure the model name is validated (non-empty, not whitespace-only).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the name is empty or whitespace-only.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use octoroute::handlers::openai::types::ModelChoice;
+    ///
+    /// let valid = ModelChoice::try_specific("qwen3-8b").unwrap();
+    /// assert!(valid.is_specific());
+    ///
+    /// let invalid = ModelChoice::try_specific("");
+    /// assert!(invalid.is_err());
+    /// ```
+    pub fn try_specific(name: impl Into<String>) -> Result<Self, &'static str> {
+        let name = name.into();
+        if name.trim().is_empty() {
+            return Err("model name cannot be empty or whitespace-only");
+        }
+        Ok(ModelChoice::Specific(name))
+    }
+
     /// Convert to TargetModel if tier-based
     ///
     /// Returns `None` for Auto (requires routing) and Specific (bypass routing)
@@ -781,6 +809,37 @@ mod tests {
             "Whitespace-only model name should be rejected"
         );
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_model_choice_try_specific_valid() {
+        let result = ModelChoice::try_specific("qwen3-8b");
+        assert!(result.is_ok());
+        let model = result.unwrap();
+        assert!(model.is_specific());
+        assert_eq!(model.specific_name(), Some("qwen3-8b"));
+    }
+
+    #[test]
+    fn test_model_choice_try_specific_rejects_empty() {
+        let result = ModelChoice::try_specific("");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_model_choice_try_specific_rejects_whitespace() {
+        let result = ModelChoice::try_specific("   ");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("whitespace"));
+    }
+
+    #[test]
+    fn test_model_choice_try_specific_accepts_with_spaces() {
+        // Model names with internal spaces are valid
+        let result = ModelChoice::try_specific("my model name");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().specific_name(), Some("my model name"));
     }
 
     // -------------------------------------------------------------------------
