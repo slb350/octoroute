@@ -257,11 +257,15 @@ pub async fn handler(
     }
     let response_model = endpoint.name().to_string();
 
+    // Get timeout for this tier (same as non-streaming handler)
+    let timeout_seconds = state.config().timeout_for_tier(target_tier);
+
     tracing::info!(
         request_id = %request_id,
         completion_id = %completion_id,
         model = %response_model,
         endpoint_name = %endpoint.name(),
+        timeout_seconds = timeout_seconds,
         "Starting streaming response"
     );
 
@@ -276,6 +280,7 @@ pub async fn handler(
         request_id,
         endpoint.name().to_string(),
         target_tier,
+        timeout_seconds,
         state.selector_arc(),
         state.metrics(),
     );
@@ -308,14 +313,23 @@ fn create_sse_stream(
     request_id: RequestId,
     endpoint_name: String,
     target_tier: crate::router::TargetModel,
+    timeout_seconds: u64,
     selector: Arc<ModelSelector>,
     metrics: Arc<Metrics>,
 ) -> impl futures::Stream<Item = Result<Event, Infallible>> {
     stream::once(async move {
-        // Start the model query
-        let model_stream = match open_agent::query(&prompt, &options).await {
-            Ok(s) => s,
-            Err(e) => {
+        // Start the model query with timeout (consistent with non-streaming handler)
+        let timeout_duration = Duration::from_secs(timeout_seconds);
+        let query_result = tokio::time::timeout(
+            timeout_duration,
+            open_agent::query(&prompt, &options),
+        )
+        .await;
+
+        let model_stream = match query_result {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                // Query failed (connection error, etc.)
                 tracing::error!(
                     request_id = %request_id,
                     endpoint_name = %endpoint_name,
@@ -343,6 +357,40 @@ fn create_sse_stream(
                     &model,
                     created,
                     &format!("[Error: Failed to start model query. Request ID: {}. Please retry.]", request_id),
+                );
+                return stream::iter(vec![
+                    Ok(Event::default().data(serialize_chunk(&error_chunk, &request_id))),
+                    Ok(Event::default().data("[DONE]")),
+                ])
+                .boxed();
+            }
+            Err(_elapsed) => {
+                // Timeout waiting for initial connection
+                tracing::error!(
+                    request_id = %request_id,
+                    endpoint_name = %endpoint_name,
+                    timeout_seconds = timeout_seconds,
+                    "Streaming query timed out waiting for initial connection"
+                );
+
+                // Mark endpoint as failed for health tracking
+                if let Err(health_err) = selector.health_checker().mark_failure(&endpoint_name).await
+                {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        endpoint_name = %endpoint_name,
+                        error = %health_err,
+                        "Health tracking failed for streaming query timeout"
+                    );
+                    metrics.health_tracking_failure(&endpoint_name, health_err.error_type());
+                }
+
+                // Return a timeout error event
+                let error_chunk = ChatCompletionChunk::content(
+                    &completion_id,
+                    &model,
+                    created,
+                    &format!("[Error: Request timed out. Request ID: {}. Please retry.]", request_id),
                 );
                 return stream::iter(vec![
                     Ok(Event::default().data(serialize_chunk(&error_chunk, &request_id))),
