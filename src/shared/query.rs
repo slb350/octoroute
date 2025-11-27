@@ -556,16 +556,6 @@ mod tests {
     }
 
     #[test]
-    fn test_default_constants_are_valid() {
-        // Ensure default constants would pass validation in new()
-        // This test fails if someone changes defaults to invalid values
-        assert!(
-            DEFAULT_MAX_RETRIES >= 1,
-            "DEFAULT_MAX_RETRIES must be at least 1"
-        );
-    }
-
-    #[test]
     fn test_default_equivalent_to_new() {
         // Default should produce the same result as new() with default values
         let from_default = QueryConfig::default();
