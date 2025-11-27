@@ -59,10 +59,8 @@ impl QueryConfig {
 
 impl Default for QueryConfig {
     fn default() -> Self {
-        Self {
-            max_retries: DEFAULT_MAX_RETRIES,
-            retry_backoff_ms: DEFAULT_RETRY_BACKOFF_MS,
-        }
+        Self::new(DEFAULT_MAX_RETRIES, DEFAULT_RETRY_BACKOFF_MS)
+            .expect("default QueryConfig values must be valid")
     }
 }
 
@@ -555,6 +553,27 @@ mod tests {
         let config = QueryConfig::default();
         assert_eq!(config.max_retries(), DEFAULT_MAX_RETRIES);
         assert_eq!(config.retry_backoff_ms(), DEFAULT_RETRY_BACKOFF_MS);
+    }
+
+    #[test]
+    fn test_default_constants_are_valid() {
+        // Ensure default constants would pass validation in new()
+        // This test fails if someone changes defaults to invalid values
+        assert!(
+            DEFAULT_MAX_RETRIES >= 1,
+            "DEFAULT_MAX_RETRIES must be at least 1"
+        );
+    }
+
+    #[test]
+    fn test_default_equivalent_to_new() {
+        // Default should produce the same result as new() with default values
+        let from_default = QueryConfig::default();
+        let from_new = QueryConfig::new(DEFAULT_MAX_RETRIES, DEFAULT_RETRY_BACKOFF_MS)
+            .expect("defaults valid");
+
+        assert_eq!(from_default.max_retries(), from_new.max_retries());
+        assert_eq!(from_default.retry_backoff_ms(), from_new.retry_backoff_ms());
     }
 
     #[test]
