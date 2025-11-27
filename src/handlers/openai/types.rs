@@ -219,6 +219,7 @@ impl<'de> Deserialize<'de> for ChatMessage {
 /// OpenAI-compatible chat completion request
 ///
 /// Validation is enforced during deserialization - invalid instances cannot exist.
+/// Use [`ChatCompletionRequest::builder()`] for programmatic construction in tests.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatCompletionRequest {
     model: ModelChoice,
@@ -239,7 +240,227 @@ pub struct ChatCompletionRequest {
     user: Option<String>,
 }
 
+/// Builder for constructing [`ChatCompletionRequest`] programmatically
+///
+/// Provides a fluent API for building requests, particularly useful in tests.
+/// Performs the same validation as JSON deserialization.
+///
+/// # Examples
+///
+/// ```
+/// use octoroute::handlers::openai::types::{ChatCompletionRequest, ModelChoice};
+///
+/// let request = ChatCompletionRequest::builder()
+///     .model(ModelChoice::Fast)
+///     .system_message("You are helpful.")
+///     .user_message("Hello!")
+///     .temperature(0.7)
+///     .build()
+///     .expect("valid request");
+/// ```
+#[derive(Debug, Default)]
+pub struct ChatCompletionRequestBuilder {
+    model: ModelChoice,
+    messages: Vec<ChatMessage>,
+    stream: bool,
+    temperature: Option<f64>,
+    max_tokens: Option<u32>,
+    top_p: Option<f64>,
+    presence_penalty: Option<f64>,
+    frequency_penalty: Option<f64>,
+    user: Option<String>,
+}
+
+impl ChatCompletionRequestBuilder {
+    /// Create a new builder with default values
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the model choice for routing
+    pub fn model(mut self, model: ModelChoice) -> Self {
+        self.model = model;
+        self
+    }
+
+    /// Add a single message to the request
+    pub fn message(mut self, message: ChatMessage) -> Self {
+        self.messages.push(message);
+        self
+    }
+
+    /// Replace all messages with the provided vector
+    pub fn messages(mut self, messages: Vec<ChatMessage>) -> Self {
+        self.messages = messages;
+        self
+    }
+
+    /// Add a system message (convenience method)
+    ///
+    /// # Panics
+    /// Panics if content is empty (use `message()` for error handling)
+    pub fn system_message(self, content: impl Into<String>) -> Self {
+        let msg = ChatMessage::try_new(MessageRole::System, content)
+            .expect("system message content must not be empty");
+        self.message(msg)
+    }
+
+    /// Add a user message (convenience method)
+    ///
+    /// # Panics
+    /// Panics if content is empty (use `message()` for error handling)
+    pub fn user_message(self, content: impl Into<String>) -> Self {
+        let msg = ChatMessage::try_new(MessageRole::User, content)
+            .expect("user message content must not be empty");
+        self.message(msg)
+    }
+
+    /// Add an assistant message (convenience method)
+    pub fn assistant_message(self, content: impl Into<String>) -> Self {
+        let msg = ChatMessage::try_new(MessageRole::Assistant, content)
+            .expect("assistant message creation should not fail");
+        self.message(msg)
+    }
+
+    /// Enable or disable streaming
+    pub fn stream(mut self, stream: bool) -> Self {
+        self.stream = stream;
+        self
+    }
+
+    /// Set the temperature (0.0 to 2.0)
+    pub fn temperature(mut self, temperature: f64) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    /// Set the maximum tokens
+    pub fn max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = Some(max_tokens);
+        self
+    }
+
+    /// Set top_p (nucleus sampling, 0.0 exclusive to 1.0 inclusive)
+    pub fn top_p(mut self, top_p: f64) -> Self {
+        self.top_p = Some(top_p);
+        self
+    }
+
+    /// Set presence penalty (-2.0 to 2.0)
+    pub fn presence_penalty(mut self, presence_penalty: f64) -> Self {
+        self.presence_penalty = Some(presence_penalty);
+        self
+    }
+
+    /// Set frequency penalty (-2.0 to 2.0)
+    pub fn frequency_penalty(mut self, frequency_penalty: f64) -> Self {
+        self.frequency_penalty = Some(frequency_penalty);
+        self
+    }
+
+    /// Set the user identifier
+    pub fn user(mut self, user: impl Into<String>) -> Self {
+        self.user = Some(user.into());
+        self
+    }
+
+    /// Build the request, performing all validation
+    ///
+    /// # Errors
+    /// Returns an error string if validation fails (same rules as JSON deserialization)
+    pub fn build(self) -> Result<ChatCompletionRequest, String> {
+        // Validation 1: Messages array not empty
+        if self.messages.is_empty() {
+            return Err("messages array cannot be empty".to_string());
+        }
+
+        // Validation 2: Message count limit
+        if self.messages.len() > MAX_MESSAGES {
+            return Err(format!(
+                "messages array cannot exceed {} messages (got {})",
+                MAX_MESSAGES,
+                self.messages.len()
+            ));
+        }
+
+        // Validation 3: Total content length
+        let total_length: usize = self.messages.iter().map(|m| m.content_length()).sum();
+        if total_length > MAX_TOTAL_CONTENT_LENGTH {
+            return Err(format!(
+                "total content length exceeds {} characters (got {})",
+                MAX_TOTAL_CONTENT_LENGTH, total_length
+            ));
+        }
+
+        // Validation 4: Temperature range [0.0, 2.0]
+        if let Some(temp) = self.temperature {
+            if temp.is_nan() || temp.is_infinite() {
+                return Err("temperature must be a finite number".to_string());
+            }
+            if !(0.0..=2.0).contains(&temp) {
+                return Err("temperature must be between 0.0 and 2.0".to_string());
+            }
+        }
+
+        // Validation 5: top_p range (0.0, 1.0]
+        if let Some(top_p) = self.top_p {
+            if top_p.is_nan() || top_p.is_infinite() {
+                return Err("top_p must be a finite number".to_string());
+            }
+            if top_p <= 0.0 || top_p > 1.0 {
+                return Err("top_p must be between 0.0 (exclusive) and 1.0 (inclusive)".to_string());
+            }
+        }
+
+        // Validation 6: presence_penalty range [-2.0, 2.0]
+        if let Some(pp) = self.presence_penalty {
+            if pp.is_nan() || pp.is_infinite() {
+                return Err("presence_penalty must be a finite number".to_string());
+            }
+            if !((-2.0)..=2.0).contains(&pp) {
+                return Err("presence_penalty must be between -2.0 and 2.0".to_string());
+            }
+        }
+
+        // Validation 7: frequency_penalty range [-2.0, 2.0]
+        if let Some(fp) = self.frequency_penalty {
+            if fp.is_nan() || fp.is_infinite() {
+                return Err("frequency_penalty must be a finite number".to_string());
+            }
+            if !((-2.0)..=2.0).contains(&fp) {
+                return Err("frequency_penalty must be between -2.0 and 2.0".to_string());
+            }
+        }
+
+        // Validation 8: max_tokens > 0
+        if let Some(max) = self.max_tokens
+            && max == 0
+        {
+            return Err("max_tokens must be greater than 0".to_string());
+        }
+
+        Ok(ChatCompletionRequest {
+            model: self.model,
+            messages: self.messages,
+            stream: self.stream,
+            temperature: self.temperature,
+            max_tokens: self.max_tokens,
+            top_p: self.top_p,
+            presence_penalty: self.presence_penalty,
+            frequency_penalty: self.frequency_penalty,
+            user: self.user,
+        })
+    }
+}
+
 impl ChatCompletionRequest {
+    /// Create a new builder for constructing a request programmatically
+    ///
+    /// This is the recommended way to construct requests in tests.
+    pub fn builder() -> ChatCompletionRequestBuilder {
+        ChatCompletionRequestBuilder::new()
+    }
+
     /// Get the model choice
     pub fn model(&self) -> &ModelChoice {
         &self.model
@@ -1188,5 +1409,146 @@ mod tests {
         assert!(json.contains("\"id\":\"test-model\""));
         assert!(json.contains("\"object\":\"model\""));
         assert!(json.contains("\"owned_by\":\"owner\""));
+    }
+
+    // -------------------------------------------------------------------------
+    // ChatCompletionRequest Builder Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_builder_minimal() {
+        let request = ChatCompletionRequest::builder()
+            .user_message("Hello!")
+            .build()
+            .expect("valid request");
+
+        assert_eq!(request.model(), &ModelChoice::Auto);
+        assert_eq!(request.messages().len(), 1);
+        assert_eq!(request.messages()[0].content(), "Hello!");
+        assert!(!request.stream());
+    }
+
+    #[test]
+    fn test_builder_with_model() {
+        let request = ChatCompletionRequest::builder()
+            .model(ModelChoice::Fast)
+            .user_message("Hello!")
+            .build()
+            .expect("valid request");
+
+        assert_eq!(request.model(), &ModelChoice::Fast);
+    }
+
+    #[test]
+    fn test_builder_with_system_message() {
+        let request = ChatCompletionRequest::builder()
+            .system_message("You are helpful.")
+            .user_message("Hello!")
+            .build()
+            .expect("valid request");
+
+        assert_eq!(request.messages().len(), 2);
+        assert_eq!(request.messages()[0].role(), MessageRole::System);
+        assert_eq!(request.messages()[1].role(), MessageRole::User);
+    }
+
+    #[test]
+    fn test_builder_with_streaming() {
+        let request = ChatCompletionRequest::builder()
+            .user_message("Hello!")
+            .stream(true)
+            .build()
+            .expect("valid request");
+
+        assert!(request.stream());
+    }
+
+    #[test]
+    fn test_builder_with_temperature() {
+        let request = ChatCompletionRequest::builder()
+            .user_message("Hello!")
+            .temperature(0.7)
+            .build()
+            .expect("valid request");
+
+        assert_eq!(request.temperature(), Some(0.7));
+    }
+
+    #[test]
+    fn test_builder_with_max_tokens() {
+        let request = ChatCompletionRequest::builder()
+            .user_message("Hello!")
+            .max_tokens(1000)
+            .build()
+            .expect("valid request");
+
+        assert_eq!(request.max_tokens(), Some(1000));
+    }
+
+    #[test]
+    fn test_builder_rejects_empty_messages() {
+        let result = ChatCompletionRequest::builder().build();
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn test_builder_rejects_invalid_temperature() {
+        let result = ChatCompletionRequest::builder()
+            .user_message("Hello!")
+            .temperature(3.0)
+            .build();
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("temperature"));
+    }
+
+    #[test]
+    fn test_builder_with_all_options() {
+        let request = ChatCompletionRequest::builder()
+            .model(ModelChoice::Deep)
+            .system_message("You are a coding assistant.")
+            .user_message("Write a function")
+            .stream(true)
+            .temperature(0.8)
+            .max_tokens(2000)
+            .top_p(0.9)
+            .presence_penalty(0.5)
+            .frequency_penalty(-0.5)
+            .user("test-user")
+            .build()
+            .expect("valid request");
+
+        assert_eq!(request.model(), &ModelChoice::Deep);
+        assert!(request.stream());
+        assert_eq!(request.temperature(), Some(0.8));
+        assert_eq!(request.max_tokens(), Some(2000));
+    }
+
+    #[test]
+    fn test_builder_with_custom_message() {
+        let msg = ChatMessage::try_new(MessageRole::User, "Custom message").unwrap();
+        let request = ChatCompletionRequest::builder()
+            .message(msg)
+            .build()
+            .expect("valid request");
+
+        assert_eq!(request.messages().len(), 1);
+        assert_eq!(request.messages()[0].content(), "Custom message");
+    }
+
+    #[test]
+    fn test_builder_with_messages_vec() {
+        let messages = vec![
+            ChatMessage::try_new(MessageRole::System, "System prompt").unwrap(),
+            ChatMessage::try_new(MessageRole::User, "User question").unwrap(),
+        ];
+        let request = ChatCompletionRequest::builder()
+            .messages(messages)
+            .build()
+            .expect("valid request");
+
+        assert_eq!(request.messages().len(), 2);
     }
 }
