@@ -787,10 +787,41 @@ impl Usage {
 ///
 /// Fields are private to enforce the invariant that `role` is always `Assistant`.
 /// Use the `new()` constructor.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Custom `Deserialize` implementation validates that `role` is `"assistant"`.
+/// This prevents creation of invalid instances from JSON.
+#[derive(Debug, Clone, Serialize)]
 pub struct AssistantMessage {
     role: MessageRole,
     content: String,
+}
+
+impl<'de> Deserialize<'de> for AssistantMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawMessage {
+            role: MessageRole,
+            content: String,
+        }
+
+        let raw = RawMessage::deserialize(deserializer)?;
+
+        // Validate the invariant: role must be Assistant
+        if raw.role != MessageRole::Assistant {
+            return Err(serde::de::Error::custom(format!(
+                "AssistantMessage role must be 'assistant', got '{:?}'",
+                raw.role
+            )));
+        }
+
+        Ok(AssistantMessage {
+            role: raw.role,
+            content: raw.content,
+        })
+    }
 }
 
 impl AssistantMessage {
@@ -1765,5 +1796,51 @@ mod tests {
             .expect("valid request");
 
         assert_eq!(request.messages().len(), 2);
+    }
+
+    // -------------------------------------------------------------------------
+    // AssistantMessage Deserialize Invariant Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_assistant_message_deserialize_accepts_assistant_role() {
+        let json = r#"{"role": "assistant", "content": "Hello from assistant"}"#;
+        let result: Result<AssistantMessage, _> = serde_json::from_str(json);
+
+        assert!(result.is_ok(), "Should accept assistant role");
+        let msg = result.unwrap();
+        assert_eq!(msg.role(), MessageRole::Assistant);
+        assert_eq!(msg.content(), "Hello from assistant");
+    }
+
+    #[test]
+    fn test_assistant_message_deserialize_rejects_user_role() {
+        let json = r#"{"role": "user", "content": "Hello"}"#;
+        let result: Result<AssistantMessage, _> = serde_json::from_str(json);
+
+        assert!(
+            result.is_err(),
+            "AssistantMessage should reject 'user' role. Got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_assistant_message_deserialize_rejects_system_role() {
+        let json = r#"{"role": "system", "content": "System prompt"}"#;
+        let result: Result<AssistantMessage, _> = serde_json::from_str(json);
+
+        assert!(
+            result.is_err(),
+            "AssistantMessage should reject 'system' role. Got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_assistant_message_new_sets_correct_role() {
+        let msg = AssistantMessage::new("test content");
+        assert_eq!(msg.role(), MessageRole::Assistant);
+        assert_eq!(msg.content(), "test content");
     }
 }
