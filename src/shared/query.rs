@@ -15,6 +15,12 @@ use std::time::Duration;
 pub const DEFAULT_MAX_RETRIES: usize = 3;
 /// Default base backoff in milliseconds (doubles each retry)
 pub const DEFAULT_RETRY_BACKOFF_MS: u64 = 100;
+/// Maximum backoff duration in milliseconds (30 seconds)
+///
+/// Prevents infinite sleep from exponential overflow. With base=100ms:
+/// - Attempt 9 would be 25.6 seconds (under cap)
+/// - Attempt 10 would be 51.2 seconds (capped to 30s)
+pub const MAX_BACKOFF_MS: u64 = 30_000;
 
 /// Configuration for query execution with retries
 #[derive(Debug, Clone)]
@@ -58,6 +64,32 @@ impl Default for QueryConfig {
             retry_backoff_ms: DEFAULT_RETRY_BACKOFF_MS,
         }
     }
+}
+
+/// Calculate exponential backoff with overflow protection
+///
+/// Returns the backoff duration in milliseconds for the given attempt number.
+/// The formula is: `base * 2^(attempt-1)`, capped at [`MAX_BACKOFF_MS`].
+///
+/// # Arguments
+/// * `config` - Query configuration containing base backoff
+/// * `attempt` - Current attempt number (1-indexed)
+///
+/// # Returns
+/// Backoff duration in milliseconds, never exceeding [`MAX_BACKOFF_MS`].
+///
+/// # Examples
+/// With base=100ms:
+/// - Attempt 1: 100ms
+/// - Attempt 2: 200ms
+/// - Attempt 3: 400ms
+/// - Attempt 10+: 30,000ms (capped)
+pub fn calculate_backoff(config: &QueryConfig, attempt: usize) -> u64 {
+    let exponent = (attempt as u32).saturating_sub(1);
+    config
+        .retry_backoff_ms
+        .saturating_mul(2_u64.saturating_pow(exponent))
+        .min(MAX_BACKOFF_MS)
 }
 
 /// Result of a successful query execution
@@ -300,11 +332,9 @@ pub async fn execute_query_with_retry(
                     config.max_retries()
                 )));
 
-                // Add exponential backoff before retry
+                // Add exponential backoff before retry (capped to prevent overflow)
                 if attempt < config.max_retries() {
-                    let backoff_ms = config
-                        .retry_backoff_ms
-                        .saturating_mul(2_u64.saturating_pow((attempt as u32).saturating_sub(1)));
+                    let backoff_ms = calculate_backoff(config, attempt);
                     tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
                 }
                 continue;
@@ -432,11 +462,9 @@ pub async fn execute_query_with_retry(
                 failed_endpoints.insert(EndpointName::from(&endpoint));
                 last_error = Some(e);
 
-                // Add exponential backoff before retry
+                // Add exponential backoff before retry (capped to prevent overflow)
                 if attempt < config.max_retries() {
-                    let backoff_ms = config
-                        .retry_backoff_ms
-                        .saturating_mul(2_u64.saturating_pow((attempt as u32).saturating_sub(1)));
+                    let backoff_ms = calculate_backoff(config, attempt);
                     tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
                 }
             }
@@ -547,5 +575,69 @@ mod tests {
     fn test_query_config_accepts_one_retry() {
         let config = QueryConfig::new(1, 100).expect("should accept 1 retry");
         assert_eq!(config.max_retries(), 1);
+    }
+
+    // -------------------------------------------------------------------------
+    // Backoff Calculation Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_calculate_backoff_exponential_for_small_attempts() {
+        let config = QueryConfig::new(5, 100).expect("valid config");
+
+        // Attempt 1: base (100ms)
+        assert_eq!(calculate_backoff(&config, 1), 100);
+        // Attempt 2: base * 2 (200ms)
+        assert_eq!(calculate_backoff(&config, 2), 200);
+        // Attempt 3: base * 4 (400ms)
+        assert_eq!(calculate_backoff(&config, 3), 400);
+        // Attempt 4: base * 8 (800ms)
+        assert_eq!(calculate_backoff(&config, 4), 800);
+    }
+
+    #[test]
+    fn test_calculate_backoff_capped_at_maximum() {
+        // Even with extreme values, backoff should be capped
+        let config = QueryConfig::new(100, 100).expect("valid config");
+
+        // Attempt 64 would overflow: 100 * 2^63 = way more than u64::MAX
+        // Should be capped at MAX_BACKOFF_MS (30 seconds)
+        let backoff = calculate_backoff(&config, 64);
+        assert!(
+            backoff <= MAX_BACKOFF_MS,
+            "Backoff should be capped at {} ms, got {} ms",
+            MAX_BACKOFF_MS,
+            backoff
+        );
+        assert_eq!(backoff, MAX_BACKOFF_MS);
+    }
+
+    #[test]
+    fn test_calculate_backoff_caps_before_overflow() {
+        let config = QueryConfig::new(10, 1000).expect("valid config");
+
+        // Attempt 10: 1000 * 2^9 = 512,000ms = 512 seconds
+        // Should be capped at 30 seconds (30,000ms)
+        let backoff = calculate_backoff(&config, 10);
+        assert_eq!(backoff, MAX_BACKOFF_MS);
+    }
+
+    #[test]
+    fn test_calculate_backoff_with_large_base() {
+        // Large base that would exceed cap even on attempt 1
+        let config = QueryConfig::new(3, 50_000).expect("valid config");
+
+        // Attempt 1: 50,000ms > 30,000ms, should cap
+        assert_eq!(calculate_backoff(&config, 1), MAX_BACKOFF_MS);
+    }
+
+    #[test]
+    fn test_calculate_backoff_attempt_zero_treated_as_one() {
+        // Edge case: attempt 0 should behave like attempt 1 (no negative exponent)
+        let config = QueryConfig::new(3, 100).expect("valid config");
+
+        // 2^(0-1) with saturating_sub = 2^0 = 1, so backoff = base
+        let backoff = calculate_backoff(&config, 0);
+        assert_eq!(backoff, 100);
     }
 }
