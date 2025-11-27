@@ -16,6 +16,7 @@
 
 use crate::error::AppError;
 use crate::handlers::AppState;
+use crate::metrics::Metrics;
 use crate::middleware::RequestId;
 use crate::models::ModelSelector;
 use crate::shared::query::record_routing_metrics;
@@ -178,7 +179,7 @@ pub async fn handler(
         "Starting streaming response"
     );
 
-    // Create the SSE stream (pass selector for health tracking)
+    // Create the SSE stream (pass selector for health tracking, metrics for observability)
     let stream = create_sse_stream(
         prompt,
         options,
@@ -188,6 +189,7 @@ pub async fn handler(
         request_id,
         endpoint.name().to_string(),
         state.selector_arc(),
+        state.metrics(),
     );
 
     Ok(Sse::new(stream)
@@ -205,7 +207,10 @@ pub async fn handler(
 /// failures are logged and reported to the client but do not affect health
 /// tracking, as they typically indicate transient issues rather than endpoint
 /// health problems.
-#[allow(clippy::too_many_arguments)] // Needed for health tracking
+///
+/// Health tracking failures are recorded in metrics for observability parity
+/// with the non-streaming handler.
+#[allow(clippy::too_many_arguments)] // Needed for health tracking and metrics
 fn create_sse_stream(
     prompt: String,
     options: open_agent::AgentOptions,
@@ -215,6 +220,7 @@ fn create_sse_stream(
     request_id: RequestId,
     endpoint_name: String,
     selector: Arc<ModelSelector>,
+    metrics: Arc<Metrics>,
 ) -> impl futures::Stream<Item = Result<Event, Infallible>> {
     stream::once(async move {
         // Start the model query
@@ -237,6 +243,8 @@ fn create_sse_stream(
                         error = %health_err,
                         "Health tracking failed for streaming query failure"
                     );
+                    // Record in metrics for observability parity with non-streaming handler
+                    metrics.health_tracking_failure(&endpoint_name, health_err.error_type());
                 }
 
                 // Return an error event (sanitized - don't expose internal error details)
@@ -416,6 +424,7 @@ fn create_sse_stream(
         // Only mark success if no error occurred during streaming
         let success_tracker = {
             let selector = selector.clone();
+            let metrics = metrics.clone();
             let endpoint_name = endpoint_name.clone();
             let request_id = request_id_for_finish;
             let error_occurred = error_occurred.clone();
@@ -435,6 +444,8 @@ fn create_sse_stream(
                         error = %e,
                         "Health tracking failed for successful streaming completion"
                     );
+                    // Record in metrics for observability parity with non-streaming handler
+                    metrics.health_tracking_failure(&endpoint_name, e.error_type());
                 } else {
                     tracing::debug!(
                         request_id = %request_id,

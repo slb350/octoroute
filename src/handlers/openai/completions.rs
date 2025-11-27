@@ -100,6 +100,10 @@ pub async fn handler(
                 error = %e,
                 "Health tracking failed for specific model query"
             );
+            // Record in metrics for observability parity with tier-based routing
+            state
+                .metrics()
+                .health_tracking_failure(endpoint.name(), e.error_type());
         }
 
         let response = ChatCompletion::new(content, endpoint.name().to_string(), prompt_chars);
