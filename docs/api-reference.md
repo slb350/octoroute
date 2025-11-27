@@ -355,20 +355,20 @@ List available models in OpenAI-compatible format.
     {
       "id": "auto",
       "object": "model",
-      "owned_by": "octoroute",
-      "description": "Auto-routing (LLM/hybrid selects optimal tier)"
+      "created": 0,
+      "owned_by": "octoroute"
     },
     {
       "id": "fast",
       "object": "model",
-      "owned_by": "octoroute-tier",
-      "description": "Fast tier routing"
+      "created": 0,
+      "owned_by": "octoroute"
     },
     {
       "id": "qwen3-8b",
       "object": "model",
-      "owned_by": "octoroute-endpoint",
-      "description": "Direct endpoint access"
+      "created": 0,
+      "owned_by": "user"
     }
   ]
 }
@@ -376,9 +376,8 @@ List available models in OpenAI-compatible format.
 
 **Model Types**:
 
-- `owned_by: "octoroute"` - Virtual routing models (`auto`)
-- `owned_by: "octoroute-tier"` - Tier selectors (`fast`, `balanced`, `deep`)
-- `owned_by: "octoroute-endpoint"` - Direct endpoint access
+- `owned_by: "octoroute"` - Virtual routing models (`auto`, `fast`, `balanced`, `deep`)
+- `owned_by: "user"` - Direct endpoint access (configured model endpoints)
 
 ---
 

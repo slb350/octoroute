@@ -1308,3 +1308,114 @@ async fn test_non_streaming_created_is_valid_timestamp() {
         after_request
     );
 }
+
+// -------------------------------------------------------------------------
+// OpenAI Error Response Format Tests
+// -------------------------------------------------------------------------
+
+/// Tests that validation errors return OpenAI-compatible error format.
+///
+/// OpenAI SDKs expect error responses with this structure:
+/// ```json
+/// {
+///   "error": {
+///     "message": "...",
+///     "type": "invalid_request_error",
+///     "param": null,
+///     "code": null
+///   }
+/// }
+/// ```
+///
+/// This ensures compatibility with LangChain, OpenAI SDK, and other clients.
+#[tokio::test]
+async fn test_error_response_matches_openai_format() {
+    let app = create_test_app();
+
+    // Send request with invalid temperature (>2.0) to trigger validation error
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"model": "fast", "messages": [{"role": "user", "content": "test"}], "temperature": 5.0}"#,
+        ))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    // Should be a client error
+    assert!(
+        response.status().is_client_error(),
+        "Invalid temperature should return client error status"
+    );
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let error_json: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("Response should be valid JSON");
+
+    // OpenAI format has nested "error" object
+    assert!(
+        error_json.get("error").is_some(),
+        "Response should have 'error' field, got: {}",
+        error_json
+    );
+
+    let error_obj = &error_json["error"];
+
+    // Error should be an object, not a string
+    assert!(
+        error_obj.is_object(),
+        "error field should be an object (OpenAI format), not a string. Got: {}",
+        error_obj
+    );
+
+    // Must have 'message' field
+    assert!(
+        error_obj.get("message").is_some(),
+        "Error object should have 'message' field, got: {}",
+        error_obj
+    );
+
+    // Must have 'type' field
+    assert!(
+        error_obj.get("type").is_some(),
+        "Error object should have 'type' field, got: {}",
+        error_obj
+    );
+
+    // Message should be a non-empty string
+    let message = error_obj["message"].as_str().unwrap();
+    assert!(!message.is_empty(), "Error message should not be empty");
+}
+
+/// Tests that validation errors have correct error type
+#[tokio::test]
+async fn test_validation_error_type_is_invalid_request() {
+    let app = create_test_app();
+
+    // Empty messages array triggers validation error
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"model": "fast", "messages": []}"#))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let error_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    let error_type = error_json["error"]["type"]
+        .as_str()
+        .expect("error.type should be a string");
+
+    assert_eq!(
+        error_type, "invalid_request_error",
+        "Validation errors should have type 'invalid_request_error'"
+    );
+}

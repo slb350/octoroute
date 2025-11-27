@@ -15,6 +15,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
+use super::extractor::OpenAiJson;
 use super::find_endpoint_by_name;
 use super::types::{ChatCompletion, ChatCompletionRequest, ModelChoice, current_timestamp};
 
@@ -116,7 +117,7 @@ fn build_response_with_warnings<T: serde::Serialize>(body: T, warnings: &[String
 pub async fn handler(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
-    Json(request): Json<ChatCompletionRequest>,
+    OpenAiJson(request): OpenAiJson<ChatCompletionRequest>,
 ) -> Result<Response, AppError> {
     tracing::debug!(
         request_id = %request_id,

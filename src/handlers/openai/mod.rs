@@ -9,6 +9,7 @@ use crate::error::AppError;
 use crate::router::TargetModel;
 
 pub mod completions;
+pub mod extractor;
 pub mod models;
 pub mod streaming;
 pub mod types;
