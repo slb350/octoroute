@@ -85,12 +85,22 @@ fn build_response_with_warnings<T: serde::Serialize>(body: T, warnings: &[String
         tracing::warn!(
             original_warning = %warning_value,
             warning_length = warning_value.len(),
+            warnings_count = warnings.len(),
             "Warning header contains invalid HTTP characters even after sanitization, using fallback. \
             Original warning logged for debugging."
         );
+        // Include warning count in fallback for some context (all ASCII, safe for headers)
+        let fallback = format!(
+            "health-tracking-degraded; warnings-count={}",
+            warnings.len()
+        );
+        // This format! is guaranteed ASCII-safe, but use from_str for consistency
         parts.headers.insert(
             HeaderName::from_static(X_OCTOROUTE_WARNING),
-            HeaderValue::from_static("health-tracking-degraded"),
+            HeaderValue::from_str(&fallback).unwrap_or_else(|_| {
+                // Ultimate fallback if even our simple format fails (should never happen)
+                HeaderValue::from_static("health-tracking-degraded")
+            }),
         );
     }
 
