@@ -183,6 +183,9 @@ pub async fn handler(
                     "Direct tier selection (streaming)"
                 );
 
+                // Record metrics for observability parity with auto-routing
+                // Duration is 0.0 since no actual routing computation happens
+                record_routing_metrics(&state, &decision, 0.0, request_id);
                 decision
             }
             ModelChoice::Specific(_) => unreachable!("handled above"),
