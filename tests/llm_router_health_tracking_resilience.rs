@@ -91,39 +91,3 @@ async fn test_llm_router_continues_on_health_tracking_failure() {
         "Expected error due to non-routable endpoint (this test needs mocking to fully test health tracking resilience)"
     );
 }
-
-/// Test demonstrating the desired behavior: health tracking failures should warn, not fail
-///
-/// This test documents what the code SHOULD do after the fix:
-/// 1. LLM successfully returns routing decision ("FAST")
-/// 2. mark_success fails (UnknownEndpoint, HttpClientCreationFailed, etc.)
-/// 3. Router logs warning with context
-/// 4. Router returns Ok(TargetModel::Fast) - the valid routing decision
-///
-/// CURRENT BEHAVIOR (before fix):
-/// - Step 3: Router returns Err(AppError::HealthTracking(...))
-/// - Valid routing decision is discarded
-///
-/// EXPECTED BEHAVIOR (after fix):
-/// - Step 3: Router logs warn!("Health tracking skipped: {}")
-/// - Step 4: Router returns Ok(TargetModel::Fast)
-#[tokio::test]
-#[ignore = "Requires mocking infrastructure - documents expected behavior"]
-async fn test_llm_router_health_tracking_resilience_documented_behavior() {
-    // This test is ignored because it requires mocking the LLM query and health tracking
-    // to properly test the resilience behavior. It serves as documentation of the
-    // expected behavior after the fix.
-
-    // EXPECTED FLOW (after fix):
-    // 1. router.route(...) invokes LLM
-    // 2. LLM returns "FAST" (successful routing decision)
-    // 3. router tries mark_success(endpoint_name)
-    // 4. mark_success returns Err(UnknownEndpoint) [simulated failure]
-    // 5. Router logs: warn!("Health tracking skipped: UnknownEndpoint (may be config reload race)")
-    // 6. Router returns Ok(TargetModel::Fast) [NOT an error]
-
-    // The key assertion is:
-    // assert!(result.is_ok());
-    // assert_eq!(result.unwrap(), TargetModel::Fast);
-    // And verify warning was logged (requires log capture infrastructure)
-}

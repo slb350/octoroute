@@ -88,24 +88,6 @@ async fn test_exponential_backoff_timing() {
     //     "Total time too long: {:?} (expected ~3600ms)", total_elapsed);
 }
 
-/// Test that backoff saturates at reasonable maximum to prevent overflow
-///
-/// SCENARIO: Hypothetical scenario with many retry attempts
-///
-/// EXPECTED: Backoff should saturate at a reasonable maximum (e.g., 10 seconds)
-/// to prevent arithmetic overflow and excessively long delays.
-#[tokio::test]
-#[ignore = "Requires retry count > 3 which isn't currently supported"]
-async fn test_backoff_saturates_at_maximum() {
-    // Test that backoff doesn't overflow:
-    // 100ms * 2^10 = 102,400ms (102 seconds)
-    // 100ms * 2^20 = 104,857,600ms (29 hours!)
-    // 100ms * 2^30 = would overflow u64
-
-    // Expected: Use saturating_pow to prevent overflow
-    // Verify: Backoff never exceeds reasonable maximum (e.g., 10 seconds)
-}
-
 /// Test backoff calculation with attempt number
 ///
 /// UNIT TEST: Verify backoff formula without actual HTTP requests
