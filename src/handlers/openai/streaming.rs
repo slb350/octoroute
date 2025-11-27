@@ -16,17 +16,17 @@
 //!
 //! # Serialization Safety
 //!
-//! This module uses `.expect()` for `ChatCompletionChunk` serialization. This is
-//! safe because:
+//! `ChatCompletionChunk` serialization uses the `serialize_chunk` helper which
+//! handles errors gracefully instead of panicking. While serialization should
+//! never fail for this simple struct (String, i64, Option<String> types), we
+//! handle the theoretical failure case by:
 //!
-//! 1. `ChatCompletionChunk` contains only simple types: `String`, `i64`, `Option<String>`
-//! 2. These types always serialize successfully to JSON (no f64::NAN, no cycles)
-//! 3. Property-based tests in `tests/openai_streaming.rs` verify serialization
-//!    succeeds for all valid inputs including edge cases (empty strings, Unicode,
-//!    special JSON characters, extreme timestamps)
+//! 1. Logging the error for production visibility
+//! 2. Returning a hand-crafted JSON error event to the client
 //!
-//! If serialization panics in production, it indicates a bug in struct definition
-//! (e.g., adding an unserializable field) which should be caught by tests.
+//! This ensures the streaming handler never panics, even in edge cases like
+//! OOM during serialization. Property-based tests in `tests/openai_streaming.rs`
+//! verify serialization succeeds for all valid inputs.
 
 use crate::error::AppError;
 use crate::handlers::AppState;
@@ -51,6 +51,40 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use super::types::{ChatCompletionChunk, ChatCompletionRequest, ModelChoice, current_timestamp};
+
+/// Serialize a chunk to JSON, returning a fallback error event on failure.
+///
+/// This helper handles the unlikely case where `ChatCompletionChunk` serialization
+/// fails (should never happen with simple types, but we handle it gracefully).
+///
+/// On failure:
+/// 1. Logs the error with request context
+/// 2. Returns a hand-crafted JSON error event that is guaranteed valid
+///
+/// Note: We don't set `error_occurred` here because the caller may want to
+/// continue streaming (e.g., for initial chunks). The caller should set it
+/// if appropriate for their context.
+fn serialize_chunk(chunk: &ChatCompletionChunk, request_id: &RequestId) -> String {
+    match serde_json::to_string(chunk) {
+        Ok(json) => json,
+        Err(e) => {
+            // This should never happen - ChatCompletionChunk contains only simple types.
+            // Log as error so it's visible in production monitoring.
+            tracing::error!(
+                request_id = %request_id,
+                error = %e,
+                chunk_id = %chunk.id,
+                "BUG: ChatCompletionChunk serialization failed. This indicates a bug in the \
+                struct definition (e.g., non-serializable field added). Returning error event."
+            );
+            // Return a hand-crafted JSON that we know is valid
+            format!(
+                r#"{{"error":"serialization_failed","request_id":"{}","chunk_id":"{}"}}"#,
+                request_id, chunk.id
+            )
+        }
+    }
+}
 
 /// POST /v1/chat/completions handler for streaming requests
 ///
@@ -276,10 +310,7 @@ fn create_sse_stream(
                     &format!("[Error: Failed to start model query. Request ID: {}. Please retry.]", request_id),
                 );
                 return stream::iter(vec![
-                    Ok(Event::default().data(
-                        serde_json::to_string(&error_chunk)
-                            .expect("BUG: ChatCompletionChunk serialization must never fail"),
-                    )),
+                    Ok(Event::default().data(serialize_chunk(&error_chunk, &request_id))),
                     Ok(Event::default().data("[DONE]")),
                 ])
                 .boxed();
@@ -288,10 +319,7 @@ fn create_sse_stream(
 
         // Create initial chunk with role announcement
         let initial = ChatCompletionChunk::initial(&completion_id, &model, created);
-        let initial_event = Ok(Event::default().data(
-            serde_json::to_string(&initial)
-                .expect("BUG: ChatCompletionChunk serialization must never fail"),
-        ));
+        let initial_event = Ok(Event::default().data(serialize_chunk(&initial, &request_id)));
 
         // Save request_id for use after the stream closure
         let request_id_for_finish = request_id;
@@ -335,8 +363,7 @@ fn create_sse_stream(
                                             &text_block.text,
                                         );
                                         Some(Ok(Event::default().data(
-                                            serde_json::to_string(&chunk)
-                                                .expect("BUG: ChatCompletionChunk serialization must never fail"),
+                                            serialize_chunk(&chunk, &request_id),
                                         )))
                                     }
                                     other_block => {
@@ -372,8 +399,7 @@ fn create_sse_stream(
                                     &format!("[Stream Error: Content may be incomplete. Request ID: {}. Please retry.]", request_id),
                                 );
                                 Some(Ok(Event::default().data(
-                                    serde_json::to_string(&error_chunk)
-                                        .expect("BUG: ChatCompletionChunk serialization must never fail"),
+                                    serialize_chunk(&error_chunk, &request_id),
                                 )))
                             }
                         }
@@ -399,10 +425,7 @@ fn create_sse_stream(
                 } else {
                     // Normal completion - send finish chunk then [DONE]
                     vec![
-                        Ok(Event::default().data(
-                            serde_json::to_string(&finish_chunk)
-                                .expect("BUG: ChatCompletionChunk serialization must never fail"),
-                        )),
+                        Ok(Event::default().data(serialize_chunk(&finish_chunk, &request_id))),
                         Ok(Event::default().data("[DONE]")),
                     ]
                 }
