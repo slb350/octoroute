@@ -285,15 +285,32 @@ mod tests {
     // Warning Header Truncation Tests
     // -------------------------------------------------------------------------
 
-    /// Helper to extract the warning truncation logic for testing.
-    /// Returns the truncated warning string that would be used in the header.
-    /// This mirrors the logic in `build_response_with_warnings`.
+    /// Helper to extract the warning sanitization and truncation logic for testing.
+    /// Returns the sanitized and truncated warning string that would be used in the header.
+    /// This mirrors the full logic in `build_response_with_warnings`:
+    /// 1. Join warnings with "; "
+    /// 2. Sanitize non-ASCII → '?' and control chars → ' '
+    /// 3. Truncate to 500 bytes (safe because all chars are ASCII after sanitization)
     fn truncate_warning_for_header(warnings: &[String]) -> String {
         let warning_value = warnings.join("; ");
 
-        // Use char-based truncation to avoid splitting multi-byte UTF-8 characters
-        if warning_value.chars().count() > 500 {
-            format!("{}...", warning_value.chars().take(497).collect::<String>())
+        // Sanitize (mirrors production): non-ASCII → '?', control → ' '
+        let warning_value: String = warning_value
+            .chars()
+            .map(|c| {
+                if c.is_control() && c != ' ' {
+                    ' '
+                } else if !c.is_ascii() {
+                    '?'
+                } else {
+                    c
+                }
+            })
+            .collect();
+
+        // Truncate using byte length (safe because all chars are now ASCII)
+        if warning_value.len() > 500 {
+            format!("{}...", &warning_value[..497])
         } else {
             warning_value
         }
@@ -311,29 +328,23 @@ mod tests {
     }
 
     #[test]
-    fn test_warning_truncation_preserves_utf8_multibyte_chars() {
-        // Create a string where byte position 497 falls in the middle of a multi-byte char
-        // The emoji "🦑" (octopus) is 4 bytes in UTF-8: F0 9F A6 91
-        // We want the truncation point (497) to fall inside a multi-byte character
+    fn test_warning_truncation_sanitizes_multibyte_to_placeholder() {
+        // Multi-byte chars (like emoji) are sanitized to '?' BEFORE truncation.
+        // This test verifies the sanitization + truncation pipeline.
 
         // Strategy: Fill with ASCII up to position 495, then add a 4-byte emoji
-        // Bytes 0-494: ASCII (495 bytes)
-        // Bytes 495-498: emoji (4 bytes) - truncation at 497 would split this!
         let prefix = "x".repeat(495);
-        let emoji = "🦑"; // 4 bytes
+        let emoji = "🦑"; // 4 bytes in UTF-8, but becomes 1 char '?' after sanitization
         let suffix = "y".repeat(100);
         let warning = format!("{}{}{}", prefix, emoji, suffix);
 
-        // Verify our setup: byte 497 should be inside the emoji
-        assert!(
-            !warning.is_char_boundary(497),
-            "Test setup failed: byte 497 should NOT be a char boundary"
-        );
-
         let result = truncate_warning_for_header(&[warning]);
 
-        // The result MUST be valid UTF-8 (this is the key assertion)
-        // If truncation splits a multi-byte char, this will be invalid
+        // The emoji should have been sanitized to '?'
+        // Total: 495 + 1 + 100 = 596 chars (all ASCII after sanitization)
+        // Should be truncated to 497 + "..." = 500 chars
+
+        // Result must be valid UTF-8 (trivially true since all ASCII)
         assert!(
             std::str::from_utf8(result.as_bytes()).is_ok(),
             "Truncated warning must be valid UTF-8"
@@ -345,44 +356,58 @@ mod tests {
             "Truncated warning should end with ..."
         );
 
-        // Result should not exceed 500 chars (but may be shorter due to char-safe truncation)
+        // Result should be exactly 500 chars (byte length equals char count for ASCII)
+        assert_eq!(
+            result.len(),
+            500,
+            "Truncated warning should be exactly 500 bytes"
+        );
         assert!(
-            result.chars().count() <= 500,
-            "Truncated warning should not exceed 500 chars"
+            result.is_ascii(),
+            "Result should be ASCII after sanitization"
         );
     }
 
     #[test]
-    fn test_warning_truncation_chinese_characters() {
-        // Chinese characters are 3 bytes each in UTF-8
-        // This tests that we handle 3-byte sequences correctly
-        // Need >500 chars to trigger truncation (not bytes)
+    fn test_warning_truncation_chinese_characters_become_placeholders() {
+        // Chinese characters are 3 bytes each in UTF-8, but get sanitized to '?'
+        // After sanitization: 600 '?' chars = 600 bytes
+        // Truncation: 497 + "..." = 500 bytes
         let chinese = "中".repeat(600); // 600 chars, 1800 bytes
         let result = truncate_warning_for_header(&[chinese]);
 
-        // Must be valid UTF-8
+        // Must be valid UTF-8 (trivially true - all '?' and '.')
         assert!(
             std::str::from_utf8(result.as_bytes()).is_ok(),
-            "Truncated Chinese text must be valid UTF-8"
+            "Truncated text must be valid UTF-8"
         );
 
         assert!(result.ends_with("..."));
-        // 497 Chinese chars + "..." = 500 chars displayed
-        assert_eq!(result.chars().count(), 500);
+        // After sanitization: 600 '?' chars, truncated to 497 + "..." = 500 bytes
+        assert_eq!(result.len(), 500);
+        assert!(
+            result.is_ascii(),
+            "Result should be ASCII after sanitization"
+        );
+        // First 497 chars should all be '?'
+        assert!(
+            result[..497].chars().all(|c| c == '?'),
+            "Chinese chars should become '?'"
+        );
     }
 
     #[test]
-    fn test_warning_truncation_mixed_multibyte() {
+    fn test_warning_truncation_mixed_multibyte_sanitizes_non_ascii() {
         // Mix of 1-byte (ASCII), 2-byte (é), 3-byte (中), and 4-byte (🦑) chars
-        // Need >500 chars total to trigger truncation
+        // Non-ASCII chars get sanitized to '?' before truncation
         let mixed = format!(
             "{}{}{}{}{}",
-            "a".repeat(200),  // 200 chars
-            "é".repeat(150),  // 150 chars
-            "中".repeat(100), // 100 chars
-            "🦑".repeat(50),  // 50 chars
-            "z".repeat(50)    // 50 chars
-        ); // Total: 550 chars
+            "a".repeat(200),  // 200 chars, stays 'a'
+            "é".repeat(150),  // 150 chars, becomes '?'
+            "中".repeat(100), // 100 chars, becomes '?'
+            "🦑".repeat(50),  // 50 chars, becomes '?'
+            "z".repeat(50)    // 50 chars, stays 'z'
+        ); // Total after sanitization: 550 ASCII chars
 
         assert!(
             mixed.chars().count() > 500,
@@ -396,7 +421,22 @@ mod tests {
             "Truncated mixed text must be valid UTF-8"
         );
         assert!(result.ends_with("..."));
-        assert_eq!(result.chars().count(), 500);
+        // After sanitization, all 550 chars become ASCII, truncated to 500 bytes
+        assert_eq!(result.len(), 500);
+        assert!(
+            result.is_ascii(),
+            "Result should be ASCII after sanitization"
+        );
+
+        // Verify structure: first 200 'a', then some '?' (from é/中/🦑), then some 'z'
+        assert!(
+            result.starts_with(&"a".repeat(200)),
+            "First 200 should be 'a'"
+        );
+        assert!(
+            result[200..201].chars().all(|c| c == '?'),
+            "After 'a's should be '?' from sanitized é"
+        );
     }
 
     #[test]
