@@ -25,18 +25,27 @@ use serde::de::DeserializeOwned;
 ///   }
 /// }
 /// ```
+/// OpenAI-compatible error response.
+///
+/// Fields are private to enforce immutability after construction.
+/// Use the constructors [`OpenAiError::invalid_request`], [`OpenAiError::server_error`],
+/// or [`OpenAiError::invalid_param`] to create instances.
 #[derive(serde::Serialize)]
 pub struct OpenAiError {
-    pub error: OpenAiErrorBody,
+    error: OpenAiErrorBody,
 }
 
+/// Body of an OpenAI-compatible error response.
+///
+/// Fields are private to enforce immutability. The struct is only constructed
+/// internally by [`OpenAiError`] constructors.
 #[derive(serde::Serialize)]
-pub struct OpenAiErrorBody {
-    pub message: String,
+struct OpenAiErrorBody {
+    message: String,
     #[serde(rename = "type")]
-    pub error_type: String,
-    pub param: Option<String>,
-    pub code: Option<String>,
+    error_type: String,
+    param: Option<String>,
+    code: Option<String>,
 }
 
 impl OpenAiError {
