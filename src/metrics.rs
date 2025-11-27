@@ -12,7 +12,7 @@
 //! This module is only available when the `metrics` feature is enabled:
 //! ```toml
 //! [dependencies]
-//! octoroute = { version = "0.1", features = ["metrics"] }
+//! octoroute = { version = "1.0", features = ["metrics"] }
 //! ```
 
 use prometheus::{

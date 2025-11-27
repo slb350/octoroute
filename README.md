@@ -154,6 +154,109 @@ Response:
 
 ---
 
+## OpenAI-Compatible API
+
+**Drop-in replacement for OpenAI clients.** Use Octoroute with any OpenAI-compatible SDK, framework, or tool - no code changes required.
+
+### Quick Example
+
+```bash
+curl http://localhost:3000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "auto",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+### Works with Any OpenAI Client
+
+**Python (OpenAI SDK)**:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:3000/v1",
+    api_key="not-needed"  # Octoroute doesn't require auth
+)
+
+response = client.chat.completions.create(
+    model="auto",  # Let Octoroute pick the best model
+    messages=[{"role": "user", "content": "Explain quantum computing"}]
+)
+print(response.choices[0].message.content)
+```
+
+**LangChain**:
+
+```python
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    base_url="http://localhost:3000/v1",
+    api_key="not-needed",
+    model="auto"
+)
+
+response = llm.invoke("What is the meaning of life?")
+```
+
+**TypeScript/JavaScript**:
+
+```typescript
+import OpenAI from 'openai';
+
+const client = new OpenAI({
+  baseURL: 'http://localhost:3000/v1',
+  apiKey: 'not-needed',
+});
+
+const response = await client.chat.completions.create({
+  model: 'auto',
+  messages: [{ role: 'user', content: 'Hello!' }],
+});
+```
+
+### Model Selection
+
+The `model` field controls routing:
+
+| Value | Behavior |
+|-------|----------|
+| `auto` | Intelligent routing - Octoroute analyzes the request and picks the best tier |
+| `fast` | Route directly to Fast tier (8B models) |
+| `balanced` | Route directly to Balanced tier (30B models) |
+| `deep` | Route directly to Deep tier (120B models) |
+| `qwen3-8b` | Bypass routing - use specific endpoint by name |
+
+### Streaming Support
+
+Full SSE streaming support - works with any streaming-capable client:
+
+```python
+stream = client.chat.completions.create(
+    model="auto",
+    messages=[{"role": "user", "content": "Write a poem"}],
+    stream=True
+)
+
+for chunk in stream:
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="")
+```
+
+### Available Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/chat/completions` | POST | Chat completions (streaming & non-streaming) |
+| `/v1/models` | GET | List available models and tiers |
+
+See [API Reference](docs/api-reference.md) for complete documentation.
+
+---
+
 ## How It Works
 
 ### Routing Strategies
@@ -246,29 +349,37 @@ scrape_configs:
 ## Architecture
 
 ```
-┌─────────────────┐
-│ Your App        │
-└────────┬────────┘
-         │ HTTP POST /chat
-         ▼
-┌─────────────────────────────────┐
-│ Octoroute API (Axum + Tokio)   │
-│  ┌────────────────────────────┐ │
-│  │ Router (Rule/LLM/Hybrid)   │ │
-│  └──────────┬─────────────────┘ │
-│             │                   │
-│             ▼ Model Selection   │
-│  ┌────────────────────────────┐ │
-│  │ open-agent-sdk Client      │ │
-│  └──────────┬─────────────────┘ │
-└─────────────┼───────────────────┘
-              │
-              ▼
-┌──────────────────────────────────┐
-│ Local Model Servers              │
-│  8B (Ollama) | 30B (LM Studio)  │
-│  120B (llama.cpp)                │
-└──────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│              Client Applications                  │
+│   (OpenAI SDK, LangChain, CLI, curl, etc.)       │
+└─────────────────────┬────────────────────────────┘
+                      │
+       ┌──────────────┴──────────────┐
+       │                             │
+       ▼                             ▼
+  /v1/chat/completions         /chat (legacy)
+  (OpenAI-compatible)          (Native API)
+       │                             │
+       └──────────────┬──────────────┘
+                      ▼
+┌──────────────────────────────────────────────────┐
+│        Octoroute API (Axum + Tokio)              │
+│  ┌────────────────────────────────────────────┐  │
+│  │    Router (Rule/LLM/Hybrid)                │  │
+│  └────────────────────┬───────────────────────┘  │
+│                       │                          │
+│                       ▼ Model Selection          │
+│  ┌────────────────────────────────────────────┐  │
+│  │    open-agent-sdk Client                   │  │
+│  │    (streaming or buffered responses)       │  │
+│  └────────────────────┬───────────────────────┘  │
+└───────────────────────┼──────────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────────┐
+│              Local Model Servers                  │
+│   8B (Ollama) | 30B (LM Studio) | 120B (llama)   │
+└──────────────────────────────────────────────────┘
 ```
 
 Built on:
@@ -499,7 +610,8 @@ octoroute --help
 ## Project Status
 
 **Features implemented**:
-- ✅ HTTP API with `/chat`, `/health`, `/models`, `/metrics` endpoints
+- ✅ **OpenAI-compatible API** (`/v1/chat/completions`, `/v1/models`) with SSE streaming
+- ✅ Legacy API with `/chat`, `/health`, `/models`, `/metrics` endpoints
 - ✅ Multi-tier model selection (fast/balanced/deep)
 - ✅ Rule-based + LLM-based hybrid routing
 - ✅ Priority-based routing with weighted distribution
@@ -512,7 +624,7 @@ octoroute --help
 - ✅ Comprehensive config validation
 - ✅ Development tooling (justfile with 20+ recipes)
 - ✅ **CLI with config generation** (`octoroute config` and `--config` flag)
-- ✅ **Comprehensive test coverage** (242 unit tests, 46 integration test files)
+- ✅ **Comprehensive test coverage** (348+ tests across 51 integration test files)
 - ✅ **Zero clippy warnings**
 - ✅ **Zero tech debt**
 
@@ -584,10 +696,10 @@ Contributions welcome! Please see [Development Guide](docs/development.md) for g
 **Areas for contribution**:
 
 - Additional routing strategies (e.g., RL-based, tool-based)
-- Streaming response support (SSE/WebSocket)
 - Caching layer for repeated prompts
 - Web UI for routing visualization
 - More comprehensive benchmarks
+- Function calling / tool use support
 
 ---
 
@@ -607,7 +719,7 @@ Contributions welcome! Please see [Development Guide](docs/development.md) for g
 
 ### Q: Does this support streaming responses?
 
-**A**: Not currently. Octoroute accumulates the full response before returning.
+**A**: Yes! The OpenAI-compatible endpoint (`/v1/chat/completions`) supports full SSE streaming. Set `stream: true` in your request and receive tokens as they're generated. The legacy `/chat` endpoint returns buffered responses only.
 
 ### Q: How does LLM-based routing work?
 

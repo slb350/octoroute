@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2025-11-27
+
+### Added
+
+#### OpenAI-Compatible API (Major Feature)
+- **Drop-in replacement for OpenAI clients**: Works with OpenAI SDK, LangChain, and any OpenAI-compatible tool
+- **`POST /v1/chat/completions`**: Full OpenAI-compatible chat completions endpoint
+  - Supports `model` field: `auto` (intelligent routing), `fast`/`balanced`/`deep` (tier routing), or specific endpoint names
+  - Full SSE streaming support with `stream: true`
+  - All sampling parameters: `temperature`, `max_tokens`, `top_p`, `presence_penalty`, `frequency_penalty`
+  - Request validation with clear error messages
+- **`GET /v1/models`**: List available models in OpenAI format
+  - Shows routing tiers (`auto`, `fast`, `balanced`, `deep`) with `owned_by: "octoroute"`
+  - Shows configured endpoints with `owned_by: "user"`
+- **Streaming support**: Real-time token streaming via Server-Sent Events (SSE)
+  - Proper chunk format with `delta` objects
+  - `[DONE]` termination signal
+  - Mid-stream error handling with error chunks
+- **Shared query execution**: Refactored retry logic shared between legacy and OpenAI handlers
+
+#### Testing
+- 17 new integration tests for OpenAI endpoints (`tests/openai_*.rs`)
+- Comprehensive validation boundary tests
+- SSE streaming tests with chunk parsing
+
+### Changed
+
+- Legacy `/chat` endpoint now uses shared query execution logic
+- Reduced code duplication (~450 lines → ~60 lines in chat.rs)
+- Test count increased to 348+ tests across 51 integration test files
+
+### Technical Details
+
+- New `handlers/openai/` module with `types.rs`, `completions.rs`, `models.rs`, `streaming.rs`, `extractor.rs`
+- New `shared/query.rs` for retry logic reuse
+- Custom serde deserializers with validation for request types
+
+---
+
 ## [0.1.1] - 2025-11-25
 
 ### Changed
@@ -92,5 +131,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.0.0]: https://github.com/slb350/octoroute/releases/tag/v1.0.0
 [0.1.1]: https://github.com/slb350/octoroute/releases/tag/v0.1.1
 [0.1.0]: https://github.com/slb350/octoroute/releases/tag/v0.1.0

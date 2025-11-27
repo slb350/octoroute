@@ -165,7 +165,11 @@ tests/
     ├── timeout_enforcement.rs
     ├── stream_interruption.rs
     ├── background_health_checks.rs
-    └── ... (see tests/ directory for full list)
+    ├── openai_completions.rs       # OpenAI-compatible completions tests
+    ├── openai_models.rs            # OpenAI-compatible models endpoint tests
+    ├── openai_streaming.rs         # SSE streaming tests
+    ├── openai_validation_boundaries.rs
+    └── ... (see tests/ directory for full list - 51 files)
 ```
 
 ### Running Tests
@@ -554,10 +558,21 @@ octoroute/
 │   │
 │   ├── handlers/                  # HTTP handlers
 │   │   ├── mod.rs
-│   │   ├── chat.rs               # POST /chat
+│   │   ├── chat.rs               # POST /chat (legacy)
 │   │   ├── health.rs             # GET /health
-│   │   ├── models.rs             # GET /models
-│   │   └── metrics.rs            # GET /metrics
+│   │   ├── models.rs             # GET /models (legacy)
+│   │   ├── metrics.rs            # GET /metrics
+│   │   └── openai/               # OpenAI-compatible API
+│   │       ├── mod.rs            # Module exports and endpoint lookup
+│   │       ├── types.rs          # Request/response types
+│   │       ├── completions.rs    # POST /v1/chat/completions
+│   │       ├── models.rs         # GET /v1/models
+│   │       ├── streaming.rs      # SSE streaming support
+│   │       └── extractor.rs      # Request body extraction
+│   │
+│   ├── shared/                    # Shared utilities
+│   │   ├── mod.rs
+│   │   └── query.rs              # Query execution with retry
 │   │
 │   ├── middleware/                # Axum middleware
 │   │   ├── mod.rs
@@ -574,7 +589,8 @@ octoroute/
 │   ├── timeout_enforcement.rs
 │   ├── stream_interruption.rs
 │   ├── background_health_checks.rs
-│   └── ... (46 integration test files total)
+│   ├── openai_*.rs               # OpenAI-compatible API tests
+│   └── ... (51 integration test files total)
 │
 ├── benches/                       # Benchmarks
 │   └── routing.rs

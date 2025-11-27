@@ -1,7 +1,7 @@
 # Octoroute Architecture
 
-**Version**: 1.0
-**Last Updated**: 2025-11-24
+**Version**: 1.1
+**Last Updated**: 2025-11-27
 
 ---
 
@@ -35,10 +35,16 @@ Octoroute is an intelligent HTTP API router that sits between client application
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                    Client Applications                        │
-│          (CLI, Web UI, API consumers, etc.)                  │
+│    (OpenAI SDK, LangChain, CLI, Web UI, API consumers)       │
 └────────────────────┬─────────────────────────────────────────┘
-                     │ HTTP POST /chat
-                     │ { message, importance, task_type }
+                     │
+        ┌────────────┴────────────┐
+        │                         │
+        ▼                         ▼
+   POST /v1/chat/completions   POST /chat (legacy)
+   { model, messages, stream } { message, importance }
+        │                         │
+        └────────────┬────────────┘
                      ▼
 ┌──────────────────────────────────────────────────────────────┐
 │                      Octoroute API                           │
@@ -67,7 +73,7 @@ Octoroute is an intelligent HTTP API router that sits between client application
 │  │  Model Invocation (open-agent-sdk)                    │  │
 │  │  - Build AgentOptions per request                     │  │
 │  │  - Call open_agent::query() with endpoint + prompt    │  │
-│  │  - Buffer and return full response                    │  │
+│  │  - Buffer response OR stream via SSE                  │  │
 │  └────────────┬───────────────────────────────────────────┘  │
 └───────────────┼──────────────────────────────────────────────┘
                 │
@@ -129,10 +135,21 @@ octoroute/
 │   │
 │   ├── handlers/                  # HTTP request handlers
 │   │   ├── mod.rs
-│   │   ├── chat.rs               # POST /chat
+│   │   ├── chat.rs               # POST /chat (legacy)
 │   │   ├── health.rs             # GET /health
-│   │   ├── models.rs             # GET /models
-│   │   └── metrics.rs            # GET /metrics
+│   │   ├── models.rs             # GET /models (legacy)
+│   │   ├── metrics.rs            # GET /metrics
+│   │   └── openai/               # OpenAI-compatible API
+│   │       ├── mod.rs            # Module exports and endpoint lookup
+│   │       ├── types.rs          # Request/response types (ChatCompletionRequest, etc.)
+│   │       ├── completions.rs    # POST /v1/chat/completions
+│   │       ├── models.rs         # GET /v1/models
+│   │       ├── streaming.rs      # SSE streaming support
+│   │       └── extractor.rs      # Request body extraction with validation
+│   │
+│   ├── shared/                    # Shared utilities
+│   │   ├── mod.rs
+│   │   └── query.rs              # Query execution with retry (used by legacy + OpenAI)
 │   │
 │   ├── middleware/                # Axum middleware
 │   │   ├── mod.rs
@@ -141,7 +158,7 @@ octoroute/
 │   ├── metrics.rs                 # Prometheus metrics implementation
 │   ├── error.rs                   # AppError, AppResult types
 │   └── telemetry.rs              # Tracing setup
-├── tests/                         # Integration tests
+├── tests/                         # Integration tests (51 files)
 ├── benches/                       # Benchmarks
 └── Cargo.toml
 ```
@@ -455,10 +472,44 @@ impl HybridRouter {
 
 ## Data Flow
 
-### Request Flow (Hybrid Router)
+### Request Flow (OpenAI-Compatible API)
 
 ```
-1. HTTP Request arrives at Axum
+1. HTTP Request arrives at POST /v1/chat/completions
+   ↓
+2. Middleware: Request ID generation and propagation
+   ↓
+3. Handler: Extract and validate ChatCompletionRequest
+   - Parse model field (auto/fast/balanced/deep/specific-name)
+   - Validate messages, temperature, max_tokens, etc.
+   ↓
+4. Model Resolution:
+   ├─ Specific model name → Find endpoint directly (bypass routing)
+   ├─ Tier name (fast/balanced/deep) → Route to tier directly
+   └─ "auto" → Build RouteMetadata and route:
+      ├─ RuleBasedRouter.route(metadata)
+      │  ├─ Rule matched → Return routing decision
+      │  └─ No match → LlmBasedRouter.route(prompt, metadata)
+      ↓
+5. ModelSelector.select_endpoint(tier, exclusions)
+   ├─ Filter by priority (highest priority tier)
+   ├─ Filter by health status (exclude unhealthy)
+   ├─ Weighted random selection within tier
+   └─ Return selected endpoint
+   ↓
+6. Build AgentOptions and invoke model
+   ↓
+7. Response handling (based on stream parameter):
+   ├─ stream: false → Buffer response, return JSON
+   └─ stream: true  → Return SSE stream with chunks
+   ↓
+8. Return OpenAI-compatible response to client
+```
+
+### Request Flow (Legacy /chat Endpoint)
+
+```
+1. HTTP Request arrives at POST /chat
    ↓
 2. Middleware: Request ID generation and propagation
    ↓
@@ -708,5 +759,5 @@ Run `cargo bench` to measure current performance on your hardware.
 
 ---
 
-**Document Status**: Current as of v0.1.0
-**Last Updated**: 2025-11-24
+**Document Status**: Current as of v1.0.0 (OpenAI-compatible API)
+**Last Updated**: 2025-11-27
