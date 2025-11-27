@@ -5,7 +5,9 @@
 use crate::error::AppError;
 use crate::handlers::AppState;
 use crate::middleware::RequestId;
-use crate::shared::query::{QueryConfig, execute_query_with_retry, record_routing_metrics};
+use crate::shared::query::{
+    QueryConfig, execute_query_with_retry, query_model, record_routing_metrics,
+};
 use axum::{
     Extension, Json,
     extract::State,
@@ -68,8 +70,52 @@ pub async fn handler(
     let prompt = request.to_prompt_string();
     let prompt_chars = prompt.chars().count();
 
-    // Determine routing based on model choice
-    let (decision, model_name) = match request.model() {
+    // Handle specific model requests differently - query the exact endpoint requested
+    if let ModelChoice::Specific(name) = request.model() {
+        // Find and use the specific endpoint (no tier selection)
+        let (tier, endpoint) = find_endpoint_by_name(state.config(), name)?;
+
+        tracing::info!(
+            request_id = %request_id,
+            model_name = %name,
+            endpoint_name = %endpoint.name(),
+            target_tier = ?tier,
+            "Specific model selection - querying endpoint directly"
+        );
+
+        // Query the specific endpoint directly (no retry to different endpoints)
+        let timeout_seconds = state.config().timeout_for_tier(tier);
+        let content = query_model(&endpoint, &prompt, timeout_seconds, request_id, 1, 1).await?;
+
+        // Mark endpoint as healthy on success
+        if let Err(e) = state
+            .selector()
+            .health_checker()
+            .mark_success(endpoint.name())
+            .await
+        {
+            tracing::warn!(
+                request_id = %request_id,
+                endpoint_name = %endpoint.name(),
+                error = %e,
+                "Health tracking failed for specific model query"
+            );
+        }
+
+        let response = ChatCompletion::new(content, endpoint.name().to_string(), prompt_chars);
+
+        tracing::info!(
+            request_id = %request_id,
+            model = %response.model,
+            response_length = response.choices[0].message.content.len(),
+            "Chat completion successful (specific model)"
+        );
+
+        return Ok(Json(response).into_response());
+    }
+
+    // For tier-based routing (auto, fast, balanced, deep)
+    let decision = match request.model() {
         ModelChoice::Auto => {
             // Use router to determine tier (auto-detection)
             let metadata = request.to_route_metadata();
@@ -89,7 +135,7 @@ pub async fn handler(
             );
 
             record_routing_metrics(&state, &decision, routing_duration_ms, request_id);
-            (decision, None)
+            decision
         }
         ModelChoice::Fast | ModelChoice::Balanced | ModelChoice::Deep => {
             // Direct tier selection (bypass routing)
@@ -103,31 +149,17 @@ pub async fn handler(
                 "Direct tier selection (no routing)"
             );
 
-            (decision, None)
+            decision
         }
-        ModelChoice::Specific(name) => {
-            // Find endpoint by name (bypass routing entirely)
-            let (tier, endpoint) = find_endpoint_by_name(state.config(), name)?;
-            let decision =
-                crate::router::RoutingDecision::new(tier, crate::router::RoutingStrategy::Rule);
-
-            tracing::info!(
-                request_id = %request_id,
-                model_name = %name,
-                target_tier = ?tier,
-                "Specific model selection (routing bypassed)"
-            );
-
-            (decision, Some(endpoint.name().to_string()))
-        }
+        ModelChoice::Specific(_) => unreachable!("handled above"),
     };
 
-    // Execute query with retry logic
+    // Execute query with retry logic (selects from tier)
     let config = QueryConfig::default();
     let result = execute_query_with_retry(&state, &decision, &prompt, request_id, &config).await?;
 
-    // Determine model name for response
-    let response_model = model_name.unwrap_or_else(|| result.endpoint.name().to_string());
+    // Use the endpoint that was actually selected
+    let response_model = result.endpoint.name().to_string();
 
     // Build OpenAI-compatible response
     let response = ChatCompletion::new(result.content, response_model, prompt_chars);

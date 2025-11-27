@@ -74,73 +74,75 @@ pub async fn handler(
     // Convert messages to a single prompt for routing and query
     let prompt = request.to_prompt_string();
 
-    // Determine routing based on model choice
-    let (decision, model_name) = match request.model() {
-        ModelChoice::Auto => {
-            // Use router to determine tier (auto-detection)
-            let metadata = request.to_route_metadata();
-            let routing_start = std::time::Instant::now();
-            let decision = state
-                .router()
-                .route(&prompt, &metadata, state.selector())
-                .await?;
-            let routing_duration_ms = routing_start.elapsed().as_secs_f64() * 1000.0;
+    // Handle specific model requests differently - use the exact endpoint requested
+    let endpoint = if let ModelChoice::Specific(name) = request.model() {
+        // Find and use the specific endpoint directly (no tier selection)
+        let (tier, endpoint) = find_endpoint_by_name(state.config(), name)?;
 
-            tracing::info!(
-                request_id = %request_id,
-                target_tier = ?decision.target(),
-                routing_strategy = ?decision.strategy(),
-                routing_duration_ms = %routing_duration_ms,
-                "Routing decision made (auto, streaming)"
-            );
+        tracing::info!(
+            request_id = %request_id,
+            model_name = %name,
+            endpoint_name = %endpoint.name(),
+            target_tier = ?tier,
+            "Specific model selection - streaming directly to endpoint"
+        );
 
-            record_routing_metrics(&state, &decision, routing_duration_ms, request_id);
-            (decision, None)
-        }
-        ModelChoice::Fast | ModelChoice::Balanced | ModelChoice::Deep => {
-            // Direct tier selection (bypass routing)
-            let tier = request.model().to_target_model().unwrap();
-            let decision =
-                crate::router::RoutingDecision::new(tier, crate::router::RoutingStrategy::Rule);
+        endpoint
+    } else {
+        // For tier-based routing (auto, fast, balanced, deep)
+        let decision = match request.model() {
+            ModelChoice::Auto => {
+                // Use router to determine tier (auto-detection)
+                let metadata = request.to_route_metadata();
+                let routing_start = std::time::Instant::now();
+                let decision = state
+                    .router()
+                    .route(&prompt, &metadata, state.selector())
+                    .await?;
+                let routing_duration_ms = routing_start.elapsed().as_secs_f64() * 1000.0;
 
-            tracing::info!(
-                request_id = %request_id,
-                target_tier = ?tier,
-                "Direct tier selection (streaming)"
-            );
+                tracing::info!(
+                    request_id = %request_id,
+                    target_tier = ?decision.target(),
+                    routing_strategy = ?decision.strategy(),
+                    routing_duration_ms = %routing_duration_ms,
+                    "Routing decision made (auto, streaming)"
+                );
 
-            (decision, None)
-        }
-        ModelChoice::Specific(name) => {
-            // Find endpoint by name (bypass routing entirely)
-            let (tier, endpoint) = find_endpoint_by_name(state.config(), name)?;
-            let decision =
-                crate::router::RoutingDecision::new(tier, crate::router::RoutingStrategy::Rule);
+                record_routing_metrics(&state, &decision, routing_duration_ms, request_id);
+                decision
+            }
+            ModelChoice::Fast | ModelChoice::Balanced | ModelChoice::Deep => {
+                // Direct tier selection (bypass routing)
+                let tier = request.model().to_target_model().unwrap();
+                let decision =
+                    crate::router::RoutingDecision::new(tier, crate::router::RoutingStrategy::Rule);
 
-            tracing::info!(
-                request_id = %request_id,
-                model_name = %name,
-                target_tier = ?tier,
-                "Specific model selection (streaming)"
-            );
+                tracing::info!(
+                    request_id = %request_id,
+                    target_tier = ?tier,
+                    "Direct tier selection (streaming)"
+                );
 
-            (decision, Some(endpoint.name().to_string()))
-        }
+                decision
+            }
+            ModelChoice::Specific(_) => unreachable!("handled above"),
+        };
+
+        // Select endpoint from target tier
+        let failed_endpoints = crate::models::ExclusionSet::new();
+        state
+            .selector()
+            .select(decision.target(), &failed_endpoints)
+            .await
+            .ok_or_else(|| {
+                AppError::RoutingFailed(format!(
+                    "No available healthy endpoints for tier {:?}",
+                    decision.target()
+                ))
+            })?
+            .clone()
     };
-
-    // Select endpoint from target tier
-    let failed_endpoints = crate::models::ExclusionSet::new();
-    let endpoint = state
-        .selector()
-        .select(decision.target(), &failed_endpoints)
-        .await
-        .ok_or_else(|| {
-            AppError::RoutingFailed(format!(
-                "No available healthy endpoints for tier {:?}",
-                decision.target()
-            ))
-        })?
-        .clone();
 
     // Build AgentOptions
     let options = open_agent::AgentOptions::builder()
@@ -165,7 +167,7 @@ pub async fn handler(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-    let response_model = model_name.unwrap_or_else(|| endpoint.name().to_string());
+    let response_model = endpoint.name().to_string();
 
     tracing::info!(
         request_id = %request_id,
