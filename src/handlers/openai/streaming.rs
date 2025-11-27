@@ -36,7 +36,7 @@ use futures::stream::{self, StreamExt};
 use std::convert::Infallible;
 use std::time::Duration;
 
-use super::types::{ChatCompletionChunk, ChatCompletionRequest, ModelChoice};
+use super::types::{ChatCompletionChunk, ChatCompletionRequest, ModelChoice, current_timestamp};
 
 /// POST /v1/chat/completions handler for streaming requests
 ///
@@ -116,11 +116,13 @@ pub async fn handler(
             }
             ModelChoice::Fast | ModelChoice::Balanced | ModelChoice::Deep => {
                 // Direct tier selection (bypass routing)
-                // SAFETY: Match arm guarantees Fast/Balanced/Deep, which always convert to TargetModel
-                let tier = request
-                    .model()
-                    .to_target_model()
-                    .expect("BUG: Fast/Balanced/Deep must convert to TargetModel");
+                // Convert model choice to target tier - match arm guarantees this succeeds
+                let tier = match request.model() {
+                    ModelChoice::Fast => crate::router::TargetModel::Fast,
+                    ModelChoice::Balanced => crate::router::TargetModel::Balanced,
+                    ModelChoice::Deep => crate::router::TargetModel::Deep,
+                    _ => unreachable!("outer match arm guarantees Fast/Balanced/Deep"),
+                };
                 let decision =
                     crate::router::RoutingDecision::new(tier, crate::router::RoutingStrategy::Rule);
 
@@ -172,17 +174,7 @@ pub async fn handler(
 
     // Generate unique ID and timestamp for this completion
     let completion_id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
-    let created = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_else(|e| {
-            tracing::warn!(
-                request_id = %request_id,
-                error = %e,
-                "System clock appears to be before UNIX epoch - using 0 as timestamp"
-            );
-            0
-        });
+    let created = current_timestamp(Some(state.metrics().as_ref()), Some(&request_id));
     let response_model = endpoint.name().to_string();
 
     tracing::info!(
@@ -248,7 +240,7 @@ fn create_sse_stream(
                     "Failed to start streaming query"
                 );
 
-                // Mark endpoint as failed for health tracking (CRITICAL-3 fix)
+                // Mark endpoint as failed for health tracking
                 if let Err(health_err) = selector.health_checker().mark_failure(&endpoint_name).await
                 {
                     tracing::warn!(
@@ -270,14 +262,8 @@ fn create_sse_stream(
                 );
                 return stream::iter(vec![
                     Ok(Event::default().data(
-                        serde_json::to_string(&error_chunk).unwrap_or_else(|ser_err| {
-                            tracing::error!(
-                                request_id = %request_id,
-                                error = %ser_err,
-                                "Failed to serialize error chunk"
-                            );
-                            r#"{"error":"Internal serialization error"}"#.to_string()
-                        }),
+                        serde_json::to_string(&error_chunk)
+                            .expect("BUG: ChatCompletionChunk serialization must never fail"),
                     )),
                     Ok(Event::default().data("[DONE]")),
                 ])
@@ -288,20 +274,14 @@ fn create_sse_stream(
         // Create initial chunk with role announcement
         let initial = ChatCompletionChunk::initial(&completion_id, &model, created);
         let initial_event = Ok(Event::default().data(
-            serde_json::to_string(&initial).unwrap_or_else(|e| {
-                tracing::error!(
-                    request_id = %request_id,
-                    error = %e,
-                    "Failed to serialize initial chunk"
-                );
-                r#"{"error":"Internal serialization error"}"#.to_string()
-            }),
+            serde_json::to_string(&initial)
+                .expect("BUG: ChatCompletionChunk serialization must never fail"),
         ));
 
         // Save request_id for use after the stream closure
         let request_id_for_finish = request_id;
 
-        // Track if an error occurs during streaming (IMPORTANT-4 fix)
+        // Track if an error occurs during streaming
         // If error occurs, we skip the finish_reason: "stop" chunk since it's misleading
         //
         // NOTE ON THREAD SAFETY: There is NO race condition here despite streams being
@@ -340,14 +320,8 @@ fn create_sse_stream(
                                             &text_block.text,
                                         );
                                         Some(Ok(Event::default().data(
-                                            serde_json::to_string(&chunk).unwrap_or_else(|e| {
-                                                tracing::error!(
-                                                    request_id = %request_id,
-                                                    error = %e,
-                                                    "Failed to serialize content chunk"
-                                                );
-                                                r#"{"error":"Internal serialization error"}"#.to_string()
-                                            }),
+                                            serde_json::to_string(&chunk)
+                                                .expect("BUG: ChatCompletionChunk serialization must never fail"),
                                         )))
                                     }
                                     other_block => {
@@ -363,7 +337,7 @@ fn create_sse_stream(
                                 }
                             }
                             Err(e) => {
-                                // Mark that an error occurred (IMPORTANT-4 fix)
+                                // Mark that an error occurred so we skip the misleading finish chunk
                                 error_occurred.store(true, Ordering::SeqCst);
 
                                 // Propagate error to client instead of silent drop
@@ -382,14 +356,8 @@ fn create_sse_stream(
                                     "[Stream Error: Content may be incomplete. Please retry.]",
                                 );
                                 Some(Ok(Event::default().data(
-                                    serde_json::to_string(&error_chunk).unwrap_or_else(|e| {
-                                        tracing::error!(
-                                            request_id = %request_id,
-                                            error = %e,
-                                            "Failed to serialize error chunk"
-                                        );
-                                        r#"{"error":"Internal serialization error"}"#.to_string()
-                                    }),
+                                    serde_json::to_string(&error_chunk)
+                                        .expect("BUG: ChatCompletionChunk serialization must never fail"),
                                 )))
                             }
                         }
@@ -398,7 +366,7 @@ fn create_sse_stream(
             })
             .boxed();
 
-        // Create finish events - skip finish_reason: "stop" if error occurred (IMPORTANT-4 fix)
+        // Create finish events - skip finish_reason: "stop" if error occurred
         // Sending finish_reason: "stop" after an error is semantically incorrect
         let finish_chunk = ChatCompletionChunk::finish(&completion_id, &model, created);
         let finish_events = {
@@ -409,21 +377,15 @@ fn create_sse_stream(
                     // Error occurred - only send [DONE], skip misleading finish_reason: "stop"
                     tracing::debug!(
                         request_id = %request_id,
-                        "Skipping finish chunk due to stream error (IMPORTANT-4 fix)"
+                        "Skipping finish chunk due to stream error"
                     );
                     vec![Ok(Event::default().data("[DONE]"))]
                 } else {
                     // Normal completion - send finish chunk then [DONE]
                     vec![
                         Ok(Event::default().data(
-                            serde_json::to_string(&finish_chunk).unwrap_or_else(|e| {
-                                tracing::error!(
-                                    request_id = %request_id,
-                                    error = %e,
-                                    "Failed to serialize finish chunk"
-                                );
-                                r#"{"error":"Internal serialization error"}"#.to_string()
-                            }),
+                            serde_json::to_string(&finish_chunk)
+                                .expect("BUG: ChatCompletionChunk serialization must never fail"),
                         )),
                         Ok(Event::default().data("[DONE]")),
                     ]
@@ -432,7 +394,7 @@ fn create_sse_stream(
             .flat_map(stream::iter)
         };
 
-        // Mark endpoint as healthy when stream completes successfully (CRITICAL-3 fix)
+        // Mark endpoint as healthy when stream completes successfully
         // This runs after all events are sent, providing symmetric health tracking
         // with the non-streaming handler (completions.rs)
         // Only mark success if no error occurred during streaming

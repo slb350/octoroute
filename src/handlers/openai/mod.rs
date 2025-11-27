@@ -13,6 +13,9 @@ pub mod models;
 pub mod streaming;
 pub mod types;
 
+// Re-export the warning header constant for consumers
+pub use completions::X_OCTOROUTE_WARNING;
+
 /// Find an endpoint by name across all tiers
 ///
 /// Searches through fast, balanced, and deep tiers to find an endpoint

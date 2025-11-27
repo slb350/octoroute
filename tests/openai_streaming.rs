@@ -680,3 +680,209 @@ async fn test_streaming_success_tracking_with_mock_server() {
         final_status.consecutive_failures()
     );
 }
+
+// -------------------------------------------------------------------------
+// Property Tests: ChatCompletionChunk Serialization (CRITICAL-1 fix)
+// -------------------------------------------------------------------------
+//
+// These tests prove that ChatCompletionChunk serialization NEVER fails for any
+// valid input. This justifies replacing `unwrap_or_else` fallbacks with `expect()`
+// since serialization failure indicates a systemic bug, not a recoverable error.
+
+mod proptest_serialization {
+    use octoroute::handlers::openai::types::ChatCompletionChunk;
+    use proptest::prelude::*;
+
+    // Strategy for generating valid chunk IDs (non-empty strings)
+    fn chunk_id_strategy() -> impl Strategy<Value = String> {
+        prop::string::string_regex("[a-zA-Z0-9_-]{1,64}")
+            .unwrap()
+            .prop_filter("ID must not be empty", |s| !s.is_empty())
+    }
+
+    // Strategy for generating valid model names
+    fn model_name_strategy() -> impl Strategy<Value = String> {
+        prop::string::string_regex("[a-zA-Z0-9._-]{1,64}")
+            .unwrap()
+            .prop_filter("Model must not be empty", |s| !s.is_empty())
+    }
+
+    // Strategy for generating content (any valid UTF-8)
+    fn content_strategy() -> impl Strategy<Value = String> {
+        prop::string::string_regex(".*")
+            .unwrap()
+            .prop_map(|s| s.chars().take(10_000).collect()) // Limit length for test speed
+    }
+
+    // Strategy for timestamps
+    fn timestamp_strategy() -> impl Strategy<Value = i64> {
+        prop::num::i64::ANY
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1000))]
+
+        /// Property: ChatCompletionChunk::initial always serializes successfully
+        #[test]
+        fn prop_initial_chunk_always_serializes(
+            id in chunk_id_strategy(),
+            model in model_name_strategy(),
+            created in timestamp_strategy()
+        ) {
+            let chunk = ChatCompletionChunk::initial(&id, &model, created);
+            let result = serde_json::to_string(&chunk);
+
+            prop_assert!(
+                result.is_ok(),
+                "Initial chunk serialization failed for id={}, model={}, created={}: {:?}",
+                id, model, created, result.err()
+            );
+
+            // Also verify the JSON is valid by parsing it back
+            let json = result.unwrap();
+            let parsed: Result<serde_json::Value, _> = serde_json::from_str(&json);
+            prop_assert!(
+                parsed.is_ok(),
+                "Serialized JSON is not valid: {}",
+                json
+            );
+        }
+
+        /// Property: ChatCompletionChunk::content always serializes successfully
+        #[test]
+        fn prop_content_chunk_always_serializes(
+            id in chunk_id_strategy(),
+            model in model_name_strategy(),
+            created in timestamp_strategy(),
+            content in content_strategy()
+        ) {
+            let chunk = ChatCompletionChunk::content(&id, &model, created, &content);
+            let result = serde_json::to_string(&chunk);
+
+            prop_assert!(
+                result.is_ok(),
+                "Content chunk serialization failed for content_len={}: {:?}",
+                content.len(), result.err()
+            );
+
+            let json = result.unwrap();
+            let parsed: Result<serde_json::Value, _> = serde_json::from_str(&json);
+            prop_assert!(
+                parsed.is_ok(),
+                "Serialized JSON is not valid: {}",
+                json
+            );
+        }
+
+        /// Property: ChatCompletionChunk::finish always serializes successfully
+        #[test]
+        fn prop_finish_chunk_always_serializes(
+            id in chunk_id_strategy(),
+            model in model_name_strategy(),
+            created in timestamp_strategy()
+        ) {
+            let chunk = ChatCompletionChunk::finish(&id, &model, created);
+            let result = serde_json::to_string(&chunk);
+
+            prop_assert!(
+                result.is_ok(),
+                "Finish chunk serialization failed for id={}, model={}, created={}: {:?}",
+                id, model, created, result.err()
+            );
+
+            let json = result.unwrap();
+            let parsed: Result<serde_json::Value, _> = serde_json::from_str(&json);
+            prop_assert!(
+                parsed.is_ok(),
+                "Serialized JSON is not valid: {}",
+                json
+            );
+        }
+    }
+
+    // Edge case tests with specific challenging inputs
+    #[test]
+    fn test_chunk_serializes_with_empty_content() {
+        let chunk = ChatCompletionChunk::content("id", "model", 0, "");
+        assert!(
+            serde_json::to_string(&chunk).is_ok(),
+            "Empty content should serialize"
+        );
+    }
+
+    #[test]
+    fn test_chunk_serializes_with_unicode() {
+        let chunk =
+            ChatCompletionChunk::content("id", "model", 0, "Hello 世界 🌍 مرحبا Привет 日本語");
+        assert!(
+            serde_json::to_string(&chunk).is_ok(),
+            "Unicode content should serialize"
+        );
+    }
+
+    #[test]
+    fn test_chunk_serializes_with_special_json_chars() {
+        let chunk = ChatCompletionChunk::content(
+            "id",
+            "model",
+            0,
+            r#"Content with "quotes", \backslashes\, and newlines
+            and tabs	here"#,
+        );
+        let result = serde_json::to_string(&chunk);
+        assert!(result.is_ok(), "Special chars should serialize");
+
+        // Verify the JSON is valid
+        let json = result.unwrap();
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&json);
+        assert!(parsed.is_ok(), "JSON with escaped chars should be valid");
+    }
+
+    #[test]
+    fn test_chunk_serializes_with_extreme_timestamps() {
+        // Min i64
+        let chunk = ChatCompletionChunk::initial("id", "model", i64::MIN);
+        assert!(
+            serde_json::to_string(&chunk).is_ok(),
+            "Min i64 timestamp should serialize"
+        );
+
+        // Max i64
+        let chunk = ChatCompletionChunk::initial("id", "model", i64::MAX);
+        assert!(
+            serde_json::to_string(&chunk).is_ok(),
+            "Max i64 timestamp should serialize"
+        );
+
+        // Zero
+        let chunk = ChatCompletionChunk::initial("id", "model", 0);
+        assert!(
+            serde_json::to_string(&chunk).is_ok(),
+            "Zero timestamp should serialize"
+        );
+    }
+
+    #[test]
+    fn test_chunk_serializes_with_long_content() {
+        // 100KB of content
+        let long_content: String = "x".repeat(100_000);
+        let chunk = ChatCompletionChunk::content("id", "model", 0, &long_content);
+        assert!(
+            serde_json::to_string(&chunk).is_ok(),
+            "Long content (100KB) should serialize"
+        );
+    }
+
+    #[test]
+    fn test_chunk_serializes_with_null_bytes() {
+        // Null bytes in content (valid UTF-8 but could cause issues)
+        let chunk = ChatCompletionChunk::content("id", "model", 0, "before\0after");
+        let result = serde_json::to_string(&chunk);
+        assert!(result.is_ok(), "Null bytes should serialize");
+
+        // Verify JSON is valid
+        let json = result.unwrap();
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&json);
+        assert!(parsed.is_ok(), "JSON with null byte should be valid");
+    }
+}

@@ -16,7 +16,8 @@
 //! ```
 
 use prometheus::{
-    CounterVec, Encoder, HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry, TextEncoder,
+    CounterVec, Encoder, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, Opts, Registry,
+    TextEncoder,
 };
 use std::sync::Arc;
 
@@ -103,6 +104,7 @@ pub struct Metrics {
     health_tracking_failures: IntCounterVec,
     metrics_recording_failures: IntCounterVec,
     background_task_failures: IntCounterVec,
+    clock_errors: IntCounter,
 }
 
 impl Metrics {
@@ -212,6 +214,23 @@ impl Metrics {
             &["failure_type"],
         )?;
 
+        // Counter: System clock errors
+        //
+        // Tracks when the system clock appears to be before UNIX epoch (1970-01-01).
+        // This indicates a serious system misconfiguration that can affect:
+        // - Response timestamps (created field in ChatCompletion)
+        // - Logging timestamps
+        // - Any time-based operations
+        //
+        // Cardinality: 1 time series (no labels - this is a global system issue)
+        //
+        // Alerting: Alert on ANY increment - indicates hardware/configuration issue
+        let clock_errors = IntCounter::with_opts(Opts::new(
+            "octoroute_clock_errors_total",
+            "Total number of system clock errors detected (clock before UNIX epoch). \
+            Alert on ANY increment - indicates serious system misconfiguration.",
+        ))?;
+
         // Register all metrics
         registry.register(Box::new(requests_total.clone()))?;
         registry.register(Box::new(routing_duration.clone()))?;
@@ -219,6 +238,7 @@ impl Metrics {
         registry.register(Box::new(health_tracking_failures.clone()))?;
         registry.register(Box::new(metrics_recording_failures.clone()))?;
         registry.register(Box::new(background_task_failures.clone()))?;
+        registry.register(Box::new(clock_errors.clone()))?;
 
         Ok(Self {
             registry: Arc::new(registry),
@@ -228,6 +248,7 @@ impl Metrics {
             health_tracking_failures,
             metrics_recording_failures,
             background_task_failures,
+            clock_errors,
         })
     }
 
@@ -522,6 +543,41 @@ impl Metrics {
             .unwrap_or(0)
     }
 
+    /// Record a system clock error
+    ///
+    /// Increments the counter when the system clock appears to be before UNIX epoch.
+    /// This indicates a serious system misconfiguration (hardware/NTP issues).
+    ///
+    /// ## When to Call
+    ///
+    /// Call this method whenever `SystemTime::now().duration_since(UNIX_EPOCH)` fails,
+    /// which happens when the system clock is set before January 1, 1970.
+    ///
+    /// ## Impact
+    ///
+    /// When the clock is misconfigured:
+    /// - Response timestamps default to 0 (epoch)
+    /// - Downstream systems may malfunction (sorting, caching, validation)
+    /// - Logging timestamps may be incorrect
+    ///
+    /// ## Alerting
+    ///
+    /// Alert on ANY increment of this metric. Clock misconfiguration indicates:
+    /// - Hardware RTC battery failure
+    /// - NTP misconfiguration or unavailability
+    /// - VM/container time sync issues
+    pub fn clock_error(&self) {
+        self.clock_errors.inc();
+    }
+
+    /// Get the current count of clock errors
+    ///
+    /// Returns the total number of clock errors detected since startup.
+    /// Used by the /health endpoint to report system time status.
+    pub fn clock_errors_count(&self) -> u64 {
+        self.clock_errors.get()
+    }
+
     /// Gather all metrics and encode them in Prometheus text format
     ///
     /// # Returns
@@ -603,8 +659,9 @@ mod tests {
         metrics.metrics_recording_failure("record_request"); // Increment metrics recording failures with test label
 
         let metric_families = metrics.registry.gather();
-        // Should have 5 metric families: requests_total, routing_duration, model_invocations, health_tracking_failures, metrics_recording_failures
-        assert_eq!(metric_families.len(), 5, "Expected 5 metric families");
+        // Should have 6 metric families: requests_total, routing_duration, model_invocations,
+        // health_tracking_failures, metrics_recording_failures, clock_errors
+        assert_eq!(metric_families.len(), 6, "Expected 6 metric families");
 
         // Verify metric names
         let names: Vec<String> = metric_families
@@ -616,6 +673,7 @@ mod tests {
         assert!(names.contains(&"octoroute_model_invocations_total".to_string()));
         assert!(names.contains(&"octoroute_health_tracking_failures_total".to_string()));
         assert!(names.contains(&"octoroute_metrics_recording_failures_total".to_string()));
+        assert!(names.contains(&"octoroute_clock_errors_total".to_string()));
     }
 
     #[test]

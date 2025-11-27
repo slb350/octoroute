@@ -12,6 +12,19 @@ const MAX_TOTAL_CONTENT_LENGTH: usize = 500_000;
 const MAX_MESSAGES: usize = 100;
 
 // =============================================================================
+// OpenAI API Object Type Constants
+// =============================================================================
+
+/// Object type for non-streaming chat completion responses
+pub const OBJECT_CHAT_COMPLETION: &str = "chat.completion";
+/// Object type for streaming chat completion chunks
+pub const OBJECT_CHAT_COMPLETION_CHUNK: &str = "chat.completion.chunk";
+/// Object type for list responses (e.g., model list)
+pub const OBJECT_LIST: &str = "list";
+/// Object type for individual model entries
+pub const OBJECT_MODEL: &str = "model";
+
+// =============================================================================
 // Shared Validation Logic
 // =============================================================================
 
@@ -663,24 +676,57 @@ pub enum FinishReason {
     ContentFilter,
 }
 
-/// Usage statistics
+/// Usage statistics for a chat completion response.
+///
+/// Fields are private to enforce the invariant that `total_tokens` always
+/// equals `prompt_tokens + completion_tokens`. Use `new()` or `estimate()`
+/// constructors, which guarantee this invariant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Usage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
 }
 
 impl Usage {
-    /// Create usage stats (estimates tokens from char count)
-    pub fn estimate(prompt_chars: usize, completion_chars: usize) -> Self {
-        let prompt_tokens = (prompt_chars / 4) as u32;
-        let completion_tokens = (completion_chars / 4) as u32;
+    /// Create usage stats from token counts.
+    ///
+    /// Automatically calculates `total_tokens` as `prompt_tokens + completion_tokens`.
+    #[inline]
+    pub fn new(prompt_tokens: u32, completion_tokens: u32) -> Self {
         Self {
             prompt_tokens,
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
         }
+    }
+
+    /// Create usage stats by estimating tokens from character count.
+    ///
+    /// Uses a ~4 chars/token heuristic which is typical for English text.
+    /// May under/overestimate for non-English, code, or whitespace-heavy content.
+    pub fn estimate(prompt_chars: usize, completion_chars: usize) -> Self {
+        let prompt_tokens = (prompt_chars / 4) as u32;
+        let completion_tokens = (completion_chars / 4) as u32;
+        Self::new(prompt_tokens, completion_tokens)
+    }
+
+    /// Returns the number of tokens in the prompt.
+    #[inline]
+    pub fn prompt_tokens(&self) -> u32 {
+        self.prompt_tokens
+    }
+
+    /// Returns the number of tokens in the completion.
+    #[inline]
+    pub fn completion_tokens(&self) -> u32 {
+        self.completion_tokens
+    }
+
+    /// Returns the total number of tokens (prompt + completion).
+    #[inline]
+    pub fn total_tokens(&self) -> u32 {
+        self.total_tokens
     }
 }
 
@@ -721,23 +767,19 @@ pub struct ChatCompletion {
 
 impl ChatCompletion {
     /// Create a new chat completion response
-    pub fn new(content: String, model_name: String, prompt_chars: usize) -> Self {
+    ///
+    /// # Arguments
+    /// * `content` - The assistant's response content
+    /// * `model_name` - Name of the model that generated the response
+    /// * `prompt_chars` - Number of characters in the prompt (for usage estimation)
+    /// * `created` - Unix timestamp when the completion was created (use `current_timestamp()` helper)
+    pub fn new(content: String, model_name: String, prompt_chars: usize, created: i64) -> Self {
         let completion_chars = content.chars().count();
         let id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
-        let created = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or_else(|e| {
-                tracing::warn!(
-                    error = %e,
-                    "System clock appears to be before UNIX epoch - using 0 as timestamp"
-                );
-                0
-            });
 
         Self {
             id,
-            object: "chat.completion".to_string(),
+            object: OBJECT_CHAT_COMPLETION.to_string(),
             created,
             model: model_name,
             choices: vec![Choice {
@@ -748,6 +790,45 @@ impl ChatCompletion {
             usage: Usage::estimate(prompt_chars, completion_chars),
         }
     }
+}
+
+/// Get the current Unix timestamp for response creation.
+///
+/// Returns the current time as seconds since UNIX epoch. If the system clock
+/// is misconfigured (before UNIX epoch), returns 0 and logs a warning.
+///
+/// # Arguments
+/// * `metrics` - Optional metrics to track clock errors for observability
+/// * `request_id` - Optional request ID for log correlation
+///
+/// # Note
+/// Clock errors are rare but indicate serious system misconfiguration.
+/// The metric `octoroute_clock_errors_total` should trigger alerts.
+pub fn current_timestamp(
+    metrics: Option<&crate::metrics::Metrics>,
+    request_id: Option<&crate::middleware::RequestId>,
+) -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_else(|e| {
+            if let Some(rid) = request_id {
+                tracing::warn!(
+                    request_id = %rid,
+                    error = %e,
+                    "System clock appears to be before UNIX epoch - using 0 as timestamp"
+                );
+            } else {
+                tracing::warn!(
+                    error = %e,
+                    "System clock appears to be before UNIX epoch - using 0 as timestamp"
+                );
+            }
+            if let Some(m) = metrics {
+                m.clock_error();
+            }
+            0
+        })
 }
 
 // =============================================================================
@@ -787,7 +868,7 @@ impl ChatCompletionChunk {
     pub fn initial(id: &str, model: &str, created: i64) -> Self {
         Self {
             id: id.to_string(),
-            object: "chat.completion.chunk".to_string(),
+            object: OBJECT_CHAT_COMPLETION_CHUNK.to_string(),
             created,
             model: model.to_string(),
             choices: vec![ChunkChoice {
@@ -805,7 +886,7 @@ impl ChatCompletionChunk {
     pub fn content(id: &str, model: &str, created: i64, content: &str) -> Self {
         Self {
             id: id.to_string(),
-            object: "chat.completion.chunk".to_string(),
+            object: OBJECT_CHAT_COMPLETION_CHUNK.to_string(),
             created,
             model: model.to_string(),
             choices: vec![ChunkChoice {
@@ -823,7 +904,7 @@ impl ChatCompletionChunk {
     pub fn finish(id: &str, model: &str, created: i64) -> Self {
         Self {
             id: id.to_string(),
-            object: "chat.completion.chunk".to_string(),
+            object: OBJECT_CHAT_COMPLETION_CHUNK.to_string(),
             created,
             model: model.to_string(),
             choices: vec![ChunkChoice {
@@ -853,7 +934,7 @@ impl ModelObject {
     pub fn new(id: impl Into<String>, owned_by: impl Into<String>) -> Self {
         Self {
             id: id.into(),
-            object: "model".to_string(),
+            object: OBJECT_MODEL.to_string(),
             created: 0, // OpenAI uses 0 for many models
             owned_by: owned_by.into(),
         }
@@ -871,7 +952,7 @@ impl ModelsListResponse {
     /// Create a models list response
     pub fn new(models: Vec<ModelObject>) -> Self {
         Self {
-            object: "list".to_string(),
+            object: OBJECT_LIST.to_string(),
             data: models,
         }
     }
@@ -1284,15 +1365,18 @@ mod tests {
 
     #[test]
     fn test_chat_completion_new() {
+        let created = 1700000000; // Fixed timestamp for test reproducibility
         let response = ChatCompletion::new(
             "Hello! How can I help?".to_string(),
             "fast-1".to_string(),
             10,
+            created,
         );
 
         assert!(response.id.starts_with("chatcmpl-"));
-        assert_eq!(response.object, "chat.completion");
+        assert_eq!(response.object, OBJECT_CHAT_COMPLETION);
         assert_eq!(response.model, "fast-1");
+        assert_eq!(response.created, created);
         assert_eq!(response.choices.len(), 1);
         assert_eq!(
             response.choices[0].message.content,
@@ -1303,12 +1387,77 @@ mod tests {
 
     #[test]
     fn test_chat_completion_serializes_correctly() {
-        let response = ChatCompletion::new("Test".to_string(), "model".to_string(), 4);
+        let created = 1700000000;
+        let response = ChatCompletion::new("Test".to_string(), "model".to_string(), 4, created);
         let json = serde_json::to_string(&response).unwrap();
 
         assert!(json.contains("\"object\":\"chat.completion\""));
         assert!(json.contains("\"finish_reason\":\"stop\""));
         assert!(json.contains("\"role\":\"assistant\""));
+    }
+
+    // -------------------------------------------------------------------------
+    // Usage Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_usage_new_calculates_total() {
+        let usage = Usage::new(100, 50);
+        assert_eq!(usage.prompt_tokens(), 100);
+        assert_eq!(usage.completion_tokens(), 50);
+        assert_eq!(usage.total_tokens(), 150);
+    }
+
+    #[test]
+    fn test_usage_total_always_equals_sum() {
+        // Property: total_tokens always equals prompt_tokens + completion_tokens
+        let test_cases = [
+            (0, 0),
+            (1, 0),
+            (0, 1),
+            (100, 200),
+            (u32::MAX / 2, u32::MAX / 2), // Near overflow but not exceeding
+        ];
+
+        for (prompt, completion) in test_cases {
+            let usage = Usage::new(prompt, completion);
+            assert_eq!(
+                usage.total_tokens(),
+                prompt + completion,
+                "total_tokens should equal prompt + completion for ({}, {})",
+                prompt,
+                completion
+            );
+        }
+    }
+
+    #[test]
+    fn test_usage_estimate_calculates_from_chars() {
+        // ~4 chars per token heuristic
+        let usage = Usage::estimate(400, 200);
+        assert_eq!(usage.prompt_tokens(), 100); // 400 / 4
+        assert_eq!(usage.completion_tokens(), 50); // 200 / 4
+        assert_eq!(usage.total_tokens(), 150);
+    }
+
+    #[test]
+    fn test_usage_serializes_correctly() {
+        let usage = Usage::new(10, 20);
+        let json = serde_json::to_string(&usage).unwrap();
+
+        assert!(json.contains("\"prompt_tokens\":10"));
+        assert!(json.contains("\"completion_tokens\":20"));
+        assert!(json.contains("\"total_tokens\":30"));
+    }
+
+    #[test]
+    fn test_usage_deserializes_correctly() {
+        let json = r#"{"prompt_tokens":15,"completion_tokens":25,"total_tokens":40}"#;
+        let usage: Usage = serde_json::from_str(json).unwrap();
+
+        assert_eq!(usage.prompt_tokens(), 15);
+        assert_eq!(usage.completion_tokens(), 25);
+        assert_eq!(usage.total_tokens(), 40);
     }
 
     // -------------------------------------------------------------------------
@@ -1318,7 +1467,7 @@ mod tests {
     #[test]
     fn test_chunk_initial() {
         let chunk = ChatCompletionChunk::initial("test-id", "model", 12345);
-        assert_eq!(chunk.object, "chat.completion.chunk");
+        assert_eq!(chunk.object, OBJECT_CHAT_COMPLETION_CHUNK);
         assert_eq!(chunk.choices[0].delta.role, Some("assistant".to_string()));
         assert!(chunk.choices[0].delta.content.is_none());
         assert!(chunk.choices[0].finish_reason.is_none());
@@ -1352,10 +1501,10 @@ mod tests {
         ];
         let response = ModelsListResponse::new(models);
 
-        assert_eq!(response.object, "list");
+        assert_eq!(response.object, OBJECT_LIST);
         assert_eq!(response.data.len(), 2);
         assert_eq!(response.data[0].id, "auto");
-        assert_eq!(response.data[0].object, "model");
+        assert_eq!(response.data[0].object, OBJECT_MODEL);
     }
 
     #[test]

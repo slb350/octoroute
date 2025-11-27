@@ -478,6 +478,7 @@ pub async fn execute_query_with_retry(
     );
 
     Err(last_error.unwrap_or_else(|| {
+        // Log full details for operators (including endpoint names)
         tracing::error!(
             request_id = %request_id,
             tier = ?decision.target(),
@@ -486,15 +487,14 @@ pub async fn execute_query_with_retry(
             "BUG: Retry loop exhausted but last_error is None"
         );
 
+        // Return sanitized error to client (no internal endpoint names)
+        // Operators can correlate via request_id in logs
         AppError::Internal(format!(
-            "Request failed after {} retry attempts. All endpoints for tier {:?} \
-            were exhausted. Failed endpoints: {:?}.",
+            "Request failed after {} retry attempts. All {} endpoints for the {:?} tier \
+            were exhausted. Please try again later or contact support with request ID.",
             config.max_retries(),
-            decision.target(),
-            failed_endpoints
-                .iter()
-                .map(|ep| ep.as_str())
-                .collect::<Vec<_>>()
+            failed_endpoints.len(),
+            decision.target()
         ))
     }))
 }

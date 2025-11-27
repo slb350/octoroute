@@ -11,11 +11,60 @@ use crate::shared::query::{
 use axum::{
     Extension, Json,
     extract::State,
+    http::{HeaderName, HeaderValue},
     response::{IntoResponse, Response},
 };
 
 use super::find_endpoint_by_name;
-use super::types::{ChatCompletion, ChatCompletionRequest, ModelChoice};
+use super::types::{ChatCompletion, ChatCompletionRequest, ModelChoice, current_timestamp};
+
+/// Custom header for surfacing non-fatal warnings to OpenAI API clients.
+///
+/// This header is added when the request succeeded but there were issues
+/// that operators and clients should be aware of (e.g., health tracking failures).
+///
+/// The header value is a comma-separated list of warning codes/messages.
+pub const X_OCTOROUTE_WARNING: &str = "x-octoroute-warning";
+
+/// Build a JSON response with optional warning header.
+///
+/// If warnings are present, adds an `X-Octoroute-Warning` header with a
+/// semicolon-separated list of warning messages (truncated to 500 chars).
+fn build_response_with_warnings<T: serde::Serialize>(body: T, warnings: &[String]) -> Response {
+    let json_response = Json(body).into_response();
+
+    if warnings.is_empty() {
+        return json_response;
+    }
+
+    // Combine warnings into a single header value
+    // Use semicolon as separator since commas might appear in messages
+    let warning_value = warnings.join("; ");
+
+    // Truncate to reasonable header length (500 chars)
+    let warning_value = if warning_value.len() > 500 {
+        format!("{}...", &warning_value[..497])
+    } else {
+        warning_value
+    };
+
+    // Add the warning header to the response
+    let (mut parts, body) = json_response.into_parts();
+    if let Ok(header_value) = HeaderValue::from_str(&warning_value) {
+        parts
+            .headers
+            .insert(HeaderName::from_static(X_OCTOROUTE_WARNING), header_value);
+    } else {
+        // If the warning contains invalid header characters, use a generic message
+        // Note: from_static only accepts compile-time constants, which are always valid
+        parts.headers.insert(
+            HeaderName::from_static(X_OCTOROUTE_WARNING),
+            HeaderValue::from_static("health-tracking-degraded"),
+        );
+    }
+
+    Response::from_parts(parts, body)
+}
 
 /// POST /v1/chat/completions handler
 ///
@@ -87,7 +136,8 @@ pub async fn handler(
         let timeout_seconds = state.config().timeout_for_tier(tier);
         let content = query_model(&endpoint, &prompt, timeout_seconds, request_id, 1, 1).await?;
 
-        // Mark endpoint as healthy on success
+        // Mark endpoint as healthy on success, collect warnings
+        let mut warnings: Vec<String> = Vec::new();
         if let Err(e) = state
             .selector()
             .health_checker()
@@ -104,18 +154,26 @@ pub async fn handler(
             state
                 .metrics()
                 .health_tracking_failure(endpoint.name(), e.error_type());
+            // Surface to client via warning header
+            warnings.push(format!(
+                "Health tracking failed: {} (endpoint health state may be stale)",
+                e
+            ));
         }
 
-        let response = ChatCompletion::new(content, endpoint.name().to_string(), prompt_chars);
+        let created = current_timestamp(Some(state.metrics().as_ref()), Some(&request_id));
+        let response =
+            ChatCompletion::new(content, endpoint.name().to_string(), prompt_chars, created);
 
         tracing::info!(
             request_id = %request_id,
             model = %response.model,
             response_length = response.choices[0].message.content.len(),
+            warnings_count = warnings.len(),
             "Chat completion successful (specific model)"
         );
 
-        return Ok(Json(response).into_response());
+        return Ok(build_response_with_warnings(response, &warnings));
     }
 
     // For tier-based routing (auto, fast, balanced, deep)
@@ -143,11 +201,13 @@ pub async fn handler(
         }
         ModelChoice::Fast | ModelChoice::Balanced | ModelChoice::Deep => {
             // Direct tier selection (bypass routing)
-            // SAFETY: Match arm guarantees Fast/Balanced/Deep, which always convert to TargetModel
-            let tier = request
-                .model()
-                .to_target_model()
-                .expect("BUG: Fast/Balanced/Deep must convert to TargetModel");
+            // Convert model choice to target tier - match arm guarantees this succeeds
+            let tier = match request.model() {
+                ModelChoice::Fast => crate::router::TargetModel::Fast,
+                ModelChoice::Balanced => crate::router::TargetModel::Balanced,
+                ModelChoice::Deep => crate::router::TargetModel::Deep,
+                _ => unreachable!("outer match arm guarantees Fast/Balanced/Deep"),
+            };
             let decision =
                 crate::router::RoutingDecision::new(tier, crate::router::RoutingStrategy::Rule);
 
@@ -170,14 +230,17 @@ pub async fn handler(
     let response_model = result.endpoint.name().to_string();
 
     // Build OpenAI-compatible response
-    let response = ChatCompletion::new(result.content, response_model, prompt_chars);
+    let created = current_timestamp(Some(state.metrics().as_ref()), Some(&request_id));
+    let response = ChatCompletion::new(result.content, response_model, prompt_chars, created);
 
     tracing::info!(
         request_id = %request_id,
         model = %response.model,
         response_length = response.choices[0].message.content.len(),
+        warnings_count = result.warnings.len(),
         "Chat completion successful"
     );
 
-    Ok(Json(response).into_response())
+    // Return response with warning header if there were non-fatal issues
+    Ok(build_response_with_warnings(response, &result.warnings))
 }
