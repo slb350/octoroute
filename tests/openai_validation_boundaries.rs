@@ -515,3 +515,249 @@ async fn test_all_parameters_at_boundaries() {
         response.status()
     );
 }
+
+// -------------------------------------------------------------------------
+// Message Count Boundary Tests (MAX_MESSAGES = 100)
+// -------------------------------------------------------------------------
+
+/// Helper to create a request body with N messages
+fn create_request_with_n_messages(n: usize) -> String {
+    let messages: Vec<String> = (0..n)
+        .map(|i| format!(r#"{{"role": "user", "content": "Message {}"}}"#, i))
+        .collect();
+
+    format!(
+        r#"{{"model": "fast", "messages": [{}]}}"#,
+        messages.join(",")
+    )
+}
+
+#[tokio::test]
+async fn test_messages_count_valid_at_boundary() {
+    // MAX_MESSAGES = 100, so 100 messages should be accepted
+    let app = create_test_app();
+
+    let body = create_request_with_n_messages(100);
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    // 100 messages should be accepted (may fail later due to routing, but not validation)
+    assert!(
+        !matches!(
+            response.status(),
+            StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+        ),
+        "100 messages (boundary) should be accepted. Got: {}",
+        response.status()
+    );
+}
+
+#[tokio::test]
+async fn test_messages_count_invalid_above_boundary() {
+    // MAX_MESSAGES = 100, so 101 messages should be rejected
+    let app = create_test_app();
+
+    let body = create_request_with_n_messages(101);
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "101 messages (above boundary) should return 422"
+    );
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8_lossy(&body_bytes);
+
+    assert!(
+        body_str.contains("100") || body_str.to_lowercase().contains("exceed"),
+        "Error should mention the limit. Got: {}",
+        body_str
+    );
+}
+
+#[tokio::test]
+async fn test_messages_count_valid_single_message() {
+    // 1 message should always be valid
+    let app = create_test_app();
+
+    let body = create_request_with_n_messages(1);
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert!(
+        !matches!(
+            response.status(),
+            StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+        ),
+        "Single message should be accepted. Got: {}",
+        response.status()
+    );
+}
+
+// -------------------------------------------------------------------------
+// Total Content Length Boundary Tests (MAX_TOTAL_CONTENT_LENGTH = 500,000)
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_content_length_valid_at_boundary() {
+    // MAX_TOTAL_CONTENT_LENGTH = 500,000 characters
+    // Create a message with exactly 500,000 characters
+    let app = create_test_app();
+
+    let content = "x".repeat(500_000);
+    let body = format!(
+        r#"{{"model": "fast", "messages": [{{"role": "user", "content": "{}"}}]}}"#,
+        content
+    );
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    // 500K chars should be accepted (may fail later due to routing, but not validation)
+    assert!(
+        !matches!(
+            response.status(),
+            StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+        ),
+        "500,000 chars (boundary) should be accepted. Got: {}",
+        response.status()
+    );
+}
+
+#[tokio::test]
+async fn test_content_length_invalid_above_boundary() {
+    // MAX_TOTAL_CONTENT_LENGTH = 500,000 characters
+    // Create a message with 500,001 characters (just over the limit)
+    let app = create_test_app();
+
+    let content = "x".repeat(500_001);
+    let body = format!(
+        r#"{{"model": "fast", "messages": [{{"role": "user", "content": "{}"}}]}}"#,
+        content
+    );
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "500,001 chars (above boundary) should return 422"
+    );
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8_lossy(&body_bytes);
+
+    assert!(
+        body_str.contains("500") || body_str.to_lowercase().contains("content length"),
+        "Error should mention the content length limit. Got: {}",
+        body_str
+    );
+}
+
+#[tokio::test]
+async fn test_content_length_valid_across_multiple_messages() {
+    // Test that content length is calculated across ALL messages
+    // 5 messages with 100,000 chars each = 500,000 total (at boundary)
+    let app = create_test_app();
+
+    let content = "x".repeat(100_000);
+    let messages: Vec<String> = (0..5)
+        .map(|_| format!(r#"{{"role": "user", "content": "{}"}}"#, content))
+        .collect();
+
+    let body = format!(
+        r#"{{"model": "fast", "messages": [{}]}}"#,
+        messages.join(",")
+    );
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    // 500K total chars across messages should be accepted
+    assert!(
+        !matches!(
+            response.status(),
+            StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+        ),
+        "500K chars across 5 messages should be accepted. Got: {}",
+        response.status()
+    );
+}
+
+#[tokio::test]
+async fn test_content_length_invalid_across_multiple_messages() {
+    // Test that content length validation catches total across ALL messages
+    // 5 messages with 100,001 chars each = 500,005 total (over boundary)
+    let app = create_test_app();
+
+    let content = "x".repeat(100_001);
+    let messages: Vec<String> = (0..5)
+        .map(|_| format!(r#"{{"role": "user", "content": "{}"}}"#, content))
+        .collect();
+
+    let body = format!(
+        r#"{{"model": "fast", "messages": [{}]}}"#,
+        messages.join(",")
+    );
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "500,005 chars across 5 messages should return 422"
+    );
+}
