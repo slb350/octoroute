@@ -228,9 +228,23 @@ impl ModelChoice {
     }
 
     /// Get the specific model name if this is a Specific variant
+    ///
+    /// # Debug Assertions
+    ///
+    /// In debug builds, this will panic if the Specific variant contains an empty
+    /// or whitespace-only name. This catches bugs where `ModelChoice::Specific`
+    /// was constructed directly instead of using [`ModelChoice::try_specific`].
     pub fn specific_name(&self) -> Option<&str> {
         match self {
-            ModelChoice::Specific(name) => Some(name),
+            ModelChoice::Specific(name) => {
+                debug_assert!(
+                    !name.trim().is_empty(),
+                    "BUG: ModelChoice::Specific constructed with empty/whitespace name '{}'. \
+                    Use ModelChoice::try_specific() for validated construction.",
+                    name
+                );
+                Some(name)
+            }
             _ => None,
         }
     }
@@ -1214,6 +1228,26 @@ mod tests {
         assert!(result.is_ok());
         let model = result.unwrap();
         assert_eq!(model.specific_name(), Some("qwen3-8b"));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "BUG: ModelChoice::Specific constructed with empty")]
+    fn test_model_choice_specific_name_debug_assertion_catches_empty() {
+        // In debug builds, accessing specific_name on an invalidly-constructed
+        // Specific variant should panic. This catches bugs where code bypasses
+        // try_specific() and constructs Specific directly with invalid data.
+        let invalid = ModelChoice::Specific("".to_string());
+        let _ = invalid.specific_name(); // Should panic in debug
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "BUG: ModelChoice::Specific constructed with empty")]
+    fn test_model_choice_specific_name_debug_assertion_catches_whitespace() {
+        // Whitespace-only names should also trigger the debug assertion
+        let invalid = ModelChoice::Specific("   ".to_string());
+        let _ = invalid.specific_name(); // Should panic in debug
     }
 
     // -------------------------------------------------------------------------
