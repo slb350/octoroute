@@ -24,11 +24,11 @@ pub enum ModelChoice {
     /// Auto-route based on request analysis (default)
     #[default]
     Auto,
-    /// Route to Fast tier (8B models)
+    /// Route to Fast tier (smaller, faster models)
     Fast,
-    /// Route to Balanced tier (30B models)
+    /// Route to Balanced tier (medium-capability models)
     Balanced,
-    /// Route to Deep tier (120B models)
+    /// Route to Deep tier (largest, highest-capability models)
     Deep,
     /// Pass-through: specific model name (bypasses routing)
     Specific(String),
@@ -45,7 +45,13 @@ impl<'de> Deserialize<'de> for ModelChoice {
             "fast" => ModelChoice::Fast,
             "balanced" => ModelChoice::Balanced,
             "deep" => ModelChoice::Deep,
-            _ => ModelChoice::Specific(s),
+            _ => {
+                // Validate that specific model names are non-empty
+                if s.trim().is_empty() {
+                    return Err(serde::de::Error::custom("model name cannot be empty"));
+                }
+                ModelChoice::Specific(s)
+            }
         })
     }
 }
@@ -358,8 +364,9 @@ impl<'de> Deserialize<'de> for ChatCompletionRequest {
         }
 
         // Validation 4: Temperature range [0.0, 2.0]
+        // Also reject NaN and infinity values
         if let Some(temp) = raw.temperature
-            && (!(0.0..=2.0).contains(&temp) || temp.is_nan())
+            && (!(0.0..=2.0).contains(&temp) || temp.is_nan() || temp.is_infinite())
         {
             return Err(serde::de::Error::custom(
                 "temperature must be between 0.0 and 2.0",
@@ -367,8 +374,9 @@ impl<'de> Deserialize<'de> for ChatCompletionRequest {
         }
 
         // Validation 5: top_p range (0.0, 1.0]
+        // Also reject NaN and infinity values
         if let Some(top_p) = raw.top_p
-            && (top_p <= 0.0 || top_p > 1.0 || top_p.is_nan())
+            && (top_p <= 0.0 || top_p > 1.0 || top_p.is_nan() || top_p.is_infinite())
         {
             return Err(serde::de::Error::custom(
                 "top_p must be between 0.0 (exclusive) and 1.0 (inclusive)",
@@ -376,8 +384,9 @@ impl<'de> Deserialize<'de> for ChatCompletionRequest {
         }
 
         // Validation 6: presence_penalty range [-2.0, 2.0]
+        // Also reject NaN and infinity values
         if let Some(pp) = raw.presence_penalty
-            && (!((-2.0)..=2.0).contains(&pp) || pp.is_nan())
+            && (!((-2.0)..=2.0).contains(&pp) || pp.is_nan() || pp.is_infinite())
         {
             return Err(serde::de::Error::custom(
                 "presence_penalty must be between -2.0 and 2.0",
@@ -385,8 +394,9 @@ impl<'de> Deserialize<'de> for ChatCompletionRequest {
         }
 
         // Validation 7: frequency_penalty range [-2.0, 2.0]
+        // Also reject NaN and infinity values
         if let Some(fp) = raw.frequency_penalty
-            && (!((-2.0)..=2.0).contains(&fp) || fp.is_nan())
+            && (!((-2.0)..=2.0).contains(&fp) || fp.is_nan() || fp.is_infinite())
         {
             return Err(serde::de::Error::custom(
                 "frequency_penalty must be between -2.0 and 2.0",
@@ -737,6 +747,25 @@ mod tests {
         assert!(!ModelChoice::Fast.is_specific());
     }
 
+    #[test]
+    fn test_model_choice_rejects_empty_string() {
+        let json = r#""""#;
+        let result = serde_json::from_str::<ModelChoice>(json);
+        assert!(result.is_err(), "Empty model name should be rejected");
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_model_choice_rejects_whitespace_only() {
+        let json = r#""   ""#;
+        let result = serde_json::from_str::<ModelChoice>(json);
+        assert!(
+            result.is_err(),
+            "Whitespace-only model name should be rejected"
+        );
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
     // -------------------------------------------------------------------------
     // ChatMessage Tests
     // -------------------------------------------------------------------------
@@ -856,6 +885,47 @@ mod tests {
         let result = serde_json::from_str::<ChatCompletionRequest>(json);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("max_tokens"));
+    }
+
+    #[test]
+    fn test_request_rejects_negative_temperature() {
+        let json = r#"{
+            "model": "auto",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "temperature": -0.5
+        }"#;
+        let result = serde_json::from_str::<ChatCompletionRequest>(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("temperature"));
+    }
+
+    #[test]
+    fn test_request_rejects_out_of_range_presence_penalty() {
+        let json = r#"{
+            "model": "auto",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "presence_penalty": 2.5
+        }"#;
+        let result = serde_json::from_str::<ChatCompletionRequest>(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("presence_penalty"));
+    }
+
+    #[test]
+    fn test_request_rejects_out_of_range_frequency_penalty() {
+        let json = r#"{
+            "model": "auto",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "frequency_penalty": -3.0
+        }"#;
+        let result = serde_json::from_str::<ChatCompletionRequest>(json);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("frequency_penalty")
+        );
     }
 
     #[test]

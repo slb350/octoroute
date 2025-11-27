@@ -1,13 +1,27 @@
 //! OpenAI-compatible streaming chat completions handler
 //!
 //! Handles POST /v1/chat/completions requests with stream: true.
+//!
+//! # Limitations
+//!
+//! **Retry Logic**: Unlike non-streaming requests, streaming does not support
+//! automatic retry on endpoint failure. If the selected endpoint fails, the
+//! stream returns an error event and terminates. This is because SSE streams
+//! cannot be restarted once the HTTP response headers are sent.
+//!
+//! **Health Tracking**: Initial query failures are tracked for endpoint health.
+//! Mid-stream failures are logged and reported to the client but do not affect
+//! health tracking, as they typically indicate transient network issues rather
+//! than endpoint health problems.
 
-use crate::config::Config;
 use crate::error::AppError;
 use crate::handlers::AppState;
 use crate::middleware::RequestId;
-use crate::router::TargetModel;
+use crate::models::ModelSelector;
 use crate::shared::query::record_routing_metrics;
+use std::sync::Arc;
+
+use super::find_endpoint_by_name;
 use axum::{
     Extension, Json,
     extract::State,
@@ -161,7 +175,7 @@ pub async fn handler(
         "Starting streaming response"
     );
 
-    // Create the SSE stream
+    // Create the SSE stream (pass selector for health tracking)
     let stream = create_sse_stream(
         prompt,
         options,
@@ -170,6 +184,7 @@ pub async fn handler(
         created,
         request_id,
         endpoint.name().to_string(),
+        state.selector_arc(),
     );
 
     Ok(Sse::new(stream)
@@ -182,6 +197,14 @@ pub async fn handler(
 }
 
 /// Create an SSE stream from the model query
+///
+/// # Note on Health Tracking
+///
+/// Health tracking is performed for initial query failures only. Mid-stream
+/// failures are logged and reported to the client but do not affect health
+/// tracking, as they typically indicate transient issues rather than endpoint
+/// health problems.
+#[allow(clippy::too_many_arguments)] // Needed for health tracking
 fn create_sse_stream(
     prompt: String,
     options: open_agent::AgentOptions,
@@ -190,6 +213,7 @@ fn create_sse_stream(
     created: i64,
     request_id: RequestId,
     endpoint_name: String,
+    selector: Arc<ModelSelector>,
 ) -> impl futures::Stream<Item = Result<Event, Infallible>> {
     stream::once(async move {
         // Start the model query
@@ -202,16 +226,36 @@ fn create_sse_stream(
                     error = %e,
                     "Failed to start streaming query"
                 );
-                // Return an error event
+
+                // Mark endpoint as failed for health tracking (CRITICAL-3 fix)
+                if let Err(health_err) = selector.health_checker().mark_failure(&endpoint_name).await
+                {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        endpoint_name = %endpoint_name,
+                        error = %health_err,
+                        "Health tracking failed for streaming query failure"
+                    );
+                }
+
+                // Return an error event (sanitized - don't expose internal error details)
                 let error_chunk = ChatCompletionChunk::content(
                     &completion_id,
                     &model,
                     created,
-                    &format!("[Error: {}]", e),
+                    "[Error: Failed to start model query. Please retry.]",
                 );
                 return stream::iter(vec![
-                    Ok(Event::default()
-                        .data(serde_json::to_string(&error_chunk).unwrap_or_default())),
+                    Ok(Event::default().data(
+                        serde_json::to_string(&error_chunk).unwrap_or_else(|ser_err| {
+                            tracing::error!(
+                                request_id = %request_id,
+                                error = %ser_err,
+                                "Failed to serialize error chunk"
+                            );
+                            "{}".to_string()
+                        }),
+                    )),
                     Ok(Event::default().data("[DONE]")),
                 ])
                 .boxed();
@@ -220,17 +264,32 @@ fn create_sse_stream(
 
         // Create initial chunk with role announcement
         let initial = ChatCompletionChunk::initial(&completion_id, &model, created);
-        let initial_event =
-            Ok(Event::default().data(serde_json::to_string(&initial).unwrap_or_default()));
+        let initial_event = Ok(Event::default().data(
+            serde_json::to_string(&initial).unwrap_or_else(|e| {
+                tracing::error!(
+                    request_id = %request_id,
+                    error = %e,
+                    "Failed to serialize initial chunk"
+                );
+                "{}".to_string()
+            }),
+        ));
+
+        // Save request_id for use after the stream closure
+        let request_id_for_finish = request_id;
 
         // Map model stream to SSE events
         let content_stream = model_stream
             .filter_map({
                 let completion_id = completion_id.clone();
                 let model = model.clone();
+                let request_id = request_id;
+                let endpoint_name = endpoint_name.clone();
                 move |result| {
                     let completion_id = completion_id.clone();
                     let model = model.clone();
+                    let request_id = request_id;
+                    let endpoint_name = endpoint_name.clone();
                     async move {
                         match result {
                             Ok(block) => {
@@ -244,15 +303,53 @@ fn create_sse_stream(
                                             &text_block.text,
                                         );
                                         Some(Ok(Event::default().data(
-                                            serde_json::to_string(&chunk).unwrap_or_default(),
+                                            serde_json::to_string(&chunk).unwrap_or_else(|e| {
+                                                tracing::error!(
+                                                    request_id = %request_id,
+                                                    error = %e,
+                                                    "Failed to serialize content chunk"
+                                                );
+                                                "{}".to_string()
+                                            }),
                                         )))
                                     }
-                                    _ => None, // Skip non-text blocks
+                                    other_block => {
+                                        // Log warning for non-text blocks (consistent with non-streaming)
+                                        tracing::warn!(
+                                            request_id = %request_id,
+                                            endpoint_name = %endpoint_name,
+                                            block_type = ?other_block,
+                                            "Received non-text content block, skipping (not supported - text blocks only)"
+                                        );
+                                        None
+                                    }
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!(error = %e, "Stream error during content delivery");
-                                None
+                                // Propagate error to client instead of silent drop
+                                tracing::error!(
+                                    request_id = %request_id,
+                                    endpoint_name = %endpoint_name,
+                                    error = %e,
+                                    "Stream error during content delivery - notifying client"
+                                );
+                                // Send error indication to client (sanitized message)
+                                let error_chunk = ChatCompletionChunk::content(
+                                    &completion_id,
+                                    &model,
+                                    created,
+                                    "\n\n[Stream Error: Content may be incomplete. Please retry.]",
+                                );
+                                Some(Ok(Event::default().data(
+                                    serde_json::to_string(&error_chunk).unwrap_or_else(|e| {
+                                        tracing::error!(
+                                            request_id = %request_id,
+                                            error = %e,
+                                            "Failed to serialize error chunk"
+                                        );
+                                        "{}".to_string()
+                                    }),
+                                )))
                             }
                         }
                     }
@@ -263,7 +360,16 @@ fn create_sse_stream(
         // Create finish chunk and done signal
         let finish_chunk = ChatCompletionChunk::finish(&completion_id, &model, created);
         let finish_events = stream::iter(vec![
-            Ok(Event::default().data(serde_json::to_string(&finish_chunk).unwrap_or_default())),
+            Ok(Event::default().data(
+                serde_json::to_string(&finish_chunk).unwrap_or_else(|e| {
+                    tracing::error!(
+                        request_id = %request_id_for_finish,
+                        error = %e,
+                        "Failed to serialize finish chunk"
+                    );
+                    "{}".to_string()
+                }),
+            )),
             Ok(Event::default().data("[DONE]")),
         ]);
 
@@ -274,92 +380,4 @@ fn create_sse_stream(
             .boxed()
     })
     .flatten()
-}
-
-/// Find an endpoint by name across all tiers
-fn find_endpoint_by_name(
-    config: &Config,
-    name: &str,
-) -> Result<(TargetModel, crate::config::ModelEndpoint), AppError> {
-    // Search fast tier
-    for endpoint in &config.models.fast {
-        if endpoint.name() == name {
-            return Ok((TargetModel::Fast, endpoint.clone()));
-        }
-    }
-
-    // Search balanced tier
-    for endpoint in &config.models.balanced {
-        if endpoint.name() == name {
-            return Ok((TargetModel::Balanced, endpoint.clone()));
-        }
-    }
-
-    // Search deep tier
-    for endpoint in &config.models.deep {
-        if endpoint.name() == name {
-            return Ok((TargetModel::Deep, endpoint.clone()));
-        }
-    }
-
-    Err(AppError::Validation(format!(
-        "Model '{}' not found. Available models: auto, fast, balanced, deep, or a specific endpoint name from config.",
-        name
-    )))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn create_test_config() -> Config {
-        let toml = r#"
-[server]
-host = "127.0.0.1"
-port = 3000
-
-[[models.fast]]
-name = "fast-model"
-base_url = "http://localhost:1234/v1"
-max_tokens = 2048
-temperature = 0.7
-weight = 1.0
-priority = 1
-
-[[models.balanced]]
-name = "balanced-model"
-base_url = "http://localhost:1235/v1"
-max_tokens = 4096
-temperature = 0.7
-weight = 1.0
-priority = 1
-
-[[models.deep]]
-name = "deep-model"
-base_url = "http://localhost:1236/v1"
-max_tokens = 8192
-temperature = 0.7
-weight = 1.0
-priority = 1
-
-[routing]
-strategy = "rule"
-"#;
-        toml::from_str(toml).expect("should parse test config")
-    }
-
-    #[test]
-    fn test_find_endpoint_by_name_fast() {
-        let config = create_test_config();
-        let (tier, endpoint) = find_endpoint_by_name(&config, "fast-model").unwrap();
-        assert_eq!(tier, TargetModel::Fast);
-        assert_eq!(endpoint.name(), "fast-model");
-    }
-
-    #[test]
-    fn test_find_endpoint_by_name_not_found() {
-        let config = create_test_config();
-        let result = find_endpoint_by_name(&config, "nonexistent");
-        assert!(result.is_err());
-    }
 }

@@ -126,6 +126,11 @@ impl AppState {
         &self.selector
     }
 
+    /// Get the model selector as an Arc (for passing to async streams)
+    pub fn selector_arc(&self) -> Arc<ModelSelector> {
+        Arc::clone(&self.selector)
+    }
+
     /// Get reference to the router
     pub fn router(&self) -> &Router {
         &self.router
