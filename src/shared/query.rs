@@ -31,6 +31,22 @@ pub struct QueryConfig {
     retry_backoff_ms: u64,
 }
 
+/// Optional sampling parameters that override endpoint defaults
+///
+/// These parameters are passed through from OpenAI-compatible requests.
+/// When `None`, the endpoint's configured defaults are used.
+///
+/// Note: The underlying open-agent-sdk only supports `temperature` and `max_tokens`.
+/// Other OpenAI parameters (top_p, presence_penalty, frequency_penalty) are accepted
+/// by the API for compatibility but are not forwarded to the backend.
+#[derive(Debug, Clone, Default)]
+pub struct SamplingParams {
+    /// Override temperature (0.0 to 2.0)
+    pub temperature: Option<f64>,
+    /// Override max_tokens
+    pub max_tokens: Option<u32>,
+}
+
 impl QueryConfig {
     /// Create a new query configuration
     ///
@@ -118,6 +134,7 @@ pub struct QueryResult {
 /// * `request_id` - Request ID for logging
 /// * `attempt` - Current attempt number (for logging)
 /// * `max_retries` - Total number of retries (for logging)
+/// * `sampling_params` - Optional sampling parameters to override endpoint defaults
 ///
 /// # Returns
 /// The response text on success, or an `AppError` on failure.
@@ -128,21 +145,31 @@ pub async fn query_model(
     request_id: RequestId,
     attempt: usize,
     max_retries: usize,
+    sampling_params: Option<&SamplingParams>,
 ) -> AppResult<String> {
-    // Build AgentOptions from selected endpoint
+    // Determine effective sampling parameters (request overrides > endpoint defaults)
+    let effective_max_tokens = sampling_params
+        .and_then(|p| p.max_tokens)
+        .unwrap_or(endpoint.max_tokens() as u32);
+    let effective_temperature = sampling_params
+        .and_then(|p| p.temperature)
+        .map(|t| t as f32)
+        .unwrap_or(endpoint.temperature() as f32);
+
+    // Build AgentOptions with effective parameters
     let options = open_agent::AgentOptions::builder()
         .model(endpoint.name())
         .base_url(endpoint.base_url())
-        .max_tokens(endpoint.max_tokens() as u32)
-        .temperature(endpoint.temperature() as f32)
+        .max_tokens(effective_max_tokens)
+        .temperature(effective_temperature)
         .build()
         .map_err(|e| {
             tracing::error!(
                 request_id = %request_id,
                 endpoint_name = %endpoint.name(),
                 endpoint_url = %endpoint.base_url(),
-                max_tokens = endpoint.max_tokens(),
-                temperature = endpoint.temperature(),
+                max_tokens = effective_max_tokens,
+                temperature = effective_temperature,
                 error = %e,
                 "Failed to build AgentOptions from endpoint configuration"
             );
@@ -288,6 +315,7 @@ pub async fn execute_query_with_retry(
     prompt: &str,
     request_id: RequestId,
     config: &QueryConfig,
+    sampling_params: Option<&SamplingParams>,
 ) -> AppResult<QueryResult> {
     let mut last_error = None;
     let mut failed_endpoints = ExclusionSet::new();
@@ -359,6 +387,7 @@ pub async fn execute_query_with_retry(
             request_id,
             attempt,
             config.max_retries(),
+            sampling_params,
         )
         .await
         {

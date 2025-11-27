@@ -18,7 +18,7 @@
 //!
 //! `ChatCompletionChunk` serialization uses the `serialize_chunk` helper which
 //! handles errors gracefully instead of panicking. While serialization should
-//! never fail for this simple struct (String, i64, Option<String> types), we
+//! never fail for this simple struct (`String`, `i64`, `Option<String>` types), we
 //! handle the theoretical failure case by:
 //!
 //! 1. Logging the error for production visibility
@@ -126,6 +126,10 @@ pub async fn handler(
     // Convert messages to a single prompt for routing and query
     let prompt = request.to_prompt_string();
 
+    // Extract sampling parameters from request (overrides endpoint defaults)
+    let request_temperature = request.temperature();
+    let request_max_tokens = request.max_tokens();
+
     // Handle specific model requests differently - use the exact endpoint requested
     // Track tier for metrics recording (both specific and tier-based paths)
     let (endpoint, target_tier) = if let ModelChoice::Specific(name) = request.model() {
@@ -139,6 +143,12 @@ pub async fn handler(
             target_tier = ?tier,
             "Specific model selection - streaming directly to endpoint"
         );
+
+        // Record routing metrics for observability parity with tier-based routing
+        // Creates a synthetic RoutingDecision since no actual routing occurred
+        let decision =
+            crate::router::RoutingDecision::new(tier, crate::router::RoutingStrategy::Rule);
+        record_routing_metrics(&state, &decision, 0.0, request_id);
 
         (endpoint, tier)
     } else {
@@ -207,17 +217,24 @@ pub async fn handler(
         (endpoint, decision.target())
     };
 
-    // Build AgentOptions
+    // Build AgentOptions with effective parameters (request overrides > endpoint defaults)
+    let effective_max_tokens = request_max_tokens.unwrap_or(endpoint.max_tokens() as u32);
+    let effective_temperature = request_temperature
+        .map(|t| t as f32)
+        .unwrap_or(endpoint.temperature() as f32);
+
     let options = open_agent::AgentOptions::builder()
         .model(endpoint.name())
         .base_url(endpoint.base_url())
-        .max_tokens(endpoint.max_tokens() as u32)
-        .temperature(endpoint.temperature() as f32)
+        .max_tokens(effective_max_tokens)
+        .temperature(effective_temperature)
         .build()
         .map_err(|e| {
             tracing::error!(
                 request_id = %request_id,
                 endpoint_name = %endpoint.name(),
+                max_tokens = effective_max_tokens,
+                temperature = effective_temperature,
                 error = %e,
                 "Failed to build AgentOptions for streaming"
             );

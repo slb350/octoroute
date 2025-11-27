@@ -6,7 +6,7 @@ use crate::error::AppError;
 use crate::handlers::AppState;
 use crate::middleware::RequestId;
 use crate::shared::query::{
-    QueryConfig, execute_query_with_retry, query_model, record_routing_metrics,
+    QueryConfig, SamplingParams, execute_query_with_retry, query_model, record_routing_metrics,
 };
 use axum::{
     Extension, Json,
@@ -162,6 +162,12 @@ pub async fn handler(
     let prompt = request.to_prompt_string();
     let prompt_chars = prompt.chars().count();
 
+    // Extract sampling parameters from request (overrides endpoint defaults)
+    let sampling_params = SamplingParams {
+        temperature: request.temperature(),
+        max_tokens: request.max_tokens(),
+    };
+
     // Handle specific model requests differently - query the exact endpoint requested
     if let ModelChoice::Specific(name) = request.model() {
         // Find and use the specific endpoint (no tier selection)
@@ -175,9 +181,24 @@ pub async fn handler(
             "Specific model selection - querying endpoint directly"
         );
 
+        // Record routing metrics for observability parity with tier-based routing
+        // Creates a synthetic RoutingDecision since no actual routing occurred
+        let decision =
+            crate::router::RoutingDecision::new(tier, crate::router::RoutingStrategy::Rule);
+        record_routing_metrics(&state, &decision, 0.0, request_id);
+
         // Query the specific endpoint directly (no retry to different endpoints)
         let timeout_seconds = state.config().timeout_for_tier(tier);
-        let content = match query_model(&endpoint, &prompt, timeout_seconds, request_id, 1, 1).await
+        let content = match query_model(
+            &endpoint,
+            &prompt,
+            timeout_seconds,
+            request_id,
+            1,
+            1,
+            Some(&sampling_params),
+        )
+        .await
         {
             Ok(content) => content,
             Err(e) => {
@@ -318,7 +339,15 @@ pub async fn handler(
 
     // Execute query with retry logic (selects from tier)
     let config = QueryConfig::default();
-    let result = execute_query_with_retry(&state, &decision, &prompt, request_id, &config).await?;
+    let result = execute_query_with_retry(
+        &state,
+        &decision,
+        &prompt,
+        request_id,
+        &config,
+        Some(&sampling_params),
+    )
+    .await?;
 
     // Use the endpoint that was actually selected
     let response_model = result.endpoint.name().to_string();

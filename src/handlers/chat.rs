@@ -313,9 +313,17 @@ pub async fn handler(
     record_routing_metrics(&state, &decision, routing_duration_ms, request_id);
 
     // Execute query with retry logic (uses shared module)
+    // Legacy chat endpoint doesn't support sampling parameters - use endpoint defaults
     let config = QueryConfig::default();
-    let result =
-        execute_query_with_retry(&state, &decision, request.message(), request_id, &config).await?;
+    let result = execute_query_with_retry(
+        &state,
+        &decision,
+        request.message(),
+        request_id,
+        &config,
+        None,
+    )
+    .await?;
 
     // Build response
     let response = if result.warnings.is_empty() {
