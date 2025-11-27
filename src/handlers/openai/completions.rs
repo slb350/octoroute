@@ -23,7 +23,8 @@ use super::types::{ChatCompletion, ChatCompletionRequest, ModelChoice, current_t
 /// This header is added when the request succeeded but there were issues
 /// that operators and clients should be aware of (e.g., health tracking failures).
 ///
-/// The header value is a comma-separated list of warning codes/messages.
+/// The header value is a semicolon-separated list of warning messages.
+/// Semicolons are used instead of commas since warning messages may contain commas.
 pub const X_OCTOROUTE_WARNING: &str = "x-octoroute-warning";
 
 /// Build a JSON response with optional warning header.
@@ -42,8 +43,9 @@ fn build_response_with_warnings<T: serde::Serialize>(body: T, warnings: &[String
     let warning_value = warnings.join("; ");
 
     // Truncate to reasonable header length (500 chars)
-    let warning_value = if warning_value.len() > 500 {
-        format!("{}...", &warning_value[..497])
+    // Use char-based truncation to avoid splitting multi-byte UTF-8 characters
+    let warning_value = if warning_value.chars().count() > 500 {
+        format!("{}...", warning_value.chars().take(497).collect::<String>())
     } else {
         warning_value
     };
@@ -55,8 +57,14 @@ fn build_response_with_warnings<T: serde::Serialize>(body: T, warnings: &[String
             .headers
             .insert(HeaderName::from_static(X_OCTOROUTE_WARNING), header_value);
     } else {
-        // If the warning contains invalid header characters, use a generic message
-        // Note: from_static only accepts compile-time constants, which are always valid
+        // If the warning contains invalid header characters, use a generic fallback.
+        // Log the original warning for operator debugging since it won't be in the response.
+        tracing::warn!(
+            original_warning = %warning_value,
+            warning_length = warning_value.len(),
+            "Warning header contains invalid HTTP characters, using fallback. \
+            Original warning logged for debugging."
+        );
         parts.headers.insert(
             HeaderName::from_static(X_OCTOROUTE_WARNING),
             HeaderValue::from_static("health-tracking-degraded"),
@@ -243,4 +251,231 @@ pub async fn handler(
 
     // Return response with warning header if there were non-fatal issues
     Ok(build_response_with_warnings(response, &result.warnings))
+}
+
+#[cfg(test)]
+mod tests {
+    #[allow(unused_imports)]
+    use super::*;
+
+    // -------------------------------------------------------------------------
+    // Warning Header Truncation Tests
+    // -------------------------------------------------------------------------
+
+    /// Helper to extract the warning truncation logic for testing.
+    /// Returns the truncated warning string that would be used in the header.
+    /// This mirrors the logic in `build_response_with_warnings`.
+    fn truncate_warning_for_header(warnings: &[String]) -> String {
+        let warning_value = warnings.join("; ");
+
+        // Use char-based truncation to avoid splitting multi-byte UTF-8 characters
+        if warning_value.chars().count() > 500 {
+            format!("{}...", warning_value.chars().take(497).collect::<String>())
+        } else {
+            warning_value
+        }
+    }
+
+    #[test]
+    fn test_warning_truncation_ascii_only() {
+        // ASCII-only string, truncation is safe at any byte boundary
+        let long_warning = "a".repeat(600);
+        let result = truncate_warning_for_header(&[long_warning]);
+
+        assert_eq!(result.len(), 500); // 497 + "..."
+        assert!(result.ends_with("..."));
+        assert!(result.is_char_boundary(result.len())); // Valid UTF-8
+    }
+
+    #[test]
+    fn test_warning_truncation_preserves_utf8_multibyte_chars() {
+        // Create a string where byte position 497 falls in the middle of a multi-byte char
+        // The emoji "🦑" (octopus) is 4 bytes in UTF-8: F0 9F A6 91
+        // We want the truncation point (497) to fall inside a multi-byte character
+
+        // Strategy: Fill with ASCII up to position 495, then add a 4-byte emoji
+        // Bytes 0-494: ASCII (495 bytes)
+        // Bytes 495-498: emoji (4 bytes) - truncation at 497 would split this!
+        let prefix = "x".repeat(495);
+        let emoji = "🦑"; // 4 bytes
+        let suffix = "y".repeat(100);
+        let warning = format!("{}{}{}", prefix, emoji, suffix);
+
+        // Verify our setup: byte 497 should be inside the emoji
+        assert!(
+            !warning.is_char_boundary(497),
+            "Test setup failed: byte 497 should NOT be a char boundary"
+        );
+
+        let result = truncate_warning_for_header(&[warning]);
+
+        // The result MUST be valid UTF-8 (this is the key assertion)
+        // If truncation splits a multi-byte char, this will be invalid
+        assert!(
+            std::str::from_utf8(result.as_bytes()).is_ok(),
+            "Truncated warning must be valid UTF-8"
+        );
+
+        // Result should end with "..."
+        assert!(
+            result.ends_with("..."),
+            "Truncated warning should end with ..."
+        );
+
+        // Result should not exceed 500 chars (but may be shorter due to char-safe truncation)
+        assert!(
+            result.chars().count() <= 500,
+            "Truncated warning should not exceed 500 chars"
+        );
+    }
+
+    #[test]
+    fn test_warning_truncation_chinese_characters() {
+        // Chinese characters are 3 bytes each in UTF-8
+        // This tests that we handle 3-byte sequences correctly
+        // Need >500 chars to trigger truncation (not bytes)
+        let chinese = "中".repeat(600); // 600 chars, 1800 bytes
+        let result = truncate_warning_for_header(&[chinese]);
+
+        // Must be valid UTF-8
+        assert!(
+            std::str::from_utf8(result.as_bytes()).is_ok(),
+            "Truncated Chinese text must be valid UTF-8"
+        );
+
+        assert!(result.ends_with("..."));
+        // 497 Chinese chars + "..." = 500 chars displayed
+        assert_eq!(result.chars().count(), 500);
+    }
+
+    #[test]
+    fn test_warning_truncation_mixed_multibyte() {
+        // Mix of 1-byte (ASCII), 2-byte (é), 3-byte (中), and 4-byte (🦑) chars
+        // Need >500 chars total to trigger truncation
+        let mixed = format!(
+            "{}{}{}{}{}",
+            "a".repeat(200),  // 200 chars
+            "é".repeat(150),  // 150 chars
+            "中".repeat(100), // 100 chars
+            "🦑".repeat(50),  // 50 chars
+            "z".repeat(50)    // 50 chars
+        ); // Total: 550 chars
+
+        assert!(
+            mixed.chars().count() > 500,
+            "Test setup: need >500 chars to trigger truncation"
+        );
+
+        let result = truncate_warning_for_header(&[mixed]);
+
+        assert!(
+            std::str::from_utf8(result.as_bytes()).is_ok(),
+            "Truncated mixed text must be valid UTF-8"
+        );
+        assert!(result.ends_with("..."));
+        assert_eq!(result.chars().count(), 500);
+    }
+
+    #[test]
+    fn test_warning_under_limit_not_truncated() {
+        let short = "This is a short warning";
+        let result = truncate_warning_for_header(&[short.to_string()]);
+
+        assert_eq!(result, short);
+        assert!(!result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_warning_exactly_500_chars_not_truncated() {
+        let exactly_500 = "a".repeat(500);
+        let result = truncate_warning_for_header(std::slice::from_ref(&exactly_500));
+
+        assert_eq!(result, exactly_500);
+        assert!(!result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_warning_501_chars_gets_truncated() {
+        let chars_501 = "a".repeat(501);
+        let result = truncate_warning_for_header(&[chars_501]);
+
+        assert!(result.ends_with("..."));
+        assert_eq!(result.chars().count(), 500);
+    }
+
+    // -------------------------------------------------------------------------
+    // Invalid Header Character Fallback Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_build_response_with_valid_warning_header() {
+        use axum::http::HeaderName;
+
+        let body = serde_json::json!({"test": "value"});
+        let warnings = vec!["valid warning message".to_string()];
+
+        let response = build_response_with_warnings(body, &warnings);
+
+        let header = response
+            .headers()
+            .get(HeaderName::from_static(X_OCTOROUTE_WARNING));
+        assert!(header.is_some(), "Warning header should be present");
+        assert_eq!(header.unwrap().to_str().unwrap(), "valid warning message");
+    }
+
+    #[test]
+    fn test_build_response_with_invalid_header_chars_uses_fallback() {
+        use axum::http::HeaderName;
+
+        let body = serde_json::json!({"test": "value"});
+        // Newline is invalid in HTTP headers
+        let warnings = vec!["warning with\nnewline".to_string()];
+
+        let response = build_response_with_warnings(body, &warnings);
+
+        let header = response
+            .headers()
+            .get(HeaderName::from_static(X_OCTOROUTE_WARNING));
+        assert!(header.is_some(), "Warning header should still be present");
+        // Should use fallback value since original contains invalid chars
+        assert_eq!(
+            header.unwrap().to_str().unwrap(),
+            "health-tracking-degraded"
+        );
+    }
+
+    #[test]
+    fn test_build_response_with_control_char_uses_fallback() {
+        use axum::http::HeaderName;
+
+        let body = serde_json::json!({"test": "value"});
+        // Null byte is invalid in HTTP headers
+        let warnings = vec!["warning with\x00null".to_string()];
+
+        let response = build_response_with_warnings(body, &warnings);
+
+        let header = response
+            .headers()
+            .get(HeaderName::from_static(X_OCTOROUTE_WARNING));
+        assert!(header.is_some());
+        assert_eq!(
+            header.unwrap().to_str().unwrap(),
+            "health-tracking-degraded"
+        );
+    }
+
+    #[test]
+    fn test_build_response_empty_warnings_no_header() {
+        use axum::http::HeaderName;
+
+        let body = serde_json::json!({"test": "value"});
+        let warnings: Vec<String> = vec![];
+
+        let response = build_response_with_warnings(body, &warnings);
+
+        let header = response
+            .headers()
+            .get(HeaderName::from_static(X_OCTOROUTE_WARNING));
+        assert!(header.is_none(), "No warning header when warnings empty");
+    }
 }

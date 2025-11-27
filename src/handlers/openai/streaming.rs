@@ -13,6 +13,20 @@
 //! Mid-stream failures are logged and reported to the client but do not affect
 //! health tracking, as they typically indicate transient network issues rather
 //! than endpoint health problems.
+//!
+//! # Serialization Safety
+//!
+//! This module uses `.expect()` for `ChatCompletionChunk` serialization. This is
+//! safe because:
+//!
+//! 1. `ChatCompletionChunk` contains only simple types: `String`, `i64`, `Option<String>`
+//! 2. These types always serialize successfully to JSON (no f64::NAN, no cycles)
+//! 3. Property-based tests in `tests/openai_streaming.rs` verify serialization
+//!    succeeds for all valid inputs including edge cases (empty strings, Unicode,
+//!    special JSON characters, extreme timestamps)
+//!
+//! If serialization panics in production, it indicates a bug in struct definition
+//! (e.g., adding an unserializable field) which should be caught by tests.
 
 use crate::error::AppError;
 use crate::handlers::AppState;
