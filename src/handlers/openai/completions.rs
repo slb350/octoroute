@@ -62,10 +62,13 @@ fn build_response_with_warnings<T: serde::Serialize>(body: T, warnings: &[String
         })
         .collect();
 
-    // Truncate to reasonable header length (500 chars)
-    // Use char-based truncation to avoid splitting multi-byte UTF-8 characters
-    let warning_value = if warning_value.chars().count() > 500 {
-        format!("{}...", warning_value.chars().take(497).collect::<String>())
+    // Truncate to reasonable header length (500 chars) using single-pass iteration.
+    // After non-ASCII sanitization above, all chars are ASCII (1 byte = 1 char),
+    // so byte length equals char count. This avoids the double iteration of
+    // .chars().count() followed by .chars().take().collect().
+    let warning_value = if warning_value.len() > 500 {
+        // Safe to truncate at byte boundary since all chars are now ASCII
+        format!("{}...", &warning_value[..497])
     } else {
         warning_value
     };
