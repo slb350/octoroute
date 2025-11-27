@@ -569,3 +569,134 @@ async fn test_completions_tier_model_uses_routing() {
 
     // expect(1) verifies the mock was hit, proving tier routing selected the endpoint
 }
+
+// -------------------------------------------------------------------------
+// Retry Endpoint Exclusion Tests
+// -------------------------------------------------------------------------
+
+/// Create config with two endpoints in the fast tier for retry testing
+fn create_test_config_with_two_fast_endpoints(fast1_url: &str, fast2_url: &str) -> Config {
+    let toml = format!(
+        r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-primary"
+base_url = "{fast1_url}"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.fast]]
+name = "fast-backup"
+base_url = "{fast2_url}"
+max_tokens = 2048
+temperature = 0.7
+weight = 1.0
+priority = 2
+
+[[models.balanced]]
+name = "test-balanced-model"
+base_url = "http://localhost:9998/v1"
+max_tokens = 4096
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[[models.deep]]
+name = "test-deep-model"
+base_url = "http://localhost:9997/v1"
+max_tokens = 8192
+temperature = 0.7
+weight = 1.0
+priority = 1
+
+[routing]
+strategy = "rule"
+default_importance = "normal"
+router_tier = "balanced"
+"#
+    );
+    toml::from_str(&toml).expect("should parse TOML config")
+}
+
+/// Verify that failed endpoints are excluded from retry attempts
+///
+/// When an endpoint fails, the retry logic should:
+/// 1. Mark the endpoint as failed in the exclusion set
+/// 2. Select a different endpoint for the next attempt
+/// 3. NOT retry the failed endpoint again within the same request
+///
+/// This test uses two mock servers:
+/// - Primary endpoint: returns 500 error (simulating failure)
+/// - Backup endpoint: returns success
+///
+/// If retry exclusion works correctly:
+/// - Primary should receive exactly 1 request (fails, gets excluded)
+/// - Backup should receive exactly 1 request (succeeds)
+#[tokio::test]
+async fn test_completions_retry_excludes_failed_endpoint() {
+    // Start two mock servers - one for primary (will fail), one for backup (will succeed)
+    let primary_mock = MockServer::start().await;
+    let backup_mock = MockServer::start().await;
+
+    // Primary endpoint returns 500 error - this simulates a failing endpoint
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+        .expect(1) // Should be hit exactly once, then excluded from retries
+        .mount(&primary_mock)
+        .await;
+
+    // Backup endpoint returns success
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Success from backup\"}}]}\n\ndata: [DONE]\n\n",
+        ))
+        .expect(1) // Should be hit exactly once on retry
+        .mount(&backup_mock)
+        .await;
+
+    let config =
+        create_test_config_with_two_fast_endpoints(&primary_mock.uri(), &backup_mock.uri());
+    let config = Arc::new(config);
+    let state = AppState::new(config).expect("AppState::new should succeed");
+
+    let app = Router::new()
+        .route(
+            "/v1/chat/completions",
+            post(octoroute::handlers::openai::completions::handler),
+        )
+        .with_state(state)
+        .layer(middleware::from_fn(request_id_middleware));
+
+    // Request to the fast tier - primary will fail, retry should go to backup
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"model": "fast", "messages": [{"role": "user", "content": "Hello"}]}"#,
+        ))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    // Consume response body
+    let _body = axum::body::to_bytes(response.into_body(), usize::MAX).await;
+
+    // The key verification is the expect(1) on both mocks:
+    // - primary_mock.expect(1): proves it was tried exactly once, then excluded
+    // - backup_mock.expect(1): proves retry went to backup, not back to primary
+    //
+    // If retry exclusion was broken, we'd see either:
+    // - primary hit multiple times (retrying failed endpoint)
+    // - backup not hit (never got to retry)
+    //
+    // wiremock panics in drop if expectations aren't met, so test passing = correct behavior
+}
