@@ -43,12 +43,23 @@ fn build_response_with_warnings<T: serde::Serialize>(body: T, warnings: &[String
     // Use semicolon as separator since commas might appear in messages
     let warning_value = warnings.join("; ");
 
-    // Sanitize control characters to preserve warning content
-    // HTTP headers cannot contain control characters (0x00-0x1F except tab, and 0x7F)
-    // Replace them with spaces to preserve message readability
+    // Sanitize characters that are invalid in HTTP headers to preserve warning content.
+    // HTTP headers require ASCII (RFC 7230 Section 3.2.6):
+    // - Cannot contain control characters (0x00-0x1F except tab 0x09, and 0x7F)
+    // - Cannot contain characters outside the visible ASCII range (> 0x7E)
+    // Replace invalid characters with '?' to preserve message readability while ensuring
+    // the header is valid. This prevents fallback to the generic error message.
     let warning_value: String = warning_value
         .chars()
-        .map(|c| if c.is_control() && c != ' ' { ' ' } else { c })
+        .map(|c| {
+            if c.is_control() && c != ' ' {
+                ' ' // Control characters (except space) -> space
+            } else if !c.is_ascii() {
+                '?' // Non-ASCII -> placeholder
+            } else {
+                c
+            }
+        })
         .collect();
 
     // Truncate to reasonable header length (500 chars)
@@ -481,5 +492,68 @@ mod tests {
             .headers()
             .get(HeaderName::from_static(X_OCTOROUTE_WARNING));
         assert!(header.is_none(), "No warning header when warnings empty");
+    }
+
+    #[test]
+    fn test_build_response_with_non_ascii_sanitizes() {
+        use axum::http::HeaderName;
+
+        let body = serde_json::json!({"test": "value"});
+        // Non-ASCII characters (Chinese and emoji) should be sanitized to preserve message
+        let warnings = vec!["Health check failed for 北京-server 🦑".to_string()];
+
+        let response = build_response_with_warnings(body, &warnings);
+
+        let header = response
+            .headers()
+            .get(HeaderName::from_static(X_OCTOROUTE_WARNING));
+        assert!(header.is_some(), "Warning header should be present");
+
+        let value = header.unwrap().to_str().unwrap();
+        // Should NOT fall back to generic message - should preserve content
+        assert_ne!(
+            value, "health-tracking-degraded",
+            "Should not fall back to generic message, should sanitize non-ASCII"
+        );
+        // Should contain the sanitized message
+        assert!(
+            value.contains("Health check failed"),
+            "Should preserve ASCII content. Got: {}",
+            value
+        );
+    }
+
+    #[test]
+    fn test_build_response_with_emoji_sanitizes() {
+        use axum::http::HeaderName;
+
+        let body = serde_json::json!({"test": "value"});
+        // Pure emoji should be sanitized (each emoji replaced with placeholder)
+        let warnings = vec!["Error 🔴 warning 🟡 info 🟢".to_string()];
+
+        let response = build_response_with_warnings(body, &warnings);
+
+        let header = response
+            .headers()
+            .get(HeaderName::from_static(X_OCTOROUTE_WARNING));
+        assert!(header.is_some());
+
+        let value = header.unwrap().to_str().unwrap();
+        // Should preserve ASCII content
+        assert!(
+            value.contains("Error"),
+            "Should preserve 'Error'. Got: {}",
+            value
+        );
+        assert!(
+            value.contains("warning"),
+            "Should preserve 'warning'. Got: {}",
+            value
+        );
+        assert!(
+            value.contains("info"),
+            "Should preserve 'info'. Got: {}",
+            value
+        );
     }
 }
