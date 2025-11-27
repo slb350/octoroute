@@ -344,12 +344,14 @@ fn create_sse_stream(
                 let request_id = request_id;
                 let endpoint_name = endpoint_name.clone();
                 let error_occurred = error_occurred.clone();
+                let metrics = metrics.clone();
                 move |result| {
                     let completion_id = completion_id.clone();
                     let model = model.clone();
                     let request_id = request_id;
                     let endpoint_name = endpoint_name.clone();
                     let error_occurred = error_occurred.clone();
+                    let metrics = metrics.clone();
                     async move {
                         match result {
                             Ok(block) => {
@@ -381,6 +383,9 @@ fn create_sse_stream(
                             Err(e) => {
                                 // Mark that an error occurred so we skip the misleading finish chunk
                                 error_occurred.store(true, Ordering::SeqCst);
+
+                                // Record metric for observability (doesn't affect health tracking)
+                                metrics.mid_stream_failure(&endpoint_name);
 
                                 // Propagate error to client instead of silent drop
                                 tracing::error!(

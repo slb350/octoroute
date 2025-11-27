@@ -105,6 +105,7 @@ pub struct Metrics {
     metrics_recording_failures: IntCounterVec,
     background_task_failures: IntCounterVec,
     clock_errors: IntCounter,
+    mid_stream_failures: IntCounterVec,
 }
 
 impl Metrics {
@@ -231,6 +232,32 @@ impl Metrics {
             Alert on ANY increment - indicates serious system misconfiguration.",
         ))?;
 
+        // Counter: Mid-stream failures during SSE streaming
+        //
+        // Tracks errors that occur during active SSE streaming (after initial connection
+        // succeeded). These don't affect endpoint health tracking (by design - see
+        // CLAUDE.md "Mid-Stream Error Handling" decision) but are valuable for:
+        // - Identifying endpoints with frequent mid-stream issues
+        // - Detecting network/firewall timeout patterns
+        // - Capacity planning (endpoints under stress)
+        //
+        // Labels:
+        // - endpoint: Which endpoint experienced the failure
+        //
+        // Cardinality: N endpoints = N time series (bounded by endpoint count)
+        //
+        // NOTE: Unlike health_tracking_failures, this metric does NOT indicate
+        // the endpoint is unhealthy - it tracks transient network issues.
+        let mid_stream_failures = IntCounterVec::new(
+            Opts::new(
+                "octoroute_mid_stream_failures_total",
+                "Total number of mid-stream SSE failures by endpoint. \
+                These are transient network issues that don't affect endpoint health. \
+                High rates may indicate firewall timeouts or endpoint capacity issues.",
+            ),
+            &["endpoint"],
+        )?;
+
         // Register all metrics
         registry.register(Box::new(requests_total.clone()))?;
         registry.register(Box::new(routing_duration.clone()))?;
@@ -239,6 +266,7 @@ impl Metrics {
         registry.register(Box::new(metrics_recording_failures.clone()))?;
         registry.register(Box::new(background_task_failures.clone()))?;
         registry.register(Box::new(clock_errors.clone()))?;
+        registry.register(Box::new(mid_stream_failures.clone()))?;
 
         Ok(Self {
             registry: Arc::new(registry),
@@ -249,6 +277,7 @@ impl Metrics {
             metrics_recording_failures,
             background_task_failures,
             clock_errors,
+            mid_stream_failures,
         })
     }
 
@@ -576,6 +605,25 @@ impl Metrics {
     /// Used by the /health endpoint to report system time status.
     pub fn clock_errors_count(&self) -> u64 {
         self.clock_errors.get()
+    }
+
+    /// Record a mid-stream SSE failure for an endpoint
+    ///
+    /// Call this when an error occurs during active SSE streaming (after the
+    /// initial connection succeeded). These failures don't affect endpoint
+    /// health tracking but are valuable for observability.
+    ///
+    /// # Arguments
+    ///
+    /// * `endpoint` - The endpoint name that experienced the failure
+    ///
+    /// # Cardinality Safety
+    ///
+    /// Endpoint names come from configuration, so cardinality is bounded.
+    pub fn mid_stream_failure(&self, endpoint: &str) {
+        self.mid_stream_failures
+            .with_label_values(&[endpoint])
+            .inc();
     }
 
     /// Gather all metrics and encode them in Prometheus text format
