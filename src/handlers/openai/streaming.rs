@@ -127,7 +127,8 @@ pub async fn handler(
     let prompt = request.to_prompt_string();
 
     // Handle specific model requests differently - use the exact endpoint requested
-    let endpoint = if let ModelChoice::Specific(name) = request.model() {
+    // Track tier for metrics recording (both specific and tier-based paths)
+    let (endpoint, target_tier) = if let ModelChoice::Specific(name) = request.model() {
         // Find and use the specific endpoint directly (no tier selection)
         let (tier, endpoint) = find_endpoint_by_name(state.config(), name)?;
 
@@ -139,7 +140,7 @@ pub async fn handler(
             "Specific model selection - streaming directly to endpoint"
         );
 
-        endpoint
+        (endpoint, tier)
     } else {
         // For tier-based routing (auto, fast, balanced, deep)
         let decision = match request.model() {
@@ -189,7 +190,7 @@ pub async fn handler(
 
         // Select endpoint from target tier
         let failed_endpoints = crate::models::ExclusionSet::new();
-        state
+        let endpoint = state
             .selector()
             .select(decision.target(), &failed_endpoints)
             .await
@@ -199,8 +200,27 @@ pub async fn handler(
                     decision.target()
                 ))
             })?
-            .clone()
+            .clone();
+        (endpoint, decision.target())
     };
+
+    // Record model invocation for observability (critical for monitoring streaming traffic)
+    let tier_enum = match target_tier {
+        crate::router::TargetModel::Fast => crate::metrics::Tier::Fast,
+        crate::router::TargetModel::Balanced => crate::metrics::Tier::Balanced,
+        crate::router::TargetModel::Deep => crate::metrics::Tier::Deep,
+    };
+    if let Err(e) = state.metrics().record_model_invocation(tier_enum) {
+        state
+            .metrics()
+            .metrics_recording_failure("record_model_invocation");
+        tracing::error!(
+            request_id = %request_id,
+            error = %e,
+            tier = ?tier_enum,
+            "Metrics recording failed. Observability degraded but request continues."
+        );
+    }
 
     // Build AgentOptions
     let options = open_agent::AgentOptions::builder()

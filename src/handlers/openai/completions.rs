@@ -179,6 +179,24 @@ pub async fn handler(
         let timeout_seconds = state.config().timeout_for_tier(tier);
         let content = query_model(&endpoint, &prompt, timeout_seconds, request_id, 1, 1).await?;
 
+        // Record model invocation for observability (same as tier-based routing)
+        let tier_enum = match tier {
+            crate::router::TargetModel::Fast => crate::metrics::Tier::Fast,
+            crate::router::TargetModel::Balanced => crate::metrics::Tier::Balanced,
+            crate::router::TargetModel::Deep => crate::metrics::Tier::Deep,
+        };
+        if let Err(e) = state.metrics().record_model_invocation(tier_enum) {
+            state
+                .metrics()
+                .metrics_recording_failure("record_model_invocation");
+            tracing::error!(
+                request_id = %request_id,
+                error = %e,
+                tier = ?tier_enum,
+                "Metrics recording failed. Observability degraded but request continues."
+            );
+        }
+
         // Mark endpoint as healthy on success, collect warnings
         let mut warnings: Vec<String> = Vec::new();
         if let Err(e) = state
