@@ -268,11 +268,12 @@ fn create_sse_stream(
                 }
 
                 // Return an error event (sanitized - don't expose internal error details)
+                // Include request ID for support correlation
                 let error_chunk = ChatCompletionChunk::content(
                     &completion_id,
                     &model,
                     created,
-                    "[Error: Failed to start model query. Please retry.]",
+                    &format!("[Error: Failed to start model query. Request ID: {}. Please retry.]", request_id),
                 );
                 return stream::iter(vec![
                     Ok(Event::default().data(
@@ -363,11 +364,12 @@ fn create_sse_stream(
                                 );
                                 // Send error indication to client (sanitized message)
                                 // NOTE: SSE data fields cannot contain newlines - removed \n\n prefix
+                                // Include request ID for support correlation
                                 let error_chunk = ChatCompletionChunk::content(
                                     &completion_id,
                                     &model,
                                     created,
-                                    "[Stream Error: Content may be incomplete. Please retry.]",
+                                    &format!("[Stream Error: Content may be incomplete. Request ID: {}. Please retry.]", request_id),
                                 );
                                 Some(Ok(Event::default().data(
                                     serde_json::to_string(&error_chunk)

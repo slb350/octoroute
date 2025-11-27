@@ -42,6 +42,14 @@ fn build_response_with_warnings<T: serde::Serialize>(body: T, warnings: &[String
     // Use semicolon as separator since commas might appear in messages
     let warning_value = warnings.join("; ");
 
+    // Sanitize control characters to preserve warning content
+    // HTTP headers cannot contain control characters (0x00-0x1F except tab, and 0x7F)
+    // Replace them with spaces to preserve message readability
+    let warning_value: String = warning_value
+        .chars()
+        .map(|c| if c.is_control() && c != ' ' { ' ' } else { c })
+        .collect();
+
     // Truncate to reasonable header length (500 chars)
     // Use char-based truncation to avoid splitting multi-byte UTF-8 characters
     let warning_value = if warning_value.chars().count() > 500 {
@@ -57,12 +65,12 @@ fn build_response_with_warnings<T: serde::Serialize>(body: T, warnings: &[String
             .headers
             .insert(HeaderName::from_static(X_OCTOROUTE_WARNING), header_value);
     } else {
-        // If the warning contains invalid header characters, use a generic fallback.
-        // Log the original warning for operator debugging since it won't be in the response.
+        // Fallback should rarely be needed now that we sanitize control characters.
+        // This catches any edge cases with non-ASCII or other invalid header characters.
         tracing::warn!(
             original_warning = %warning_value,
             warning_length = warning_value.len(),
-            "Warning header contains invalid HTTP characters, using fallback. \
+            "Warning header contains invalid HTTP characters even after sanitization, using fallback. \
             Original warning logged for debugging."
         );
         parts.headers.insert(
@@ -176,7 +184,7 @@ pub async fn handler(
         tracing::info!(
             request_id = %request_id,
             model = %response.model,
-            response_length = response.choices[0].message.content.len(),
+            response_length = response.choices[0].message.content().len(),
             warnings_count = warnings.len(),
             "Chat completion successful (specific model)"
         );
@@ -244,7 +252,7 @@ pub async fn handler(
     tracing::info!(
         request_id = %request_id,
         model = %response.model,
-        response_length = response.choices[0].message.content.len(),
+        response_length = response.choices[0].message.content().len(),
         warnings_count = result.warnings.len(),
         "Chat completion successful"
     );
@@ -424,11 +432,11 @@ mod tests {
     }
 
     #[test]
-    fn test_build_response_with_invalid_header_chars_uses_fallback() {
+    fn test_build_response_with_newline_sanitizes() {
         use axum::http::HeaderName;
 
         let body = serde_json::json!({"test": "value"});
-        // Newline is invalid in HTTP headers
+        // Newline is invalid in HTTP headers - should be sanitized to space
         let warnings = vec!["warning with\nnewline".to_string()];
 
         let response = build_response_with_warnings(body, &warnings);
@@ -437,19 +445,16 @@ mod tests {
             .headers()
             .get(HeaderName::from_static(X_OCTOROUTE_WARNING));
         assert!(header.is_some(), "Warning header should still be present");
-        // Should use fallback value since original contains invalid chars
-        assert_eq!(
-            header.unwrap().to_str().unwrap(),
-            "health-tracking-degraded"
-        );
+        // Newline should be replaced with space, preserving the message
+        assert_eq!(header.unwrap().to_str().unwrap(), "warning with newline");
     }
 
     #[test]
-    fn test_build_response_with_control_char_uses_fallback() {
+    fn test_build_response_with_control_char_sanitizes() {
         use axum::http::HeaderName;
 
         let body = serde_json::json!({"test": "value"});
-        // Null byte is invalid in HTTP headers
+        // Null byte is invalid in HTTP headers - should be sanitized to space
         let warnings = vec!["warning with\x00null".to_string()];
 
         let response = build_response_with_warnings(body, &warnings);
@@ -458,10 +463,8 @@ mod tests {
             .headers()
             .get(HeaderName::from_static(X_OCTOROUTE_WARNING));
         assert!(header.is_some());
-        assert_eq!(
-            header.unwrap().to_str().unwrap(),
-            "health-tracking-degraded"
-        );
+        // Control characters should be replaced with spaces, preserving the message
+        assert_eq!(header.unwrap().to_str().unwrap(), "warning with null");
     }
 
     #[test]

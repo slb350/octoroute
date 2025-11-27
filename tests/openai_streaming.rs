@@ -228,6 +228,39 @@ async fn test_streaming_error_event_contains_sanitized_message() {
     }
 }
 
+#[tokio::test]
+async fn test_streaming_error_event_contains_request_id() {
+    // Error events should include request ID for support correlation
+    let config = create_test_config_unavailable();
+    let app = create_test_app(config);
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"model": "fast", "messages": [{"role": "user", "content": "Hello"}], "stream": true}"#,
+        ))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8_lossy(&body);
+
+    // Should contain error indication with request ID
+    if body_str.contains("Error") || body_str.contains("error") {
+        // Error message should include request ID for support correlation
+        assert!(
+            body_str.contains("Request ID:"),
+            "Error should include request ID for support correlation, got: {}",
+            body_str
+        );
+    }
+}
+
 // -------------------------------------------------------------------------
 // SSE Event Format Tests (with mock server)
 // -------------------------------------------------------------------------

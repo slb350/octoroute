@@ -148,11 +148,13 @@ impl<'de> Deserialize<'de> for ModelChoice {
             "balanced" => ModelChoice::Balanced,
             "deep" => ModelChoice::Deep,
             _ => {
-                // Validate that specific model names are non-empty
-                if s.trim().is_empty() {
+                // Validate that specific model names are non-empty and trim whitespace
+                // Trimming prevents routing failures (find_endpoint_by_name does exact comparison)
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
                     return Err(serde::de::Error::custom("model name cannot be empty"));
                 }
-                ModelChoice::Specific(s)
+                ModelChoice::Specific(trimmed.to_string())
             }
         })
     }
@@ -196,10 +198,11 @@ impl ModelChoice {
     /// ```
     pub fn try_specific(name: impl Into<String>) -> Result<Self, &'static str> {
         let name = name.into();
-        if name.trim().is_empty() {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
             return Err("model name cannot be empty or whitespace-only");
         }
-        Ok(ModelChoice::Specific(name))
+        Ok(ModelChoice::Specific(trimmed.to_string()))
     }
 
     /// Convert to TargetModel if tier-based
@@ -681,11 +684,44 @@ pub enum FinishReason {
 /// Fields are private to enforce the invariant that `total_tokens` always
 /// equals `prompt_tokens + completion_tokens`. Use `new()` or `estimate()`
 /// constructors, which guarantee this invariant.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Custom `Deserialize` implementation validates this invariant at parse time.
+#[derive(Debug, Clone, Serialize)]
 pub struct Usage {
     prompt_tokens: u32,
     completion_tokens: u32,
     total_tokens: u32,
+}
+
+impl<'de> Deserialize<'de> for Usage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Deserialize into a raw struct first
+        #[derive(Deserialize)]
+        struct RawUsage {
+            prompt_tokens: u32,
+            completion_tokens: u32,
+            total_tokens: u32,
+        }
+
+        let raw = RawUsage::deserialize(deserializer)?;
+        let expected_total = raw.prompt_tokens + raw.completion_tokens;
+
+        if raw.total_tokens != expected_total {
+            return Err(serde::de::Error::custom(format!(
+                "total_tokens ({}) does not equal prompt_tokens + completion_tokens ({})",
+                raw.total_tokens, expected_total
+            )));
+        }
+
+        Ok(Usage {
+            prompt_tokens: raw.prompt_tokens,
+            completion_tokens: raw.completion_tokens,
+            total_tokens: raw.total_tokens,
+        })
+    }
 }
 
 impl Usage {
@@ -731,18 +767,36 @@ impl Usage {
 }
 
 /// Assistant message in response
+///
+/// Fields are private to enforce the invariant that `role` is always `Assistant`.
+/// Use the `new()` constructor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistantMessage {
-    pub role: MessageRole,
-    pub content: String,
+    role: MessageRole,
+    content: String,
 }
 
 impl AssistantMessage {
+    /// Create a new assistant message.
+    ///
+    /// The role is automatically set to `Assistant`.
     pub fn new(content: impl Into<String>) -> Self {
         Self {
             role: MessageRole::Assistant,
             content: content.into(),
         }
+    }
+
+    /// Returns the role (always `Assistant`).
+    #[inline]
+    pub fn role(&self) -> MessageRole {
+        self.role
+    }
+
+    /// Returns the content of the message.
+    #[inline]
+    pub fn content(&self) -> &str {
+        &self.content
     }
 }
 
@@ -1093,6 +1147,25 @@ mod tests {
         let result = ModelChoice::try_specific("my model name");
         assert!(result.is_ok());
         assert_eq!(result.unwrap().specific_name(), Some("my model name"));
+    }
+
+    #[test]
+    fn test_model_choice_deserialize_trims_whitespace() {
+        // Whitespace-padded model names should be trimmed to prevent routing failures
+        // (find_endpoint_by_name does exact string comparison)
+        let json = r#""  qwen3-8b  ""#;
+        let model: ModelChoice = serde_json::from_str(json).unwrap();
+        assert_eq!(model, ModelChoice::Specific("qwen3-8b".to_string()));
+        assert_eq!(model.specific_name(), Some("qwen3-8b"));
+    }
+
+    #[test]
+    fn test_model_choice_try_specific_trims_whitespace() {
+        // try_specific should also trim whitespace for consistency
+        let result = ModelChoice::try_specific("  qwen3-8b  ");
+        assert!(result.is_ok());
+        let model = result.unwrap();
+        assert_eq!(model.specific_name(), Some("qwen3-8b"));
     }
 
     // -------------------------------------------------------------------------
@@ -1458,6 +1531,26 @@ mod tests {
         assert_eq!(usage.prompt_tokens(), 15);
         assert_eq!(usage.completion_tokens(), 25);
         assert_eq!(usage.total_tokens(), 40);
+    }
+
+    #[test]
+    fn test_usage_deserialize_rejects_invalid_total() {
+        // total_tokens must equal prompt_tokens + completion_tokens
+        // This JSON has an invalid total (999 != 10 + 20)
+        let json = r#"{"prompt_tokens":10,"completion_tokens":20,"total_tokens":999}"#;
+        let result = serde_json::from_str::<Usage>(json);
+
+        assert!(
+            result.is_err(),
+            "Deserializing Usage with invalid total_tokens should fail"
+        );
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("total_tokens") || err.contains("30"),
+            "Error should mention the invariant violation, got: {}",
+            err
+        );
     }
 
     // -------------------------------------------------------------------------

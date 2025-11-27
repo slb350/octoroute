@@ -638,3 +638,169 @@ router_tier = "balanced"
     assert_eq!(config.models.balanced[0].max_tokens(), 1);
     assert_eq!(config.models.deep[0].max_tokens(), 1);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Endpoint Name Uniqueness Validation Tests
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// These tests verify that duplicate endpoint names across tiers are rejected.
+// This prevents silent failures where find_endpoint_by_name returns the first
+// match (fast tier), making endpoints in lower tiers inaccessible by name.
+
+#[test]
+fn test_config_rejects_duplicate_endpoint_names_across_tiers() {
+    // Test that duplicate endpoint names ACROSS different tiers are rejected
+    //
+    // When the same endpoint name exists in multiple tiers, find_endpoint_by_name
+    // will only ever return the first match (fast tier), making the others
+    // inaccessible. This is a silent configuration error that should be caught.
+    let toml_content = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "shared-model"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+
+[[models.balanced]]
+name = "shared-model"
+base_url = "http://localhost:1235/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "test-deep"
+base_url = "http://localhost:1236/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_tier = "balanced"
+
+[observability]
+log_level = "info"
+"#;
+
+    let temp_file = create_temp_config(toml_content);
+    let result = Config::from_file(temp_file.path());
+
+    assert!(
+        result.is_err(),
+        "Config::from_file should reject duplicate endpoint names across tiers"
+    );
+
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("shared-model")
+            && err_msg.contains("fast")
+            && err_msg.contains("balanced"),
+        "Error message should mention the duplicate endpoint name and both tiers, got: {}",
+        err_msg
+    );
+}
+
+#[test]
+fn test_config_accepts_duplicate_endpoint_names_within_same_tier() {
+    // Duplicates WITHIN the same tier are allowed for load balancing
+    // (e.g., same model served from multiple machines)
+    let toml_content = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-model"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+
+[[models.fast]]
+name = "fast-model"
+base_url = "http://localhost:1237/v1"
+max_tokens = 2048
+
+[[models.balanced]]
+name = "test-balanced"
+base_url = "http://localhost:1235/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "test-deep"
+base_url = "http://localhost:1236/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_tier = "balanced"
+
+[observability]
+log_level = "info"
+"#;
+
+    let temp_file = create_temp_config(toml_content);
+    let result = Config::from_file(temp_file.path());
+
+    assert!(
+        result.is_ok(),
+        "Config::from_file should accept duplicate endpoint names within same tier (load balancing), error: {:?}",
+        result.err()
+    );
+
+    let config = result.unwrap();
+    // Both endpoints with same name should be loaded
+    assert_eq!(config.models.fast.len(), 2);
+}
+
+#[test]
+fn test_config_accepts_unique_endpoint_names() {
+    // Verify that unique endpoint names across all tiers are accepted
+    let toml_content = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+request_timeout_seconds = 30
+
+[[models.fast]]
+name = "fast-model-1"
+base_url = "http://localhost:1234/v1"
+max_tokens = 2048
+
+[[models.fast]]
+name = "fast-model-2"
+base_url = "http://localhost:1237/v1"
+max_tokens = 2048
+
+[[models.balanced]]
+name = "balanced-model"
+base_url = "http://localhost:1235/v1"
+max_tokens = 4096
+
+[[models.deep]]
+name = "deep-model"
+base_url = "http://localhost:1236/v1"
+max_tokens = 8192
+
+[routing]
+strategy = "rule"
+router_tier = "balanced"
+
+[observability]
+log_level = "info"
+"#;
+
+    let temp_file = create_temp_config(toml_content);
+    let result = Config::from_file(temp_file.path());
+
+    assert!(
+        result.is_ok(),
+        "Config::from_file should accept unique endpoint names, error: {:?}",
+        result.err()
+    );
+
+    let config = result.unwrap();
+    assert_eq!(config.models.fast.len(), 2);
+    assert_eq!(config.models.balanced.len(), 1);
+    assert_eq!(config.models.deep.len(), 1);
+}
