@@ -17,7 +17,9 @@ use axum::{
 
 use super::extractor::OpenAiJson;
 use super::find_endpoint_by_name;
-use super::types::{ChatCompletion, ChatCompletionRequest, ModelChoice, current_timestamp};
+use super::types::{
+    ChatCompletion, ChatCompletionRequest, ModelChoice, TimestampResult, current_timestamp,
+};
 
 /// Custom header for surfacing non-fatal warnings to OpenAI API clients.
 ///
@@ -202,7 +204,13 @@ pub async fn handler(
             ));
         }
 
-        let created = current_timestamp(Some(state.metrics().as_ref()), Some(&request_id));
+        let TimestampResult {
+            timestamp: created,
+            warning: clock_warning,
+        } = current_timestamp(Some(state.metrics().as_ref()), Some(&request_id));
+        if let Some(w) = clock_warning {
+            warnings.push(w);
+        }
         let response =
             ChatCompletion::new(content, endpoint.name().to_string(), prompt_chars, created);
 
@@ -270,20 +278,29 @@ pub async fn handler(
     // Use the endpoint that was actually selected
     let response_model = result.endpoint.name().to_string();
 
+    // Collect all warnings (from query + clock)
+    let mut warnings = result.warnings;
+    let TimestampResult {
+        timestamp: created,
+        warning: clock_warning,
+    } = current_timestamp(Some(state.metrics().as_ref()), Some(&request_id));
+    if let Some(w) = clock_warning {
+        warnings.push(w);
+    }
+
     // Build OpenAI-compatible response
-    let created = current_timestamp(Some(state.metrics().as_ref()), Some(&request_id));
     let response = ChatCompletion::new(result.content, response_model, prompt_chars, created);
 
     tracing::info!(
         request_id = %request_id,
         model = %response.model,
         response_length = response.choices[0].message.content().len(),
-        warnings_count = result.warnings.len(),
+        warnings_count = warnings.len(),
         "Chat completion successful"
     );
 
     // Return response with warning header if there were non-fatal issues
-    Ok(build_response_with_warnings(response, &result.warnings))
+    Ok(build_response_with_warnings(response, &warnings))
 }
 
 #[cfg(test)]

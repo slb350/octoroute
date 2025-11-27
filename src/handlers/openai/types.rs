@@ -920,14 +920,28 @@ impl ChatCompletion {
 /// # Note
 /// Clock errors are rare but indicate serious system misconfiguration.
 /// The metric `octoroute_clock_errors_total` should trigger alerts.
+/// Result of timestamp generation, including any warnings
+pub struct TimestampResult {
+    /// Unix timestamp (0 if clock error)
+    pub timestamp: i64,
+    /// Warning message if clock error occurred
+    pub warning: Option<String>,
+}
+
+/// Get current Unix timestamp for response generation
+///
+/// Returns timestamp and optional warning if clock error detected.
+/// Callers should add the warning to their response headers if present.
 pub fn current_timestamp(
     metrics: Option<&crate::metrics::Metrics>,
     request_id: Option<&crate::middleware::RequestId>,
-) -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_else(|e| {
+) -> TimestampResult {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => TimestampResult {
+            timestamp: d.as_secs() as i64,
+            warning: None,
+        },
+        Err(e) => {
             if let Some(rid) = request_id {
                 tracing::warn!(
                     request_id = %rid,
@@ -943,8 +957,12 @@ pub fn current_timestamp(
             if let Some(m) = metrics {
                 m.clock_error();
             }
-            0
-        })
+            TimestampResult {
+                timestamp: 0,
+                warning: Some("system-clock-error: timestamp may be invalid".to_string()),
+            }
+        }
+    }
 }
 
 // =============================================================================

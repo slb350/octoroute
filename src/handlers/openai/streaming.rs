@@ -50,7 +50,9 @@ use futures::stream::{self, StreamExt};
 use std::convert::Infallible;
 use std::time::Duration;
 
-use super::types::{ChatCompletionChunk, ChatCompletionRequest, ModelChoice, current_timestamp};
+use super::types::{
+    ChatCompletionChunk, ChatCompletionRequest, ModelChoice, TimestampResult, current_timestamp,
+};
 
 /// Serialize a chunk to JSON, returning a fallback error event on failure.
 ///
@@ -222,7 +224,15 @@ pub async fn handler(
 
     // Generate unique ID and timestamp for this completion
     let completion_id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
-    let created = current_timestamp(Some(state.metrics().as_ref()), Some(&request_id));
+    let TimestampResult {
+        timestamp: created,
+        warning: clock_warning,
+    } = current_timestamp(Some(state.metrics().as_ref()), Some(&request_id));
+    // For streaming, we can't add warnings to headers (already sent).
+    // Log the warning if present - metric is already recorded in current_timestamp.
+    if let Some(w) = clock_warning {
+        tracing::warn!(request_id = %request_id, warning = %w, "Clock error during streaming");
+    }
     let response_model = endpoint.name().to_string();
 
     tracing::info!(
