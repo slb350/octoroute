@@ -273,9 +273,13 @@ OpenAI-compatible chat completions endpoint. Drop-in replacement for OpenAI API 
 **Fields**:
 
 - `model` (string, required): Model selection
-  - `"auto"` - Use LLM/hybrid routing to select optimal tier
+  - `"auto"` - Use LLM/hybrid routing to select optimal tier (see note below)
   - `"fast"` / `"balanced"` / `"deep"` - Route directly to that tier
   - Specific endpoint name (e.g., `"qwen3-8b"`) - Bypass routing, use endpoint directly
+
+> **Note**: Auto-routing task inference uses **English keyword matching only**. For non-English
+> prompts, consider using explicit tier selection (`"fast"`, `"balanced"`, or `"deep"`) for
+> optimal routing.
 - `messages` (array, required): Conversation history
 - `stream` (boolean, optional): Enable SSE streaming (default: `false`)
 - `temperature` (number, optional): Sampling temperature 0.0-2.0 (default: `0.7`)

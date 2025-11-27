@@ -565,7 +565,24 @@ impl ChatCompletionRequest {
             .with_task_type(task_type)
     }
 
-    /// Infer task type from message content
+    /// Infer task type from message content using keyword matching.
+    ///
+    /// # Limitations
+    ///
+    /// This function uses **English keyword matching only**. Non-English prompts will
+    /// default to `TaskType::QuestionAnswer`, which may result in suboptimal tier routing
+    /// (e.g., a complex analysis in French might route to the Fast tier instead of Deep).
+    ///
+    /// For non-English workloads, consider using explicit tier selection instead of `"auto"`:
+    /// - `"model": "fast"` - Simple queries, translations, quick responses
+    /// - `"model": "balanced"` - General tasks, moderate complexity
+    /// - `"model": "deep"` - Complex reasoning, analysis, creative writing
+    ///
+    /// False positive examples (English):
+    /// - "What is the postal code for Paris?" → detected as Code (contains "code")
+    /// - "Tell me about function calling" → detected as Code (contains "function")
+    ///
+    /// These edge cases are acceptable as they route to more capable models, not less.
     fn infer_task_type(&self) -> TaskType {
         let last_user_content = self.last_user_content().unwrap_or("").to_lowercase();
 
