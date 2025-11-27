@@ -488,11 +488,12 @@ pub async fn execute_query_with_retry(
         );
 
         // Return sanitized error to client (no internal endpoint names)
-        // Operators can correlate via request_id in logs
+        // Include request_id so users can reference it when contacting support
         AppError::Internal(format!(
-            "Request failed after {} retry attempts. All {} endpoints for the {:?} tier \
-            were exhausted. Please try again later or contact support with request ID.",
+            "Request failed after {} retry attempts (request_id: {}). All {} endpoints for the {:?} tier \
+            were exhausted. Please try again later.",
             config.max_retries(),
+            request_id,
             failed_endpoints.len(),
             decision.target()
         ))
