@@ -143,7 +143,11 @@ pub async fn handler(
         }
         ModelChoice::Fast | ModelChoice::Balanced | ModelChoice::Deep => {
             // Direct tier selection (bypass routing)
-            let tier = request.model().to_target_model().unwrap();
+            // SAFETY: Match arm guarantees Fast/Balanced/Deep, which always convert to TargetModel
+            let tier = request
+                .model()
+                .to_target_model()
+                .expect("BUG: Fast/Balanced/Deep must convert to TargetModel");
             let decision =
                 crate::router::RoutingDecision::new(tier, crate::router::RoutingStrategy::Rule);
 

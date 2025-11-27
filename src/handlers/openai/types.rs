@@ -12,6 +12,95 @@ const MAX_TOTAL_CONTENT_LENGTH: usize = 500_000;
 const MAX_MESSAGES: usize = 100;
 
 // =============================================================================
+// Shared Validation Logic
+// =============================================================================
+
+/// Validate ChatCompletionRequest fields
+///
+/// This is the single source of truth for request validation, used by both
+/// the builder and serde deserializer to ensure consistent validation rules.
+fn validate_request_fields(
+    messages: &[ChatMessage],
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    presence_penalty: Option<f64>,
+    frequency_penalty: Option<f64>,
+    max_tokens: Option<u32>,
+) -> Result<(), String> {
+    // Validation 1: Messages array not empty
+    if messages.is_empty() {
+        return Err("messages array cannot be empty".to_string());
+    }
+
+    // Validation 2: Message count limit
+    if messages.len() > MAX_MESSAGES {
+        return Err(format!(
+            "messages array cannot exceed {} messages (got {})",
+            MAX_MESSAGES,
+            messages.len()
+        ));
+    }
+
+    // Validation 3: Total content length
+    let total_length: usize = messages.iter().map(|m| m.content_length()).sum();
+    if total_length > MAX_TOTAL_CONTENT_LENGTH {
+        return Err(format!(
+            "total content length exceeds {} characters (got {})",
+            MAX_TOTAL_CONTENT_LENGTH, total_length
+        ));
+    }
+
+    // Validation 4: Temperature range [0.0, 2.0]
+    if let Some(temp) = temperature {
+        if temp.is_nan() || temp.is_infinite() {
+            return Err("temperature must be a finite number".to_string());
+        }
+        if !(0.0..=2.0).contains(&temp) {
+            return Err("temperature must be between 0.0 and 2.0".to_string());
+        }
+    }
+
+    // Validation 5: top_p range (0.0, 1.0]
+    if let Some(top_p) = top_p {
+        if top_p.is_nan() || top_p.is_infinite() {
+            return Err("top_p must be a finite number".to_string());
+        }
+        if top_p <= 0.0 || top_p > 1.0 {
+            return Err("top_p must be between 0.0 (exclusive) and 1.0 (inclusive)".to_string());
+        }
+    }
+
+    // Validation 6: presence_penalty range [-2.0, 2.0]
+    if let Some(pp) = presence_penalty {
+        if pp.is_nan() || pp.is_infinite() {
+            return Err("presence_penalty must be a finite number".to_string());
+        }
+        if !((-2.0)..=2.0).contains(&pp) {
+            return Err("presence_penalty must be between -2.0 and 2.0".to_string());
+        }
+    }
+
+    // Validation 7: frequency_penalty range [-2.0, 2.0]
+    if let Some(fp) = frequency_penalty {
+        if fp.is_nan() || fp.is_infinite() {
+            return Err("frequency_penalty must be a finite number".to_string());
+        }
+        if !((-2.0)..=2.0).contains(&fp) {
+            return Err("frequency_penalty must be between -2.0 and 2.0".to_string());
+        }
+    }
+
+    // Validation 8: max_tokens > 0
+    if let Some(max) = max_tokens
+        && max == 0
+    {
+        return Err("max_tokens must be greater than 0".to_string());
+    }
+
+    Ok(())
+}
+
+// =============================================================================
 // Model Choice - Maps OpenAI `model` field to Octoroute tiers
 // =============================================================================
 
@@ -369,75 +458,15 @@ impl ChatCompletionRequestBuilder {
     /// # Errors
     /// Returns an error string if validation fails (same rules as JSON deserialization)
     pub fn build(self) -> Result<ChatCompletionRequest, String> {
-        // Validation 1: Messages array not empty
-        if self.messages.is_empty() {
-            return Err("messages array cannot be empty".to_string());
-        }
-
-        // Validation 2: Message count limit
-        if self.messages.len() > MAX_MESSAGES {
-            return Err(format!(
-                "messages array cannot exceed {} messages (got {})",
-                MAX_MESSAGES,
-                self.messages.len()
-            ));
-        }
-
-        // Validation 3: Total content length
-        let total_length: usize = self.messages.iter().map(|m| m.content_length()).sum();
-        if total_length > MAX_TOTAL_CONTENT_LENGTH {
-            return Err(format!(
-                "total content length exceeds {} characters (got {})",
-                MAX_TOTAL_CONTENT_LENGTH, total_length
-            ));
-        }
-
-        // Validation 4: Temperature range [0.0, 2.0]
-        if let Some(temp) = self.temperature {
-            if temp.is_nan() || temp.is_infinite() {
-                return Err("temperature must be a finite number".to_string());
-            }
-            if !(0.0..=2.0).contains(&temp) {
-                return Err("temperature must be between 0.0 and 2.0".to_string());
-            }
-        }
-
-        // Validation 5: top_p range (0.0, 1.0]
-        if let Some(top_p) = self.top_p {
-            if top_p.is_nan() || top_p.is_infinite() {
-                return Err("top_p must be a finite number".to_string());
-            }
-            if top_p <= 0.0 || top_p > 1.0 {
-                return Err("top_p must be between 0.0 (exclusive) and 1.0 (inclusive)".to_string());
-            }
-        }
-
-        // Validation 6: presence_penalty range [-2.0, 2.0]
-        if let Some(pp) = self.presence_penalty {
-            if pp.is_nan() || pp.is_infinite() {
-                return Err("presence_penalty must be a finite number".to_string());
-            }
-            if !((-2.0)..=2.0).contains(&pp) {
-                return Err("presence_penalty must be between -2.0 and 2.0".to_string());
-            }
-        }
-
-        // Validation 7: frequency_penalty range [-2.0, 2.0]
-        if let Some(fp) = self.frequency_penalty {
-            if fp.is_nan() || fp.is_infinite() {
-                return Err("frequency_penalty must be a finite number".to_string());
-            }
-            if !((-2.0)..=2.0).contains(&fp) {
-                return Err("frequency_penalty must be between -2.0 and 2.0".to_string());
-            }
-        }
-
-        // Validation 8: max_tokens > 0
-        if let Some(max) = self.max_tokens
-            && max == 0
-        {
-            return Err("max_tokens must be greater than 0".to_string());
-        }
+        // Use shared validation logic
+        validate_request_fields(
+            &self.messages,
+            self.temperature,
+            self.top_p,
+            self.presence_penalty,
+            self.frequency_penalty,
+            self.max_tokens,
+        )?;
 
         Ok(ChatCompletionRequest {
             model: self.model,
@@ -596,95 +625,16 @@ impl<'de> Deserialize<'de> for ChatCompletionRequest {
 
         let raw = RawRequest::deserialize(deserializer)?;
 
-        // Validation 1: Messages array not empty
-        if raw.messages.is_empty() {
-            return Err(serde::de::Error::custom("messages array cannot be empty"));
-        }
-
-        // Validation 2: Message count limit
-        if raw.messages.len() > MAX_MESSAGES {
-            return Err(serde::de::Error::custom(format!(
-                "messages array cannot exceed {} messages (got {})",
-                MAX_MESSAGES,
-                raw.messages.len()
-            )));
-        }
-
-        // Validation 3: Total content length
-        let total_length: usize = raw.messages.iter().map(|m| m.content_length()).sum();
-        if total_length > MAX_TOTAL_CONTENT_LENGTH {
-            return Err(serde::de::Error::custom(format!(
-                "total content length exceeds {} characters (got {})",
-                MAX_TOTAL_CONTENT_LENGTH, total_length
-            )));
-        }
-
-        // Validation 4: Temperature range [0.0, 2.0]
-        // Check for NaN/infinity first with specific error message
-        if let Some(temp) = raw.temperature {
-            if temp.is_nan() || temp.is_infinite() {
-                return Err(serde::de::Error::custom(
-                    "temperature must be a finite number",
-                ));
-            }
-            if !(0.0..=2.0).contains(&temp) {
-                return Err(serde::de::Error::custom(
-                    "temperature must be between 0.0 and 2.0",
-                ));
-            }
-        }
-
-        // Validation 5: top_p range (0.0, 1.0]
-        // Check for NaN/infinity first with specific error message
-        if let Some(top_p) = raw.top_p {
-            if top_p.is_nan() || top_p.is_infinite() {
-                return Err(serde::de::Error::custom("top_p must be a finite number"));
-            }
-            if top_p <= 0.0 || top_p > 1.0 {
-                return Err(serde::de::Error::custom(
-                    "top_p must be between 0.0 (exclusive) and 1.0 (inclusive)",
-                ));
-            }
-        }
-
-        // Validation 6: presence_penalty range [-2.0, 2.0]
-        // Check for NaN/infinity first with specific error message
-        if let Some(pp) = raw.presence_penalty {
-            if pp.is_nan() || pp.is_infinite() {
-                return Err(serde::de::Error::custom(
-                    "presence_penalty must be a finite number",
-                ));
-            }
-            if !((-2.0)..=2.0).contains(&pp) {
-                return Err(serde::de::Error::custom(
-                    "presence_penalty must be between -2.0 and 2.0",
-                ));
-            }
-        }
-
-        // Validation 7: frequency_penalty range [-2.0, 2.0]
-        // Check for NaN/infinity first with specific error message
-        if let Some(fp) = raw.frequency_penalty {
-            if fp.is_nan() || fp.is_infinite() {
-                return Err(serde::de::Error::custom(
-                    "frequency_penalty must be a finite number",
-                ));
-            }
-            if !((-2.0)..=2.0).contains(&fp) {
-                return Err(serde::de::Error::custom(
-                    "frequency_penalty must be between -2.0 and 2.0",
-                ));
-            }
-        }
-
-        // Validation 8: max_tokens > 0
-        if let Some(max) = raw.max_tokens
-            && max == 0
-        {
-            return Err(serde::de::Error::custom(
-                "max_tokens must be greater than 0",
-            ));
-        }
+        // Use shared validation logic, converting String error to serde error
+        validate_request_fields(
+            &raw.messages,
+            raw.temperature,
+            raw.top_p,
+            raw.presence_penalty,
+            raw.frequency_penalty,
+            raw.max_tokens,
+        )
+        .map_err(serde::de::Error::custom)?;
 
         Ok(ChatCompletionRequest {
             model: raw.model,
@@ -777,7 +727,13 @@ impl ChatCompletion {
         let created = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    error = %e,
+                    "System clock appears to be before UNIX epoch - using 0 as timestamp"
+                );
+                0
+            });
 
         Self {
             id,

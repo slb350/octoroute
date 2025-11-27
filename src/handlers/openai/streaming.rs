@@ -116,7 +116,11 @@ pub async fn handler(
             }
             ModelChoice::Fast | ModelChoice::Balanced | ModelChoice::Deep => {
                 // Direct tier selection (bypass routing)
-                let tier = request.model().to_target_model().unwrap();
+                // SAFETY: Match arm guarantees Fast/Balanced/Deep, which always convert to TargetModel
+                let tier = request
+                    .model()
+                    .to_target_model()
+                    .expect("BUG: Fast/Balanced/Deep must convert to TargetModel");
                 let decision =
                     crate::router::RoutingDecision::new(tier, crate::router::RoutingStrategy::Rule);
 
@@ -160,15 +164,25 @@ pub async fn handler(
                 error = %e,
                 "Failed to build AgentOptions for streaming"
             );
-            AppError::Internal(format!("Failed to configure model: {}", e))
+            AppError::ModelQuery(crate::error::ModelQueryError::AgentOptionsConfigError {
+                endpoint: endpoint.base_url().to_string(),
+                details: format!("{}", e),
+            })
         })?;
 
     // Generate unique ID and timestamp for this completion
     let completion_id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
     let created = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                request_id = %request_id,
+                error = %e,
+                "System clock appears to be before UNIX epoch - using 0 as timestamp"
+            );
+            0
+        });
     let response_model = endpoint.name().to_string();
 
     tracing::info!(
