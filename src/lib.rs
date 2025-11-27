@@ -11,4 +11,5 @@ pub mod metrics;
 pub mod middleware;
 pub mod models;
 pub mod router;
+pub mod shared;
 pub mod telemetry;

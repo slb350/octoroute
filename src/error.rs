@@ -193,6 +193,30 @@ pub enum AppError {
     Internal(String),
 }
 
+impl AppError {
+    /// Returns the OpenAI error type for this error
+    fn error_type(&self) -> &'static str {
+        match self {
+            Self::Validation(_) => "invalid_request_error",
+            Self::Config(_)
+            | Self::ConfigFileRead { .. }
+            | Self::ConfigParseFailed { .. }
+            | Self::ConfigValidationFailed { .. }
+            | Self::ConfigFileExists { .. }
+            | Self::ConfigFileWrite { .. }
+            | Self::RoutingFailed(_)
+            | Self::HybridRoutingFailed { .. }
+            | Self::HealthCheckFailed { .. }
+            | Self::HealthTracking(_)
+            | Self::Internal(_) => "server_error",
+            Self::StreamInterrupted { .. }
+            | Self::EndpointTimeout { .. }
+            | Self::ModelQuery(_)
+            | Self::LlmRouting(_) => "api_error",
+        }
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
@@ -218,8 +242,16 @@ impl IntoResponse for AppError {
             Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
 
+        let error_type = self.error_type();
+
+        // Use OpenAI-compatible error format
         let body = Json(serde_json::json!({
-            "error": message,
+            "error": {
+                "message": message,
+                "type": error_type,
+                "param": null,
+                "code": null
+            }
         }));
 
         (status, body).into_response()

@@ -12,6 +12,7 @@ pub mod chat;
 pub mod health;
 pub mod metrics;
 pub mod models;
+pub mod openai;
 
 /// Application state shared across all handlers
 ///
@@ -123,6 +124,11 @@ impl AppState {
     /// Get reference to the model selector
     pub fn selector(&self) -> &ModelSelector {
         &self.selector
+    }
+
+    /// Get the model selector as an Arc (for passing to async streams)
+    pub fn selector_arc(&self) -> Arc<ModelSelector> {
+        Arc::clone(&self.selector)
     }
 
     /// Get reference to the router

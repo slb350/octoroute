@@ -610,17 +610,81 @@ impl LlmBasedRouter {
             })?;
 
         // Query the router model with timeout protection
+        // IMPORTANT: The timeout must wrap BOTH the initial connection AND stream consumption.
+        // Previously, only open_agent::query() was wrapped, but wiremock delays happen during
+        // stream.next().await, causing the timeout to be ineffective. This was a bug.
         use futures::StreamExt;
         use tokio::time::{Duration, timeout};
 
         let timeout_duration = Duration::from_secs(self.router_timeout_secs);
+        let endpoint_url = endpoint.base_url().to_string();
+        let endpoint_name = endpoint.name().to_string();
 
-        let mut stream = timeout(timeout_duration, open_agent::query(router_prompt, &options))
-            .await
-            .map_err(|_elapsed| {
+        // Wrap the entire query + stream consumption in a single timeout
+        let query_result = timeout(timeout_duration, async {
+            // Start the query and get the stream
+            let mut stream = open_agent::query(router_prompt, &options)
+                .await
+                .map_err(|e| {
+                    AppError::LlmRouting(LlmRouterError::StreamError {
+                        endpoint: endpoint_url.clone(),
+                        bytes_received: 0,
+                        error_message: format!("Router query failed: {}", e),
+                    })
+                })?;
+
+            // Collect response from stream with size limit
+            let mut response_text = String::new();
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(block) => {
+                        use open_agent::ContentBlock;
+                        if let ContentBlock::Text(text_block) = block {
+                            // Check size limit before accumulating
+                            if response_text.len() + text_block.text.len() > MAX_ROUTER_RESPONSE {
+                                return Err(AppError::LlmRouting(LlmRouterError::SizeExceeded {
+                                    endpoint: endpoint_url.clone(),
+                                    size: response_text.len() + text_block.text.len(),
+                                    max_size: MAX_ROUTER_RESPONSE,
+                                }));
+                            }
+                            response_text.push_str(&text_block.text);
+                        }
+                    }
+                    Err(e) => {
+                        return Err(AppError::LlmRouting(LlmRouterError::StreamError {
+                            endpoint: endpoint_url.clone(),
+                            bytes_received: response_text.len(),
+                            error_message: format!("{}", e),
+                        }));
+                    }
+                }
+            }
+
+            Ok::<String, AppError>(response_text)
+        })
+        .await;
+
+        // Handle timeout vs inner errors
+        let response_text = match query_result {
+            Ok(Ok(text)) => text,
+            Ok(Err(inner_error)) => {
+                // Log the inner error with context
                 tracing::error!(
-                    endpoint_name = %endpoint.name(),
-                    endpoint_url = %endpoint.base_url(),
+                    endpoint_name = %endpoint_name,
+                    endpoint_url = %endpoint_url,
+                    error = %inner_error,
+                    attempt = attempt,
+                    max_retries = max_retries,
+                    "Router query failed (attempt {}/{})",
+                    attempt, max_retries
+                );
+                return Err(inner_error);
+            }
+            Err(_elapsed) => {
+                tracing::error!(
+                    endpoint_name = %endpoint_name,
+                    endpoint_url = %endpoint_url,
                     timeout_seconds = self.router_timeout_secs,
                     router_tier = ?self.router_tier,
                     attempt = attempt,
@@ -628,99 +692,21 @@ impl LlmBasedRouter {
                     "Router query timeout - endpoint did not respond within {} seconds (attempt {}/{})",
                     self.router_timeout_secs, attempt, max_retries
                 );
-                AppError::LlmRouting(LlmRouterError::Timeout {
-                    endpoint: endpoint.base_url().to_string(),
+                return Err(AppError::LlmRouting(LlmRouterError::Timeout {
+                    endpoint: endpoint_url,
                     timeout_seconds: self.router_timeout_secs,
                     attempt,
                     max_attempts: max_retries,
                     router_tier: self.router_tier,
-                })
-            })?
-            .map_err(|e| {
-                tracing::error!(
-                    endpoint_name = %endpoint.name(),
-                    endpoint_url = %endpoint.base_url(),
-                    error = %e,
-                    attempt = attempt,
-                    max_retries = max_retries,
-                    "Router query failed to connect or initialize stream (attempt {}/{})",
-                    attempt, max_retries
-                );
-                AppError::LlmRouting(LlmRouterError::StreamError {
-                    endpoint: endpoint.base_url().to_string(),
-                    bytes_received: 0,
-                    error_message: format!("Router query failed: {}", e),
-                })
-            })?;
-
-        // Collect response from stream with size limit to prevent unbounded memory growth
-        let mut response_text = String::new();
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(block) => {
-                    use open_agent::ContentBlock;
-                    if let ContentBlock::Text(text_block) = block {
-                        // Check size limit before accumulating
-                        if response_text.len() + text_block.text.len() > MAX_ROUTER_RESPONSE {
-                            // Oversized response indicates serious LLM malfunction
-                            // Expected response: ~10 bytes ("FAST", "BALANCED", or "DEEP")
-                            // >1KB response means LLM is ignoring instructions or misconfigured
-
-                            // Capture preview of response for debugging (first 200 chars)
-                            let preview_chars: String = response_text.chars().take(200).collect();
-                            let preview = if response_text.len() > 200 {
-                                format!("{}...", preview_chars)
-                            } else {
-                                preview_chars
-                            };
-
-                            tracing::error!(
-                                endpoint_name = %endpoint.name(),
-                                current_length = response_text.len(),
-                                incoming_length = text_block.text.len(),
-                                max_allowed = MAX_ROUTER_RESPONSE,
-                                response_preview = %preview,
-                                attempt = attempt,
-                                max_retries = max_retries,
-                                "Router response exceeded size limit - LLM not following instructions (attempt {}/{})",
-                                attempt, max_retries
-                            );
-                            return Err(AppError::LlmRouting(LlmRouterError::SizeExceeded {
-                                endpoint: endpoint.base_url().to_string(),
-                                size: response_text.len() + text_block.text.len(),
-                                max_size: MAX_ROUTER_RESPONSE,
-                            }));
-                        }
-                        response_text.push_str(&text_block.text);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        endpoint_name = %endpoint.name(),
-                        endpoint_url = %endpoint.base_url(),
-                        error = %e,
-                        partial_response_length = response_text.len(),
-                        attempt = attempt,
-                        max_retries = max_retries,
-                        "Router stream error after {} chars (attempt {}/{})",
-                        response_text.len(), attempt, max_retries
-                    );
-                    return Err(AppError::LlmRouting(LlmRouterError::StreamError {
-                        endpoint: endpoint.base_url().to_string(),
-                        bytes_received: response_text.len(),
-                        error_message: format!("{}", e),
-                    }));
-                }
+                }));
             }
-        }
+        };
 
-        // Early empty response detection: fail immediately after streaming completes
-        // if no content received, instead of waiting for parse_routing_decision() to detect it.
-        // This optimization saves processing time on obvious LLM malfunctions.
+        // Early empty response detection
         if response_text.trim().is_empty() {
             tracing::error!(
-                endpoint_name = %endpoint.name(),
-                endpoint_url = %endpoint.base_url(),
+                endpoint_name = %endpoint_name,
+                endpoint_url = %endpoint_url,
                 attempt = attempt,
                 max_retries = max_retries,
                 "LLM router returned empty response (0 text blocks received) - \
@@ -728,12 +714,12 @@ impl LlmBasedRouter {
                 attempt, max_retries
             );
             return Err(AppError::LlmRouting(LlmRouterError::EmptyResponse {
-                endpoint: endpoint.base_url().to_string(),
+                endpoint: endpoint_url,
             }));
         }
 
         tracing::debug!(
-            endpoint_name = %endpoint.name(),
+            endpoint_name = %endpoint_name,
             response_length = response_text.len(),
             response = %response_text,
             attempt = attempt,

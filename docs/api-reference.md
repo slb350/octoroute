@@ -251,6 +251,140 @@ octoroute_model_invocations_total{tier="balanced"} 15
 
 ---
 
+### POST /v1/chat/completions (OpenAI-Compatible)
+
+OpenAI-compatible chat completions endpoint. Drop-in replacement for OpenAI API clients.
+
+#### Request Body
+
+```json
+{
+  "model": "auto | fast | balanced | deep | <endpoint-name>",
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"}
+  ],
+  "stream": false,
+  "temperature": 0.7,
+  "max_tokens": 1000
+}
+```
+
+**Fields**:
+
+- `model` (string, required): Model selection
+  - `"auto"` - Use LLM/hybrid routing to select optimal tier (see note below)
+  - `"fast"` / `"balanced"` / `"deep"` - Route directly to that tier
+  - Specific endpoint name (e.g., `"qwen3-8b"`) - Bypass routing, use endpoint directly
+
+> **Note**: Auto-routing task inference uses **English keyword matching only**. For non-English
+> prompts, consider using explicit tier selection (`"fast"`, `"balanced"`, or `"deep"`) for
+> optimal routing.
+- `messages` (array, required): Conversation history
+- `stream` (boolean, optional): Enable SSE streaming (default: `false`)
+- `temperature` (number, optional): Sampling temperature 0.0-2.0 (default: `0.7`)
+- `max_tokens` (integer, optional): Maximum tokens to generate
+
+#### Response Body (Non-Streaming)
+
+```json
+{
+  "id": "chatcmpl-abc123",
+  "object": "chat.completion",
+  "created": 1699000000,
+  "model": "qwen3-8b",
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "content": "Hello!"},
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+}
+```
+
+#### Response (Streaming)
+
+When `stream: true`, returns Server-Sent Events (SSE):
+
+```
+data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"}}]}
+
+data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","choices":[{"delta":{"content":"Hello"}}]}
+
+data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","choices":[{"finish_reason":"stop"}]}
+
+data: [DONE]
+```
+
+#### Retry Behavior
+
+**Important**: Retry behavior differs based on model selection:
+
+- **Tier-based requests** (`auto`, `fast`, `balanced`, `deep`): Automatic retry with endpoint exclusion. If an endpoint fails, the request retries on a different endpoint in the same tier (up to 3 attempts with exponential backoff).
+
+- **Specific model requests** (e.g., `"qwen3-8b"`): **No automatic retry**. If the specified endpoint fails, the request fails immediately. This is because specific model selection indicates the user wants that exact endpoint.
+
+- **Streaming requests**: **No automatic retry** regardless of model selection. Once streaming begins, mid-stream failures cannot be retried. Error events are sent to the client with request IDs for debugging.
+
+#### Warning Headers
+
+Non-fatal issues are reported via the `X-Octoroute-Warning` response header:
+
+```
+X-Octoroute-Warning: health tracking failed: endpoint not found (endpoint health state may be stale)
+```
+
+**Note on Streaming**: Warning headers cannot be modified after streaming begins. For streaming requests, health tracking warnings are logged server-side but not surfaced to clients. Check server logs for full observability.
+
+#### Status Codes
+
+- `200 OK`: Request successful
+- `400 Bad Request`: Invalid request (empty messages, invalid parameters)
+- `500 Internal Server Error`: Configuration error or routing failed
+- `502 Bad Gateway`: Model query failed or stream interrupted
+- `504 Gateway Timeout`: Endpoint timeout exceeded
+
+---
+
+### GET /v1/models (OpenAI-Compatible)
+
+List available models in OpenAI-compatible format.
+
+#### Response Body
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "auto",
+      "object": "model",
+      "created": 0,
+      "owned_by": "octoroute"
+    },
+    {
+      "id": "fast",
+      "object": "model",
+      "created": 0,
+      "owned_by": "octoroute"
+    },
+    {
+      "id": "qwen3-8b",
+      "object": "model",
+      "created": 0,
+      "owned_by": "user"
+    }
+  ]
+}
+```
+
+**Model Types**:
+
+- `owned_by: "octoroute"` - Virtual routing models (`auto`, `fast`, `balanced`, `deep`)
+- `owned_by: "user"` - Direct endpoint access (configured model endpoints)
+
+---
+
 ## Error Responses
 
 All errors return JSON with an `error` field:

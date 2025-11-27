@@ -230,8 +230,8 @@ pub struct RoutingConfig {
     ///   with clear deserialization errors
     ///
     /// **Availability Validation (Config Loading Time)**:
-    /// - `Config::validate()` ensures ALL tiers have at least one endpoint
-    ///   (lines 686-716), preventing routing failures regardless of router_tier
+    /// - `Config::validate()` ensures ALL tiers have at least one endpoint,
+    ///   preventing routing failures regardless of router_tier
     /// - This catches misconfiguration (e.g., router_tier="deep" but no
     ///   [[models.deep]] endpoints) at config load time, not runtime
     ///
@@ -710,6 +710,47 @@ impl Config {
                 See config.toml or tests for configuration examples."
                     .to_string(),
             ));
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Phase 2.5: Endpoint Name Cross-Tier Uniqueness Validation
+        // ═══════════════════════════════════════════════════════════════════════
+        //
+        // Validate that endpoint names are unique ACROSS tiers (not within).
+        //
+        // RATIONALE:
+        // - Duplicates WITHIN a tier are valid (load balancing replicas of same model)
+        // - Duplicates ACROSS tiers are confusing: find_endpoint_by_name searches
+        //   fast -> balanced -> deep and returns the first match. If "qwen3-8b" exists
+        //   in both fast and balanced, requesting model="qwen3-8b" always uses fast.
+        //
+        // This validation catches cross-tier duplicates at startup with a clear message.
+        {
+            use std::collections::HashMap;
+            let mut name_to_tier: HashMap<&str, &str> = HashMap::new();
+
+            for (tier_name, endpoints) in [
+                ("fast", &self.models.fast),
+                ("balanced", &self.models.balanced),
+                ("deep", &self.models.deep),
+            ] {
+                for endpoint in endpoints {
+                    if let Some(existing_tier) = name_to_tier.get(endpoint.name.as_str()) {
+                        // Only error if it's a DIFFERENT tier
+                        if *existing_tier != tier_name {
+                            return Err(crate::error::AppError::Config(format!(
+                                "Configuration error: Endpoint name '{}' exists in both '{}' and '{}' tiers. \
+                                Endpoint names must be unique across different tiers. \
+                                Duplicates within the same tier (for load balancing) are allowed.",
+                                endpoint.name, existing_tier, tier_name
+                            )));
+                        }
+                        // Same tier duplicate is OK (load balancing)
+                    } else {
+                        name_to_tier.insert(&endpoint.name, tier_name);
+                    }
+                }
+            }
         }
 
         // Validate request timeout
