@@ -20,6 +20,7 @@ use crate::middleware::RequestId;
 use crate::models::ModelSelector;
 use crate::shared::query::record_routing_metrics;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::find_endpoint_by_name;
 use axum::{
@@ -191,9 +192,7 @@ pub async fn handler(
 
     Ok(Sse::new(stream)
         .keep_alive(
-            KeepAlive::new()
-                .interval(Duration::from_secs(15))
-                .text(":\n\n"),
+            KeepAlive::new().interval(Duration::from_secs(15)).text(":"), // SSE comment for keep-alive (axum adds newlines)
         )
         .into_response())
 }
@@ -255,7 +254,7 @@ fn create_sse_stream(
                                 error = %ser_err,
                                 "Failed to serialize error chunk"
                             );
-                            "{}".to_string()
+                            r#"{"error":"Internal serialization error"}"#.to_string()
                         }),
                     )),
                     Ok(Event::default().data("[DONE]")),
@@ -273,12 +272,16 @@ fn create_sse_stream(
                     error = %e,
                     "Failed to serialize initial chunk"
                 );
-                "{}".to_string()
+                r#"{"error":"Internal serialization error"}"#.to_string()
             }),
         ));
 
         // Save request_id for use after the stream closure
         let request_id_for_finish = request_id;
+
+        // Track if an error occurs during streaming (IMPORTANT-4 fix)
+        // If error occurs, we skip the finish_reason: "stop" chunk since it's misleading
+        let error_occurred = Arc::new(AtomicBool::new(false));
 
         // Map model stream to SSE events
         let content_stream = model_stream
@@ -287,11 +290,13 @@ fn create_sse_stream(
                 let model = model.clone();
                 let request_id = request_id;
                 let endpoint_name = endpoint_name.clone();
+                let error_occurred = error_occurred.clone();
                 move |result| {
                     let completion_id = completion_id.clone();
                     let model = model.clone();
                     let request_id = request_id;
                     let endpoint_name = endpoint_name.clone();
+                    let error_occurred = error_occurred.clone();
                     async move {
                         match result {
                             Ok(block) => {
@@ -311,7 +316,7 @@ fn create_sse_stream(
                                                     error = %e,
                                                     "Failed to serialize content chunk"
                                                 );
-                                                "{}".to_string()
+                                                r#"{"error":"Internal serialization error"}"#.to_string()
                                             }),
                                         )))
                                     }
@@ -328,6 +333,9 @@ fn create_sse_stream(
                                 }
                             }
                             Err(e) => {
+                                // Mark that an error occurred (IMPORTANT-4 fix)
+                                error_occurred.store(true, Ordering::SeqCst);
+
                                 // Propagate error to client instead of silent drop
                                 tracing::error!(
                                     request_id = %request_id,
@@ -336,11 +344,12 @@ fn create_sse_stream(
                                     "Stream error during content delivery - notifying client"
                                 );
                                 // Send error indication to client (sanitized message)
+                                // NOTE: SSE data fields cannot contain newlines - removed \n\n prefix
                                 let error_chunk = ChatCompletionChunk::content(
                                     &completion_id,
                                     &model,
                                     created,
-                                    "\n\n[Stream Error: Content may be incomplete. Please retry.]",
+                                    "[Stream Error: Content may be incomplete. Please retry.]",
                                 );
                                 Some(Ok(Event::default().data(
                                     serde_json::to_string(&error_chunk).unwrap_or_else(|e| {
@@ -349,7 +358,7 @@ fn create_sse_stream(
                                             error = %e,
                                             "Failed to serialize error chunk"
                                         );
-                                        "{}".to_string()
+                                        r#"{"error":"Internal serialization error"}"#.to_string()
                                     }),
                                 )))
                             }
@@ -359,26 +368,83 @@ fn create_sse_stream(
             })
             .boxed();
 
-        // Create finish chunk and done signal
+        // Create finish events - skip finish_reason: "stop" if error occurred (IMPORTANT-4 fix)
+        // Sending finish_reason: "stop" after an error is semantically incorrect
         let finish_chunk = ChatCompletionChunk::finish(&completion_id, &model, created);
-        let finish_events = stream::iter(vec![
-            Ok(Event::default().data(
-                serde_json::to_string(&finish_chunk).unwrap_or_else(|e| {
-                    tracing::error!(
-                        request_id = %request_id_for_finish,
-                        error = %e,
-                        "Failed to serialize finish chunk"
+        let finish_events = {
+            let error_occurred = error_occurred.clone();
+            let request_id = request_id_for_finish;
+            stream::once(async move {
+                if error_occurred.load(Ordering::SeqCst) {
+                    // Error occurred - only send [DONE], skip misleading finish_reason: "stop"
+                    tracing::debug!(
+                        request_id = %request_id,
+                        "Skipping finish chunk due to stream error (IMPORTANT-4 fix)"
                     );
-                    "{}".to_string()
-                }),
-            )),
-            Ok(Event::default().data("[DONE]")),
-        ]);
+                    vec![Ok(Event::default().data("[DONE]"))]
+                } else {
+                    // Normal completion - send finish chunk then [DONE]
+                    vec![
+                        Ok(Event::default().data(
+                            serde_json::to_string(&finish_chunk).unwrap_or_else(|e| {
+                                tracing::error!(
+                                    request_id = %request_id,
+                                    error = %e,
+                                    "Failed to serialize finish chunk"
+                                );
+                                r#"{"error":"Internal serialization error"}"#.to_string()
+                            }),
+                        )),
+                        Ok(Event::default().data("[DONE]")),
+                    ]
+                }
+            })
+            .flat_map(stream::iter)
+        };
 
-        // Combine: initial + content + finish
+        // Mark endpoint as healthy when stream completes successfully (CRITICAL-3 fix)
+        // This runs after all events are sent, providing symmetric health tracking
+        // with the non-streaming handler (completions.rs)
+        // Only mark success if no error occurred during streaming
+        let success_tracker = {
+            let selector = selector.clone();
+            let endpoint_name = endpoint_name.clone();
+            let request_id = request_id_for_finish;
+            let error_occurred = error_occurred.clone();
+            stream::once(async move {
+                // Only mark success if no error occurred
+                if error_occurred.load(Ordering::SeqCst) {
+                    tracing::debug!(
+                        request_id = %request_id,
+                        endpoint_name = %endpoint_name,
+                        "Skipping health success tracking due to stream error"
+                    );
+                } else if let Err(e) = selector.health_checker().mark_success(&endpoint_name).await
+                {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        endpoint_name = %endpoint_name,
+                        error = %e,
+                        "Health tracking failed for successful streaming completion"
+                    );
+                } else {
+                    tracing::debug!(
+                        request_id = %request_id,
+                        endpoint_name = %endpoint_name,
+                        "Marked endpoint healthy after successful stream completion"
+                    );
+                }
+                // Return None to not emit any event - this is just for side effects
+                None::<Result<Event, Infallible>>
+            })
+            .filter_map(|x| async { x })
+        };
+
+        // Combine: initial + content + finish + success tracking
         stream::iter(vec![initial_event])
             .chain(content_stream)
             .chain(finish_events)
+            .chain(success_tracker)
             .boxed()
     })
     .flatten()

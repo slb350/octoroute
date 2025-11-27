@@ -124,12 +124,19 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
-    /// Create a new message
-    pub fn new(role: MessageRole, content: impl Into<String>) -> Self {
-        Self {
-            role,
-            content: content.into(),
+    /// Create a new message with validation
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - Content is empty or whitespace-only for User or System roles
+    ///
+    /// Assistant messages can have empty content (for function calls, partial responses).
+    pub fn try_new(role: MessageRole, content: impl Into<String>) -> Result<Self, &'static str> {
+        let content = content.into();
+        if content.trim().is_empty() && role != MessageRole::Assistant {
+            return Err("content cannot be empty for user/system messages");
         }
+        Ok(Self { role, content })
     }
 
     /// Get the role
@@ -364,43 +371,61 @@ impl<'de> Deserialize<'de> for ChatCompletionRequest {
         }
 
         // Validation 4: Temperature range [0.0, 2.0]
-        // Also reject NaN and infinity values
-        if let Some(temp) = raw.temperature
-            && (!(0.0..=2.0).contains(&temp) || temp.is_nan() || temp.is_infinite())
-        {
-            return Err(serde::de::Error::custom(
-                "temperature must be between 0.0 and 2.0",
-            ));
+        // Check for NaN/infinity first with specific error message
+        if let Some(temp) = raw.temperature {
+            if temp.is_nan() || temp.is_infinite() {
+                return Err(serde::de::Error::custom(
+                    "temperature must be a finite number",
+                ));
+            }
+            if !(0.0..=2.0).contains(&temp) {
+                return Err(serde::de::Error::custom(
+                    "temperature must be between 0.0 and 2.0",
+                ));
+            }
         }
 
         // Validation 5: top_p range (0.0, 1.0]
-        // Also reject NaN and infinity values
-        if let Some(top_p) = raw.top_p
-            && (top_p <= 0.0 || top_p > 1.0 || top_p.is_nan() || top_p.is_infinite())
-        {
-            return Err(serde::de::Error::custom(
-                "top_p must be between 0.0 (exclusive) and 1.0 (inclusive)",
-            ));
+        // Check for NaN/infinity first with specific error message
+        if let Some(top_p) = raw.top_p {
+            if top_p.is_nan() || top_p.is_infinite() {
+                return Err(serde::de::Error::custom("top_p must be a finite number"));
+            }
+            if top_p <= 0.0 || top_p > 1.0 {
+                return Err(serde::de::Error::custom(
+                    "top_p must be between 0.0 (exclusive) and 1.0 (inclusive)",
+                ));
+            }
         }
 
         // Validation 6: presence_penalty range [-2.0, 2.0]
-        // Also reject NaN and infinity values
-        if let Some(pp) = raw.presence_penalty
-            && (!((-2.0)..=2.0).contains(&pp) || pp.is_nan() || pp.is_infinite())
-        {
-            return Err(serde::de::Error::custom(
-                "presence_penalty must be between -2.0 and 2.0",
-            ));
+        // Check for NaN/infinity first with specific error message
+        if let Some(pp) = raw.presence_penalty {
+            if pp.is_nan() || pp.is_infinite() {
+                return Err(serde::de::Error::custom(
+                    "presence_penalty must be a finite number",
+                ));
+            }
+            if !((-2.0)..=2.0).contains(&pp) {
+                return Err(serde::de::Error::custom(
+                    "presence_penalty must be between -2.0 and 2.0",
+                ));
+            }
         }
 
         // Validation 7: frequency_penalty range [-2.0, 2.0]
-        // Also reject NaN and infinity values
-        if let Some(fp) = raw.frequency_penalty
-            && (!((-2.0)..=2.0).contains(&fp) || fp.is_nan() || fp.is_infinite())
-        {
-            return Err(serde::de::Error::custom(
-                "frequency_penalty must be between -2.0 and 2.0",
-            ));
+        // Check for NaN/infinity first with specific error message
+        if let Some(fp) = raw.frequency_penalty {
+            if fp.is_nan() || fp.is_infinite() {
+                return Err(serde::de::Error::custom(
+                    "frequency_penalty must be a finite number",
+                ));
+            }
+            if !((-2.0)..=2.0).contains(&fp) {
+                return Err(serde::de::Error::custom(
+                    "frequency_penalty must be between -2.0 and 2.0",
+                ));
+            }
         }
 
         // Validation 8: max_tokens > 0
@@ -604,14 +629,6 @@ impl ChatCompletionChunk {
         }
     }
 
-    /// Serialize to SSE data line format
-    pub fn to_sse_data(&self) -> String {
-        format!(
-            "data: {}\n\n",
-            serde_json::to_string(self).unwrap_or_default()
-        )
-    }
-
     /// SSE termination message
     pub fn done_sse() -> &'static str {
         "data: [DONE]\n\n"
@@ -803,9 +820,49 @@ mod tests {
 
     #[test]
     fn test_chat_message_content_length_unicode() {
-        let msg = ChatMessage::new(MessageRole::User, "Hello 👋 世界");
+        let msg = ChatMessage::try_new(MessageRole::User, "Hello 👋 世界").expect("valid content");
         // "Hello 👋 世界" = 10 characters (emoji and CJK count as 1 each)
         assert_eq!(msg.content_length(), 10);
+    }
+
+    #[test]
+    fn test_chat_message_new_validates_user_content() {
+        // ChatMessage::new should reject empty content for User role
+        let result = ChatMessage::try_new(MessageRole::User, "");
+        assert!(
+            result.is_err(),
+            "ChatMessage::try_new should reject empty User content"
+        );
+    }
+
+    #[test]
+    fn test_chat_message_new_validates_system_content() {
+        // ChatMessage::new should reject empty content for System role
+        let result = ChatMessage::try_new(MessageRole::System, "");
+        assert!(
+            result.is_err(),
+            "ChatMessage::try_new should reject empty System content"
+        );
+    }
+
+    #[test]
+    fn test_chat_message_new_allows_empty_assistant_content() {
+        // Assistant messages can have empty content (function calls, etc.)
+        let result = ChatMessage::try_new(MessageRole::Assistant, "");
+        assert!(
+            result.is_ok(),
+            "ChatMessage::try_new should allow empty Assistant content"
+        );
+    }
+
+    #[test]
+    fn test_chat_message_new_validates_whitespace_only() {
+        // Whitespace-only content should be rejected for User/System
+        let result = ChatMessage::try_new(MessageRole::User, "   ");
+        assert!(
+            result.is_err(),
+            "ChatMessage::try_new should reject whitespace-only User content"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -1050,15 +1107,6 @@ mod tests {
         assert!(chunk.choices[0].delta.role.is_none());
         assert!(chunk.choices[0].delta.content.is_none());
         assert_eq!(chunk.choices[0].finish_reason, Some(FinishReason::Stop));
-    }
-
-    #[test]
-    fn test_chunk_to_sse_data() {
-        let chunk = ChatCompletionChunk::content("id", "model", 0, "Hi");
-        let sse = chunk.to_sse_data();
-        assert!(sse.starts_with("data: "));
-        assert!(sse.ends_with("\n\n"));
-        assert!(sse.contains("\"content\":\"Hi\""));
     }
 
     #[test]

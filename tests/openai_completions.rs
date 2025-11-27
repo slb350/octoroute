@@ -87,11 +87,11 @@ async fn test_completions_rejects_empty_messages() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Validation errors from custom deserializers may return different status codes
-    // depending on how axum handles JsonRejection
-    assert!(
-        response.status().is_client_error() || response.status().is_server_error(),
-        "Empty messages array should be rejected"
+    // Validation errors from custom deserializers return 422 Unprocessable Entity
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "Empty messages array should return 422"
     );
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -100,8 +100,8 @@ async fn test_completions_rejects_empty_messages() {
     let body_str = String::from_utf8_lossy(&body);
 
     assert!(
-        body_str.contains("empty") || body_str.contains("messages") || body_str.contains("Failed"),
-        "Error should mention empty messages or failure, got: {}",
+        body_str.contains("empty") || body_str.contains("messages"),
+        "Error should mention empty messages, got: {}",
         body_str
     );
 }
@@ -121,9 +121,10 @@ async fn test_completions_rejects_empty_user_content() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    assert!(
-        response.status().is_client_error() || response.status().is_server_error(),
-        "Empty user content should be rejected"
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "Empty user content should return 422"
     );
 }
 
@@ -143,9 +144,10 @@ async fn test_completions_rejects_invalid_temperature() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    assert!(
-        response.status().is_client_error() || response.status().is_server_error(),
-        "Invalid temperature should be rejected"
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "Invalid temperature should return 422"
     );
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -154,7 +156,7 @@ async fn test_completions_rejects_invalid_temperature() {
     let body_str = String::from_utf8_lossy(&body);
 
     assert!(
-        body_str.contains("temperature") || body_str.contains("Failed"),
+        body_str.contains("temperature"),
         "Error should mention temperature, got: {}",
         body_str
     );
@@ -176,9 +178,10 @@ async fn test_completions_rejects_invalid_top_p() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    assert!(
-        response.status().is_client_error() || response.status().is_server_error(),
-        "Invalid top_p should be rejected"
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "Invalid top_p should return 422"
     );
 }
 
@@ -195,10 +198,11 @@ async fn test_completions_rejects_invalid_json() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Invalid JSON should be rejected (may be 400 or 500 depending on error handling)
-    assert!(
-        response.status().is_client_error() || response.status().is_server_error(),
-        "Invalid JSON should be rejected"
+    // Invalid JSON syntax returns 400 Bad Request
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "Invalid JSON should return 400"
     );
 }
 
@@ -217,10 +221,11 @@ async fn test_completions_rejects_missing_model() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Missing required field should be rejected
-    assert!(
-        response.status().is_client_error() || response.status().is_server_error(),
-        "Missing model should be rejected"
+    // Missing required field returns 422 Unprocessable Entity
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "Missing model should return 422"
     );
 }
 
@@ -240,10 +245,11 @@ async fn test_completions_rejects_unknown_model() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Unknown specific model should fail validation or routing
-    assert!(
-        response.status().is_client_error() || response.status().is_server_error(),
-        "Unknown model should be rejected"
+    // Unknown specific model returns 400 Bad Request (routing error)
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "Unknown model should return 400"
     );
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)

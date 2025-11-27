@@ -19,10 +19,36 @@ pub const DEFAULT_RETRY_BACKOFF_MS: u64 = 100;
 /// Configuration for query execution with retries
 #[derive(Debug, Clone)]
 pub struct QueryConfig {
-    /// Maximum number of retry attempts
-    pub max_retries: usize,
+    /// Maximum number of retry attempts (must be at least 1)
+    max_retries: usize,
     /// Base backoff in milliseconds (doubles each retry)
-    pub retry_backoff_ms: u64,
+    retry_backoff_ms: u64,
+}
+
+impl QueryConfig {
+    /// Create a new query configuration
+    ///
+    /// # Errors
+    /// Returns an error if `max_retries` is 0 (at least 1 attempt is required)
+    pub fn new(max_retries: usize, retry_backoff_ms: u64) -> Result<Self, &'static str> {
+        if max_retries == 0 {
+            return Err("max_retries must be at least 1");
+        }
+        Ok(Self {
+            max_retries,
+            retry_backoff_ms,
+        })
+    }
+
+    /// Get the maximum number of retry attempts
+    pub fn max_retries(&self) -> usize {
+        self.max_retries
+    }
+
+    /// Get the base backoff in milliseconds
+    pub fn retry_backoff_ms(&self) -> u64 {
+        self.retry_backoff_ms
+    }
 }
 
 impl Default for QueryConfig {
@@ -240,7 +266,7 @@ pub async fn execute_query_with_retry(
     // Add any warnings from the routing decision
     warnings.extend(decision.warnings().iter().cloned());
 
-    for attempt in 1..=config.max_retries {
+    for attempt in 1..=config.max_retries() {
         // Select endpoint from target tier (with health filtering + priority + exclusion)
         let endpoint = match state
             .selector()
@@ -256,7 +282,7 @@ pub async fn execute_query_with_retry(
                     request_id = %request_id,
                     tier = ?decision.target(),
                     attempt = attempt,
-                    max_retries = config.max_retries,
+                    max_retries = config.max_retries(),
                     total_configured_endpoints = total_configured,
                     failed_endpoints_count = excluded_count,
                     failed_endpoints = ?failed_endpoints,
@@ -271,11 +297,11 @@ pub async fn execute_query_with_retry(
                     total_configured,
                     excluded_count,
                     attempt,
-                    config.max_retries
+                    config.max_retries()
                 )));
 
                 // Add exponential backoff before retry
-                if attempt < config.max_retries {
+                if attempt < config.max_retries() {
                     let backoff_ms = config
                         .retry_backoff_ms
                         .saturating_mul(2_u64.saturating_pow((attempt as u32).saturating_sub(1)));
@@ -290,7 +316,7 @@ pub async fn execute_query_with_retry(
             endpoint_name = %endpoint.name(),
             endpoint_url = %endpoint.base_url(),
             attempt = attempt,
-            max_retries = config.max_retries,
+            max_retries = config.max_retries(),
             "Attempting model query"
         );
 
@@ -304,7 +330,7 @@ pub async fn execute_query_with_retry(
             timeout_seconds,
             request_id,
             attempt,
-            config.max_retries,
+            config.max_retries(),
         )
         .await
         {
@@ -374,7 +400,7 @@ pub async fn execute_query_with_retry(
                     request_id = %request_id,
                     endpoint_name = %endpoint.name(),
                     attempt = attempt,
-                    max_retries = config.max_retries,
+                    max_retries = config.max_retries(),
                     error = %e,
                     "Endpoint query failed, excluding from retries"
                 );
@@ -407,7 +433,7 @@ pub async fn execute_query_with_retry(
                 last_error = Some(e);
 
                 // Add exponential backoff before retry
-                if attempt < config.max_retries {
+                if attempt < config.max_retries() {
                     let backoff_ms = config
                         .retry_backoff_ms
                         .saturating_mul(2_u64.saturating_pow((attempt as u32).saturating_sub(1)));
@@ -421,7 +447,7 @@ pub async fn execute_query_with_retry(
     tracing::error!(
         request_id = %request_id,
         tier = ?decision.target(),
-        max_retries = config.max_retries,
+        max_retries = config.max_retries(),
         "All retry attempts exhausted"
     );
 
@@ -429,7 +455,7 @@ pub async fn execute_query_with_retry(
         tracing::error!(
             request_id = %request_id,
             tier = ?decision.target(),
-            max_retries = config.max_retries,
+            max_retries = config.max_retries(),
             excluded_endpoints = ?failed_endpoints,
             "BUG: Retry loop exhausted but last_error is None"
         );
@@ -437,7 +463,7 @@ pub async fn execute_query_with_retry(
         AppError::Internal(format!(
             "Request failed after {} retry attempts. All endpoints for tier {:?} \
             were exhausted. Failed endpoints: {:?}.",
-            config.max_retries,
+            config.max_retries(),
             decision.target(),
             failed_endpoints
                 .iter()
@@ -499,17 +525,27 @@ mod tests {
     #[test]
     fn test_query_config_default() {
         let config = QueryConfig::default();
-        assert_eq!(config.max_retries, DEFAULT_MAX_RETRIES);
-        assert_eq!(config.retry_backoff_ms, DEFAULT_RETRY_BACKOFF_MS);
+        assert_eq!(config.max_retries(), DEFAULT_MAX_RETRIES);
+        assert_eq!(config.retry_backoff_ms(), DEFAULT_RETRY_BACKOFF_MS);
     }
 
     #[test]
-    fn test_query_config_custom() {
-        let config = QueryConfig {
-            max_retries: 5,
-            retry_backoff_ms: 200,
-        };
-        assert_eq!(config.max_retries, 5);
-        assert_eq!(config.retry_backoff_ms, 200);
+    fn test_query_config_new_valid() {
+        let config = QueryConfig::new(5, 200).expect("should accept valid values");
+        assert_eq!(config.max_retries(), 5);
+        assert_eq!(config.retry_backoff_ms(), 200);
+    }
+
+    #[test]
+    fn test_query_config_rejects_zero_retries() {
+        let result = QueryConfig::new(0, 100);
+        assert!(result.is_err(), "should reject zero retries");
+        assert!(result.unwrap_err().contains("at least 1"));
+    }
+
+    #[test]
+    fn test_query_config_accepts_one_retry() {
+        let config = QueryConfig::new(1, 100).expect("should accept 1 retry");
+        assert_eq!(config.max_retries(), 1);
     }
 }
