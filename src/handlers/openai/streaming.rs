@@ -281,6 +281,14 @@ fn create_sse_stream(
 
         // Track if an error occurs during streaming (IMPORTANT-4 fix)
         // If error occurs, we skip the finish_reason: "stop" chunk since it's misleading
+        //
+        // NOTE ON THREAD SAFETY: There is NO race condition here despite streams being
+        // "created upfront". The `.chain()` operator ensures sequential execution:
+        // - content_stream must be exhausted before finish_events is polled
+        // - finish_events must be exhausted before success_tracker is polled
+        // The async blocks inside stream::once() don't execute until polled, so
+        // error_occurred.load() in success_tracker will always see any .store() from
+        // content_stream. SeqCst ordering provides the memory visibility guarantee.
         let error_occurred = Arc::new(AtomicBool::new(false));
 
         // Map model stream to SSE events
