@@ -656,11 +656,6 @@ impl ChatCompletionChunk {
             }],
         }
     }
-
-    /// SSE termination message
-    pub fn done_sse() -> &'static str {
-        "data: [DONE]\n\n"
-    }
 }
 
 // =============================================================================
@@ -1166,11 +1161,6 @@ mod tests {
         assert!(chunk.choices[0].delta.role.is_none());
         assert!(chunk.choices[0].delta.content.is_none());
         assert_eq!(chunk.choices[0].finish_reason, Some(FinishReason::Stop));
-    }
-
-    #[test]
-    fn test_done_sse() {
-        assert_eq!(ChatCompletionChunk::done_sse(), "data: [DONE]\n\n");
     }
 
     // -------------------------------------------------------------------------
