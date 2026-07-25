@@ -1,786 +1,192 @@
-# Octoroute 🦑
+# Octoroute
 
-**Intelligent multi-model router for self-hosted LLMs**
+Octoroute is a local-first, OpenAI-compatible LLM gateway for a personal
+Strix llama.cpp server and OpenRouter.
 
-[![Rust](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-
-Octoroute is a smart HTTP API that sits between your applications and your homelab's fleet of local LLMs. It automatically routes requests to the optimal model (8B, 30B, or 120B) based on task complexity, reducing compute costs while maintaining quality.
-
-Think of it as a load balancer, but instead of distributing requests evenly, it sends simple queries to small models and complex reasoning tasks to larger ones.
-
----
-
-## Why Octoroute?
-
-Running multiple LLM sizes on your homelab is powerful, but routing requests manually is tedious:
-
-- **Manual routing is error-prone**: You always use the 120B model "just in case," wasting compute.
-- **Simple heuristics aren't enough**: "Short prompts → small model" misses nuance.
-- **LangChain is Python-only**: You want native Rust performance and type safety.
-
-**Octoroute solves this with:**
-
-✅ **Intelligent routing** - Rule-based + LLM-powered decision making
-✅ **Zero-cost rules** - Fast pattern matching for obvious cases (<1ms)
-✅ **Homelab-first** - Built for local Ollama, LM Studio, llama.cpp deployments
-✅ **Rust native** - Type-safe, async, low overhead
-✅ **Observable** - Track every routing decision with structured logs
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- At least one local LLM endpoint (Ollama, LM Studio, llama.cpp, etc.)
-- Optional: Multiple model sizes (8B, 30B, 120B) for intelligent routing
-- Optional: Rust 1.90+ (only needed if building from source)
-
-### Installation
-
-**Option 1: Pre-built binaries (fastest)**
-
-Download from [GitHub Releases](https://github.com/slb350/octoroute/releases/latest):
-
-```bash
-# Linux x86_64
-curl -LO https://github.com/slb350/octoroute/releases/latest/download/octoroute-linux-x86_64.tar.gz
-tar -xzf octoroute-linux-x86_64.tar.gz
-
-# Linux ARM64 (Raspberry Pi, etc.)
-curl -LO https://github.com/slb350/octoroute/releases/latest/download/octoroute-linux-aarch64.tar.gz
-tar -xzf octoroute-linux-aarch64.tar.gz
-
-# macOS Apple Silicon
-curl -LO https://github.com/slb350/octoroute/releases/latest/download/octoroute-macos-aarch64.tar.gz
-tar -xzf octoroute-macos-aarch64.tar.gz
-
-# macOS Intel
-curl -LO https://github.com/slb350/octoroute/releases/latest/download/octoroute-macos-x86_64.tar.gz
-tar -xzf octoroute-macos-x86_64.tar.gz
-
-# Run
-./octoroute
+```text
+OpenAI client
+     |
+     v
+ Octoroute
+   |    \
+   |     `-- OpenRouter Auto Beta --> cloud model/provider
+   |
+   `-- Strix llama.cpp (`strixtea`) when compatible, healthy, and idle
 ```
 
-**Option 2: Cargo install (requires Rust)**
+Octoroute owns the local-versus-cloud decision. OpenRouter owns cloud model
+and provider selection. A cloud classifier is not called before local work.
 
-```bash
-cargo install octoroute
+## What it does
+
+- Exposes `POST /v1/chat/completions` and `GET /v1/models`.
+- Preserves unknown request fields and forwards response/SSE bytes opaquely.
+- Routes `auto` requests locally only when Strix supports the requested
+  capabilities, has a free slot, and the exact prompt plus output budget fits
+  the configured context window.
+- Uses OpenRouter `openrouter/auto-beta` for everything else.
+- Accepts exact OpenRouter slugs such as
+  `deepseek/deepseek-v4-flash`.
+- Guarantees that `model: local`, the exact local alias, and
+  `X-Octoroute-Privacy: local-only` never fall back to cloud.
+- Falls back from an automatic local attempt only before the first response
+  body byte is committed.
+- Enforces bearer authentication, request/header limits, fixed-window rate
+  limiting, per-credential concurrency, and a global cloud concurrency limit.
+- Exposes bounded-cardinality Prometheus metrics and health endpoints.
+
+## Quick start
+
+Requirements:
+
+- Rust 1.90 or newer
+- A llama.cpp server exposing `/health`, `/slots`, and
+  `/v1/chat/completions/input_tokens`
+- An OpenRouter API key
+
+Copy `.env.example` to an ignored `.env` beside `config.toml`, then fill the
+two required values:
+
+```dotenv
+OCTOROUTE_API_KEY=generate-a-long-random-client-secret
+OPENROUTER_API_KEY=your-openrouter-key
 ```
 
-**Option 3: Build from source**
+Other provider credentials may remain in `.env`; Octoroute v2 reads only the
+environment variable names referenced by `config.toml`.
+
+Generate or inspect the v2 configuration:
 
 ```bash
-git clone https://github.com/slb350/octoroute.git
-cd octoroute
-cargo build --release
-./target/release/octoroute
+cargo run -- config
+cargo run -- config --output config.toml
 ```
 
-### Configuration
-
-Generate a starter config file:
-
-```bash
-# Print template to stdout
-octoroute config
-
-# Write template to file
-octoroute config -o config.toml
-```
-
-Or create a `config.toml` manually:
+The repository configuration targets the live Strix contract:
 
 ```toml
+config_version = 2
+
 [server]
 host = "0.0.0.0"
-port = 3000
+port = 8081
 
-[[models.fast]]
-name = "qwen3-8b-instruct"
-base_url = "http://localhost:11434/v1"  # Ollama
-max_tokens = 4096
-temperature = 0.7
-weight = 1.0
-priority = 1
+[upstreams.local]
+kind = "llama_cpp"
+name = "strix"
+base_url = "http://127.0.0.1:8080"
+model = "strixtea"
+context_window = 65536
+max_in_flight = 1
 
-[[models.balanced]]
-name = "qwen3-30b-instruct"
-base_url = "http://localhost:1234/v1"   # LM Studio
-max_tokens = 8192
-temperature = 0.7
-weight = 1.0
-priority = 1
-
-[[models.deep]]
-name = "gpt-oss-120b"
-base_url = "http://localhost:8080/v1"   # llama.cpp
-max_tokens = 16384
-temperature = 0.7
-weight = 1.0
-priority = 1
-
-[routing]
-strategy = "hybrid"     # rule, llm, hybrid
-router_tier = "balanced"  # fast, balanced, deep (default: balanced)
+[upstreams.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+auto_model = "openrouter/auto-beta"
+cost_quality_tradeoff = 9
 ```
 
-### Usage
+This profile is for running Octoroute on Strix. When developing on another
+host, change the local base URL to `http://strix.local:8080`.
 
-Send a chat request:
+Start the gateway on Strix:
 
 ```bash
-curl -X POST http://localhost:3000/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "Explain quantum computing in simple terms",
-    "importance": "normal",
-    "task_type": "question_answer"
-  }'
+cargo run --release -- --config config.toml
 ```
 
-Response:
+Then point an OpenAI-compatible client at `http://strix.local:8081/v1` and use
+`OCTOROUTE_API_KEY` as its API key.
 
-```json
-{
-  "content": "Quantum computing is...",
-  "model_tier": "balanced",
-  "model_name": "qwen3-30b-instruct",
-  "routing_strategy": "rule"
-}
-```
+## Model intent
 
----
+| `model` value | Behavior | Cloud fallback |
+| --- | --- | --- |
+| `auto` | Eligible idle Strix, else OpenRouter | Before commitment |
+| `local` | Force Strix | Never |
+| `strixtea` | Force the exact configured local alias | Never |
+| `cloud` | Force OpenRouter Auto Beta | OpenRouter-managed only |
+| `openrouter/auto-beta` | Force OpenRouter Auto | OpenRouter-managed only |
+| `provider/model` | Force that OpenRouter model | OpenRouter-managed only |
 
-## OpenAI-Compatible API
-
-**Drop-in replacement for OpenAI clients.** Use Octoroute with any OpenAI-compatible SDK, framework, or tool - no code changes required.
-
-### Quick Example
+Example:
 
 ```bash
-curl http://localhost:3000/v1/chat/completions \
+curl http://strix.local:8081/v1/chat/completions \
+  -H "Authorization: Bearer $OCTOROUTE_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "auto",
-    "messages": [{"role": "user", "content": "Hello!"}]
+    "messages": [{"role": "user", "content": "Explain this Rust error"}],
+    "stream": true
   }'
 ```
 
-### Works with Any OpenAI Client
-
-**Python (OpenAI SDK)**:
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:3000/v1",
-    api_key="not-needed"  # Octoroute doesn't require auth
-)
-
-response = client.chat.completions.create(
-    model="auto",  # Let Octoroute pick the best model
-    messages=[{"role": "user", "content": "Explain quantum computing"}]
-)
-print(response.choices[0].message.content)
-```
-
-**LangChain**:
-
-```python
-from langchain_openai import ChatOpenAI
-
-llm = ChatOpenAI(
-    base_url="http://localhost:3000/v1",
-    api_key="not-needed",
-    model="auto"
-)
-
-response = llm.invoke("What is the meaning of life?")
-```
-
-**TypeScript/JavaScript**:
-
-```typescript
-import OpenAI from 'openai';
-
-const client = new OpenAI({
-  baseURL: 'http://localhost:3000/v1',
-  apiKey: 'not-needed',
-});
-
-const response = await client.chat.completions.create({
-  model: 'auto',
-  messages: [{ role: 'user', content: 'Hello!' }],
-});
-```
-
-### Model Selection
-
-The `model` field controls routing:
-
-| Value | Behavior |
-|-------|----------|
-| `auto` | Intelligent routing - Octoroute analyzes the request and picks the best tier |
-| `fast` | Route directly to Fast tier (8B models) |
-| `balanced` | Route directly to Balanced tier (30B models) |
-| `deep` | Route directly to Deep tier (120B models) |
-| `qwen3-8b` | Bypass routing - use specific endpoint by name |
-
-### Streaming Support
-
-Full SSE streaming support - works with any streaming-capable client:
-
-```python
-stream = client.chat.completions.create(
-    model="auto",
-    messages=[{"role": "user", "content": "Write a poem"}],
-    stream=True
-)
-
-for chunk in stream:
-    if chunk.choices[0].delta.content:
-        print(chunk.choices[0].delta.content, end="")
-```
-
-### Available Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/chat/completions` | POST | Chat completions (streaming & non-streaming) |
-| `/v1/models` | GET | List available models and tiers |
-
-See [API Reference](docs/api-reference.md) for complete documentation.
-
----
-
-## How It Works
-
-### Routing Strategies
-
-Octoroute supports **three routing strategies**:
-
-#### 1. Rule-Based (Fast)
-
-Pattern matching on request metadata:
-
-- **Casual chat** + **<256 tokens** → 8B model
-- **Deep analysis** or **high importance** → 120B model
-- Everything else → 30B model
-
-**Latency**: <1ms (no LLM overhead)
-
-#### 2. LLM-Based (Intelligent)
-
-Uses a 30B "router brain" to analyze the request and choose the optimal model.
-
-**Latency**: ~100-500ms (router invocation)
-
-#### 3. Hybrid (Recommended)
-
-Try rules first (fast path), fall back to LLM for ambiguous cases.
-
-**Latency**: <1ms for rule matches, ~100-500ms for LLM fallback
-
----
-
-## Observability
-
-Octoroute provides three levels of observability to help you understand routing decisions and system performance:
-
-### Level 1: Structured Logs (Always Available)
-
-Built-in structured logging via `tracing`:
+For a request that must remain local:
 
 ```bash
-# Set log level via environment variable
-RUST_LOG=info cargo run
-
-# Available levels: trace, debug, info, warn, error
-RUST_LOG=octoroute=debug cargo run
+curl http://strix.local:8081/v1/chat/completions \
+  -H "Authorization: Bearer $OCTOROUTE_API_KEY" \
+  -H "X-Octoroute-Privacy: local-only" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "auto",
+    "messages": [{"role": "user", "content": "Private prompt"}]
+  }'
 ```
 
-**What you get:**
-- Request metadata (prompt length, importance, task type)
-- Routing decisions (which strategy was used, which model was selected)
-- Health check status updates
-- Error traces with full context
+If local admission fails, this returns an error rather than contacting a
+cloud service.
 
-### Level 2: Metrics (Prometheus Export)
+## Gateway response headers
 
-Metrics are always enabled and available at the `/metrics` endpoint:
+- `X-Octoroute-Destination: local|cloud`
+- `X-Octoroute-Reason`: bounded route reason such as `local_capable`,
+  `local_busy`, or `local_early_failure`
+- `X-Octoroute-Upstream: strix|openrouter`
+- `X-Request-Id`
 
-```bash
-# Build and run
-cargo build --release
-./target/release/octoroute
+Octoroute never rewrites OpenRouter’s returned `model`; callers see the model
+that actually answered.
 
-# Metrics endpoint available at http://localhost:3000/metrics
-```
+## Operations
 
-**Available metrics:**
-- `octoroute_requests_total{tier, strategy}` - Request counts by tier and routing strategy
-- `octoroute_routing_duration_ms{strategy}` - Routing decision latency histogram
-- `octoroute_model_invocations_total{tier}` - Model invocations by tier
-- Plus 3 health/observability metrics (see [Observability Guide](docs/observability.md))
+| Endpoint | Authentication | Purpose |
+| --- | --- | --- |
+| `POST /v1/chat/completions` | Bearer | Routed completion/SSE |
+| `GET /v1/models` | Bearer | Virtual and local model IDs |
+| `GET /health/live` | No | Process liveness |
+| `GET /health/ready` | No | Aggregated Strix/OpenRouter readiness |
+| `GET /health` | No | Readiness alias |
+| `GET /metrics` | Bearer | Prometheus exposition |
 
-**Prometheus scraping config:**
+See:
 
-```yaml
-# prometheus.yml
-scrape_configs:
-  - job_name: 'octoroute'
-    static_configs:
-      - targets: ['localhost:3000']
-    metrics_path: '/metrics'
-    scrape_interval: 15s
-```
-
-**Why Direct Prometheus?** We use the `prometheus` crate directly for simplicity and homelab-friendliness:
-- Works with existing Prometheus/Grafana setups out of the box
-- No intermediate abstraction layers - just Prometheus
-- Mature, stable crate with broad ecosystem support
-
----
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────┐
-│              Client Applications                  │
-│   (OpenAI SDK, LangChain, CLI, curl, etc.)       │
-└─────────────────────┬────────────────────────────┘
-                      │
-       ┌──────────────┴──────────────┐
-       │                             │
-       ▼                             ▼
-  /v1/chat/completions         /chat (legacy)
-  (OpenAI-compatible)          (Native API)
-       │                             │
-       └──────────────┬──────────────┘
-                      ▼
-┌──────────────────────────────────────────────────┐
-│        Octoroute API (Axum + Tokio)              │
-│  ┌────────────────────────────────────────────┐  │
-│  │    Router (Rule/LLM/Hybrid)                │  │
-│  └────────────────────┬───────────────────────┘  │
-│                       │                          │
-│                       ▼ Model Selection          │
-│  ┌────────────────────────────────────────────┐  │
-│  │    open-agent-sdk Client                   │  │
-│  │    (streaming or buffered responses)       │  │
-│  └────────────────────┬───────────────────────┘  │
-└───────────────────────┼──────────────────────────┘
-                        │
-                        ▼
-┌──────────────────────────────────────────────────┐
-│              Local Model Servers                  │
-│   8B (Ollama) | 30B (LM Studio) | 120B (llama)   │
-└──────────────────────────────────────────────────┘
-```
-
-Built on:
-- **[open-agent-sdk](https://github.com/slb350/open-agent-sdk-rust)**: Rust SDK for local LLM orchestration
-- **[Axum](https://github.com/tokio-rs/axum)**: Ergonomic web framework
-- **[Tokio](https://tokio.rs)**: Async runtime
-
----
-
-## Documentation
-
-Comprehensive documentation is available in the `/docs` directory:
-
-- **[Architecture Guide](docs/architecture.md)** - System design, routing strategies, data flow, and technical decisions
-- **[API Reference](docs/api-reference.md)** - Complete HTTP API documentation with request/response schemas and examples
-- **[Configuration Guide](docs/configuration.md)** - Detailed configuration reference with examples for different deployment scenarios
-- **[Observability Guide](docs/observability.md)** - Logging, Prometheus metrics, Grafana dashboards, and monitoring setup
-- **[Development Guide](docs/development.md)** - Testing, benchmarking, code quality, and contributing guidelines
-- **[Deployment Guide](docs/deployment.md)** - Homelab deployment with systemd, Docker, reverse proxy, and security hardening
-
----
-
-## API Reference
-
-### `POST /chat`
-
-Submit a chat request for intelligent routing.
-
-**Request**:
-
-```json
-{
-  "message": "Your question or task",
-  "importance": "low" | "normal" | "high",
-  "task_type": "casual_chat" | "code" | "creative_writing" | "deep_analysis" | "document_summary" | "question_answer"
-}
-```
-
-**Response**:
-
-```json
-{
-  "content": "Generated text",
-  "model_tier": "fast" | "balanced" | "deep",
-  "model_name": "qwen3-30b-instruct",
-  "routing_strategy": "rule" | "llm"
-}
-```
-
-### `GET /health`
-
-Health check endpoint with system status.
-
-**Response**: `200 OK` with JSON body:
-
-```json
-{
-  "status": "OK",
-  "health_tracking_status": "operational",
-  "metrics_recording_status": "operational",
-  "background_task_status": "operational",
-  "background_task_failures": 0
-}
-```
-
-### `GET /models`
-
-List available models and their status.
-
-**Response**:
-
-```json
-{
-  "models": [
-    {
-      "name": "qwen3-8b-instruct",
-      "tier": "fast",
-      "endpoint": "http://localhost:11434/v1",
-      "healthy": true,
-      "last_check_seconds_ago": 2,
-      "consecutive_failures": 0
-    }
-  ]
-}
-```
-
----
-
-## Configuration Reference
-
-See [Configuration Guide](docs/configuration.md) for full configuration options:
-
-- **Server settings**: Host, port, timeouts
-- **Model endpoints**: Names, URLs, token limits
-- **Routing strategy**: Rule, LLM, or hybrid
-- **Router tier**: Which model makes routing decisions
-- **Observability**: Log level, metrics
-
-### Router Tier vs Target Tier
-
-Understanding the difference between **router tier** and **target tier** is crucial for LLM and Hybrid strategies:
-
-- **Router Tier** (`router_tier`): Which model tier (fast/balanced/deep) makes the routing decision
-  - Used by LLM and Hybrid strategies only
-  - Analyzes the request and decides which target tier should handle it
-  - Default: `balanced` (good balance of speed and accuracy)
-  - Example: A Balanced tier model decides whether to route to Fast, Balanced, or Deep
-
-- **Target Tier**: Which model tier actually processes the user's request
-  - Determined by the routing decision
-  - Can be Fast (8B), Balanced (30B), or Deep (120B)
-  - The model that generates the final response to the user
-
-**Example Flow:**
-```
-User Request → Router Tier (balanced/30B) analyzes request
-           → Decides: "This is simple, use Fast tier"
-           → Target Tier (fast/8B) processes request
-           → Response to user
-```
-
-**Why separate them?**
-- Faster routing: Use Fast tier (8B) for routing decisions to minimize overhead
-- More accurate routing: Use Balanced tier (30B) for better routing decisions
-- Don't waste resources: Use Deep tier (120B) for processing, not routing
-
----
+- [Architecture](docs/architecture.md)
+- [API reference](docs/api-reference.md)
+- [Configuration](docs/configuration.md)
+- [V1-to-v2 migration](docs/migration-v2.md)
+- [Security](docs/security.md)
+- [Deployment](docs/deployment.md)
+- [Observability](docs/observability.md)
+- [Development](docs/development.md)
 
 ## Development
 
-### Prerequisites
-
 ```bash
-# Install Rust 1.90+ (required for Edition 2024)
-rustup toolchain install 1.90
-rustup default 1.90
-rustup component add rustfmt clippy
-
-# Install development tools
-cargo install just cargo-nextest
-```
-
-### Build
-
-```bash
-# Development build
-cargo build
-
-# Release build (optimized, includes Prometheus metrics)
-cargo build --release
-```
-
-### Test
-
-```bash
-# Run all tests
-cargo test
-
-# Run with nextest (faster)
-cargo nextest run
-
-# Run integration tests
-cargo test --test '*'
-```
-
-### Format & Lint
-
-```bash
-# Format code
-cargo fmt
-
-# Lint with clippy
+cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
 ```
 
-**Quick Command Reference** (using `justfile`):
+The implementation plan and decision record are in
+[docs/plans/local-cloud-routing-gateway.md](docs/plans/local-cloud-routing-gateway.md).
 
-| Command | Description |
-|---------|-------------|
-| `just check` | Run clippy and format checks |
-| `just test` | Run all tests |
-| `just bench` | Run benchmarks |
-| `just watch` | Auto-rebuild on file changes |
-| `just ci` | Complete CI check (clippy + format + tests) |
+## Scope
 
-See `just --list` for all 20+ available commands.
+Octoroute v2 intentionally does not provide direct Anthropic, Google,
+OpenAI, or DeepSeek adapters. OpenRouter is the single cloud boundary. It
+also does not execute tools, rewrite prompts, persist conversations, or
+provide a UI.
 
-### Run locally
-
-```bash
-# With cargo (uses config.toml by default)
-cargo run
-
-# Or use release binary
-./target/release/octoroute
-
-# With custom config file
-octoroute --config /path/to/custom-config.toml
-
-# With environment variables
-RUST_LOG=debug cargo run
-```
-
-### CLI Commands
-
-```bash
-# Start server (default: looks for config.toml)
-octoroute
-
-# Start server with custom config
-octoroute --config custom.toml
-
-# Generate config template to stdout
-octoroute config
-
-# Write config template to file
-octoroute config -o config.toml
-
-# Show version
-octoroute --version
-
-# Show help
-octoroute --help
-```
-
----
-
-## Project Status
-
-**Features implemented**:
-- ✅ **OpenAI-compatible API** (`/v1/chat/completions`, `/v1/models`) with SSE streaming
-- ✅ Legacy API with `/chat`, `/health`, `/models`, `/metrics` endpoints
-- ✅ Multi-tier model selection (fast/balanced/deep)
-- ✅ Rule-based + LLM-based hybrid routing
-- ✅ Priority-based routing with weighted distribution
-- ✅ Health checking with automatic endpoint recovery
-- ✅ Retry logic with request-scoped exclusion
-- ✅ Timeout enforcement (global + per-tier overrides)
-- ✅ Prometheus metrics
-- ✅ Performance benchmarks (Criterion)
-- ✅ CI/CD pipeline (GitHub Actions)
-- ✅ Comprehensive config validation
-- ✅ Development tooling (justfile with 20+ recipes)
-- ✅ **CLI with config generation** (`octoroute config` and `--config` flag)
-- ✅ **Comprehensive test coverage** (348+ tests across 51 integration test files)
-- ✅ **Zero clippy warnings**
-- ✅ **Zero tech debt**
-
----
-
-## Use Cases
-
-### 1. CLI Assistant with Cost Optimization
-
-Route simple commands to 8B, complex reasoning to 120B:
-
-```python
-import requests
-
-def ask_llm(message, importance="normal"):
-    response = requests.post("http://localhost:3000/chat", json={
-        "message": message,
-        "importance": importance
-    })
-    return response.json()["content"]
-
-# Uses 8B model (fast)
-ask_llm("What's the weather like?")
-
-# Uses 120B model (intelligent routing)
-ask_llm("Design a distributed consensus algorithm", importance="high")
-```
-
-### 2. Multi-User Homelab Server
-
-Share your LLM fleet with family/friends, automatically balancing load:
-
-- Bob's casual question → 8B
-- Alice's code review → 30B
-- Charlie's essay writing → 120B
-
-### 3. Development Workflow Automation
-
-Integrate with IDE/scripts to route tasks intelligently:
-
-```bash
-# Quick code explanation (8B)
-curl -X POST http://localhost:3000/chat -d '{"message":"Explain this function"}'
-
-# Deep code review (120B)
-curl -X POST http://localhost:3000/chat -d '{"message":"Review for security issues", "importance":"high"}'
-```
-
----
-
-## Performance
-
-**Routing latency** (tested on M2 Mac):
-
-| Strategy | Latency | Notes |
-|----------|---------|-------|
-| Rule-based | <1ms | Pure CPU, no LLM |
-| LLM-based | ~250ms | With 30B router model |
-| Hybrid | <1ms (rule hit) | Best of both worlds |
-
-**Throughput**: Limited by model inference, not routing overhead.
-
----
-
-## Contributing
-
-Contributions welcome! Please see [Development Guide](docs/development.md) for guidelines.
-
-**Areas for contribution**:
-
-- Additional routing strategies (e.g., RL-based, tool-based)
-- Caching layer for repeated prompts
-- Web UI for routing visualization
-- More comprehensive benchmarks
-- Function calling / tool use support
-
----
-
-## FAQ
-
-### Q: Why not just use LangChain?
-
-**A**: LangChain is Python-only and has significant overhead. Octoroute is Rust-native, type-safe, and designed specifically for local/self-hosted LLMs with minimal latency.
-
-### Q: Can I use this with cloud APIs (OpenAI, Anthropic)?
-
-**A**: Technically yes (they're OpenAI-compatible), but Octoroute is optimized for local deployments. Cloud APIs already handle routing internally.
-
-### Q: What models are supported?
-
-**A**: Any OpenAI-compatible endpoint (Ollama, LM Studio, llama.cpp, vLLM, etc.). Tested with Qwen, Llama, Mistral families.
-
-### Q: Does this support streaming responses?
-
-**A**: Yes! The OpenAI-compatible endpoint (`/v1/chat/completions`) supports full SSE streaming. Set `stream: true` in your request and receive tokens as they're generated. The legacy `/chat` endpoint returns buffered responses only.
-
-### Q: How does LLM-based routing work?
-
-**A**: A 30B model analyzes your prompt + metadata and outputs one of: `FAST`, `BALANCED`, `DEEP`. This decision is then used to route the actual request.
-
-### Q: How do I monitor Octoroute in production?
-
-**A**: Octoroute provides two observability levels:
-1. **Structured logs** (always enabled): Use `RUST_LOG=info` to see routing decisions and health status
-2. **Metrics** (always enabled): Prometheus metrics exposed at `/metrics` endpoint
-
-For homelab deployments, we recommend Prometheus + Grafana for metrics visualization.
-
-### Q: Is the `/metrics` endpoint secure?
-
-**A**: The `/metrics` endpoint is **unauthenticated** by design for simplicity in homelab deployments. It exposes operational metrics like request counts and routing latency.
-
-**Security recommendations**:
-- **Homelab**: Ensure Octoroute is only accessible on trusted networks (not exposed to the internet)
-- **Production**: Use a reverse proxy (nginx, Caddy) to add authentication:
-  ```nginx
-  location /metrics {
-      auth_basic "Metrics";
-      auth_basic_user_file /etc/nginx/.htpasswd;
-      proxy_pass http://octoroute:3000/metrics;
-  }
-  ```
-- **Alternative**: Use firewall rules to restrict `/metrics` to Prometheus server IP only
-
-**The metrics endpoint does NOT expose**:
-- User messages or content
-- API keys or credentials
-- Individual request details (only aggregates)
-
-For internet-exposed deployments, always use authentication or IP restrictions.
-
-### Q: Why direct Prometheus instead of OpenTelemetry?
-
-**A**: We chose the direct `prometheus` crate (v0.14) for simplicity and homelab-friendliness:
-- **Simplicity**: No intermediate abstraction layers - just Prometheus
-- **Homelab-friendly**: Works with existing Prometheus/Grafana setups out of the box, no OTEL collector required
-- **Stability**: Mature, actively maintained library
-
-The `/metrics` endpoint works with your existing Prometheus scraper without any additional infrastructure.
-
----
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
----
-
-## Acknowledgments
-
-- Built on top of [open-agent-sdk-rust](https://github.com/slb350/open-agent-sdk-rust)
-- Inspired by LangChain's router chains
-- Thanks to the Rust, Tokio, and Axum communities
-
----
-
-**Made with 🦑 for homelab enthusiasts**
-
-*Route smarter, compute less.*
+License: MIT.

@@ -1,15 +1,8 @@
-//! Octoroute - Intelligent multi-model router for self-hosted LLMs
+//! Octoroute v2 local-first OpenAI-compatible gateway.
 //!
-//! This library provides intelligent routing between multiple local LLM endpoints
-//! based on task complexity, importance, and resource availability.
+//! The gateway sends compatible work to one local llama.cpp service and routes
+//! everything else to OpenRouter while preserving explicit local-only privacy.
 
 pub mod cli;
-pub mod config;
-pub mod error;
-pub mod handlers;
-pub mod metrics;
-pub mod middleware;
-pub mod models;
-pub mod router;
-pub mod shared;
+pub mod gateway;
 pub mod telemetry;

@@ -8,47 +8,37 @@ default:
 # Run all tests (unit + integration)
 test:
     @echo "Running all tests..."
-    cargo test --all-features
+    cargo test --locked --all-targets --all-features
 
 # Run only unit tests (lib tests)
 test-unit:
     @echo "Running unit tests..."
-    cargo test --lib --all-features
+    cargo test --locked --lib --all-features
 
 # Run only integration tests
 test-integration:
     @echo "Running integration tests..."
-    cargo test --test '*' --all-features
+    cargo test --locked --test cli_config_command --test gateway_v2
 
 # Run tests with nextest (if installed)
 test-nextest:
     @echo "Running tests with nextest..."
-    cargo nextest run --all-features
-
-# Run benchmarks with criterion
-bench:
-    @echo "Running benchmarks..."
-    cargo bench --all-features
-
-# Run specific benchmark
-bench-router:
-    @echo "Running router benchmarks..."
-    cargo bench --bench routing
+    cargo nextest run --locked --all-features
 
 # Start dev server with debug logging
 run:
     @echo "Starting Octoroute server..."
-    RUST_LOG=octoroute=debug,tower_http=debug cargo run
+    RUST_LOG=octoroute=debug cargo run --locked
 
 # Start server with specific config
 run-config CONFIG:
     @echo "Starting server with config: {{CONFIG}}"
-    RUST_LOG=octoroute=debug cargo run -- --config {{CONFIG}}
+    RUST_LOG=octoroute=debug cargo run --locked -- --config {{CONFIG}}
 
 # Run clippy and format check (zero warnings policy)
 check:
     @echo "Running clippy..."
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --locked --all-targets --all-features -- -D warnings
     @echo "Checking formatting..."
     cargo fmt --all -- --check
 
@@ -65,12 +55,12 @@ clippy-fix:
 # Build optimized release binary (metrics always enabled)
 build-release:
     @echo "Building release binary..."
-    cargo build --release
+    cargo build --locked --release
 
 # Build all features
 build-all:
     @echo "Building with all features..."
-    cargo build --all-features
+    cargo build --locked --all-features
 
 # Clean build artifacts
 clean:
@@ -81,8 +71,12 @@ clean:
 ci: check test
     @echo "CI checks passed!"
 
-# Full validation (clippy + fmt + test + bench)
-validate: check test bench
+# Audit locked dependencies against RustSec
+audit:
+    cargo audit
+
+# Full validation
+validate: check test audit docs
     @echo "Full validation passed!"
 
 # Watch tests (requires cargo-watch)
@@ -93,14 +87,9 @@ watch:
 # Generate documentation
 docs:
     @echo "Generating documentation..."
-    cargo doc --all-features --no-deps --open
+    cargo doc --locked --all-features --no-deps
 
 # Show project statistics with tokei (if installed)
 stats:
     @echo "Project statistics:"
     @tokei
-
-# Run the example config checker
-example-config:
-    @echo "Validating example config..."
-    cargo run --example config_validation

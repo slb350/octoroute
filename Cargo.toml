@@ -1,58 +1,37 @@
 [package]
 name = "octoroute"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2024"
 rust-version = "1.90"
 authors = ["Steve Brandon"]
-description = "Intelligent multi-model router for self-hosted LLMs"
+description = "Local-first OpenAI-compatible gateway for llama.cpp and OpenRouter"
 license = "MIT"
 repository = "https://github.com/slb350/octoroute"
+exclude = ["AGENTS.md", "CLAUDE.md"]
 
 [dependencies]
-# Primary dependency for LLM integration (Phase 2)
-open-agent-sdk = "0.6"
-
-# Core dependencies
-axum = { version = "0.8", features = ["macros"] }
-tokio = { version = "1", features = ["full"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["trace"] }
+axum = "0.8"
+bytes = "1"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
 thiserror = "2"
-
-# Logging and tracing
+secrecy = "0.10"
+dotenvy = "0.15"
+subtle = "2.6"
+sha2 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# Async utilities
 futures = "0.3"
 async-trait = "0.1"
-
-# Random number generation (for weighted load balancing)
-rand = "0.9"
-
-# HTTP client (for health checks)
-# Use rustls for TLS - avoids OpenSSL dependency, enables easier cross-compilation
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-
-# UUID generation (for request tracing)
-uuid = { version = "1", features = ["v4", "serde"] }
-
-# CLI argument parsing
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"] }
-
-# Metrics (always enabled for observability)
 prometheus = "0.14"
 
 [dev-dependencies]
 proptest = "1.4"
-tokio-test = "0.4"
 tempfile = "3"
 wiremock = "0.6"
-criterion = { version = "0.7", features = ["async_tokio"] }
-
-[[bench]]
-name = "routing"
-harness = false
+tower = { version = "0.5", features = ["util"] }

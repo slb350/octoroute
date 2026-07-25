@@ -1,766 +1,189 @@
-# Deployment Guide
+# Deployment
 
-Homelab deployment guide for Octoroute.
-
----
-
-## Table of Contents
-
-1. [Overview](#overview)
-2. [System Requirements](#system-requirements)
-3. [Binary Deployment](#binary-deployment)
-4. [Systemd Service](#systemd-service)
-5. [Docker Deployment](#docker-deployment)
-6. [Reverse Proxy](#reverse-proxy)
-7. [Security Hardening](#security-hardening)
-8. [Monitoring Setup](#monitoring-setup)
-
----
-
-## Overview
-
-Octoroute can be deployed in several ways for homelab use:
-
-- **Binary deployment**: Direct execution of compiled binary
-- **Systemd service**: Managed by systemd for automatic startup
-- **Docker container**: Containerized deployment
-- **Behind reverse proxy**: With nginx or Caddy for SSL/auth
-
----
-
-## System Requirements
-
-### Minimum Requirements
-
-- **CPU**: 1 core
-- **RAM**: 256 MB
-- **Disk**: 50 MB for binary + logs
-- **Network**: Access to model endpoints
-
-### Recommended
-
-- **CPU**: 2+ cores (for concurrent requests)
-- **RAM**: 512 MB - 1 GB
-- **Disk**: 1 GB (for logs, metrics)
-- **Network**: Low latency to model endpoints (<10ms ideal)
-
-### Supported Platforms
-
-- **Linux**: x86_64, aarch64 (Raspberry Pi 4+)
-- **macOS**: x86_64, aarch64 (Apple Silicon)
-- **Windows**: x86_64 (via WSL or native)
-
----
-
-## Binary Deployment
-
-### Build from Source
+## Build
 
 ```bash
-# Clone repository
-git clone https://github.com/slb350/octoroute.git
-cd octoroute
-
-# Build release binary
-cargo build --release
-
-# Binary location
-ls -lh target/release/octoroute
+cargo build --release --locked
 ```
 
-### Install Binary
+The binary is `target/release/octoroute`. Octoroute requires Rust 1.90 to
+build; the deployed binary has no Rust runtime dependency.
 
-```bash
-# Copy to system bin directory
-sudo cp target/release/octoroute /usr/local/bin/
+## Files
 
-# Verify installation
-which octoroute
+Install:
+
+```text
+/opt/octoroute/bin/octoroute
+/opt/octoroute/config.toml
+/opt/octoroute/.env
 ```
 
-### Create Configuration
+`.env` must be readable only by the service account:
 
-```bash
-# Create config directory
-sudo mkdir -p /etc/octoroute
-
-# Copy example config
-sudo cp config.toml /etc/octoroute/config.toml
-
-# Edit configuration
-sudo nano /etc/octoroute/config.toml
+```dotenv
+OCTOROUTE_API_KEY=<long random client credential>
+OPENROUTER_API_KEY=<OpenRouter API credential>
 ```
 
-### Run Manually
+Never include secrets in `config.toml`, command arguments, unit files, logs,
+or source control.
 
-```bash
-# Must run from directory containing config.toml
-cd /etc/octoroute
-octoroute
+If Octoroute runs on Strix itself, keep the repository local base URL,
+`http://127.0.0.1:8080`. If it runs elsewhere on the LAN, use
+`http://strix.local:8080`.
 
-# Note: Configuration file path is hardcoded to config.toml in current directory
-```
+The repository profile already uses loopback and binds Octoroute to port
+8081. Port 3000 is occupied by Gitea on Strix.
 
----
-
-## Systemd Service
-
-### Create Service File
-
-```bash
-sudo nano /etc/systemd/system/octoroute.service
-```
-
-**Service Configuration**:
+## systemd system service
 
 ```ini
 [Unit]
-Description=Octoroute - Multi-Model Router for Local LLMs
-After=network.target
+Description=Octoroute local-first LLM gateway
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=octoroute
 Group=octoroute
-WorkingDirectory=/etc/octoroute
-ExecStart=/usr/local/bin/octoroute
-Environment="RUST_LOG=octoroute=info"
-
-# Note: config.toml must exist in WorkingDirectory
-
-# Restart policy
+WorkingDirectory=/opt/octoroute
+ExecStart=/opt/octoroute/bin/octoroute --config /opt/octoroute/config.toml
 Restart=on-failure
-RestartSec=5s
-
-# Resource limits
-LimitNOFILE=65536
-MemoryMax=1G
-
-# Security hardening
+RestartSec=2
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/log/octoroute
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-### Create User and Directories
+The tracked `deploy/octoroute.service` contains this unit. Create a locked
+service account and install the files:
 
 ```bash
-# Create service user
-sudo useradd -r -s /bin/false octoroute
-
-# Create log directory
-sudo mkdir -p /var/log/octoroute
-sudo chown octoroute:octoroute /var/log/octoroute
-
-# Set config permissions
-sudo chown octoroute:octoroute /etc/octoroute/config.toml
-sudo chmod 640 /etc/octoroute/config.toml
+sudo useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin octoroute
+sudo install -d -o root -g octoroute -m 0750 /opt/octoroute/bin
+sudo install -o root -g root -m 0755 target/release/octoroute /opt/octoroute/bin/octoroute
+sudo install -o root -g octoroute -m 0640 config.toml /opt/octoroute/config.toml
+sudo install -o root -g octoroute -m 0640 .env /opt/octoroute/.env
+sudo install -o root -g root -m 0644 deploy/octoroute.service /etc/systemd/system/octoroute.service
 ```
 
-### Manage Service
+The production `.env` should contain only the inbound Octoroute credential
+and OpenRouter credential, even if the development `.env` contains other
+provider keys. Do not print secret values while creating the deployment file.
+
+Then:
 
 ```bash
-# Reload systemd
 sudo systemctl daemon-reload
-
-# Enable service (start on boot)
-sudo systemctl enable octoroute
-
-# Start service
-sudo systemctl start octoroute
-
-# Check status
-sudo systemctl status octoroute
-
-# View logs
-sudo journalctl -u octoroute -f
-
-# Restart service
-sudo systemctl restart octoroute
-
-# Stop service
-sudo systemctl stop octoroute
+sudo systemctl enable --now octoroute.service
+sudo systemctl status octoroute.service
 ```
 
----
+## Existing Strix llama.cpp process
 
-## Docker Deployment
+The inspected Strix server was launched manually from an SSH session. The
+tracked `deploy/strix-llama-server.service` preserves its tested model and
+generation arguments while changing only these ingress/observability
+arguments:
 
-### Dockerfile
-
-Create `Dockerfile`:
-
-```dockerfile
-# Build stage
-FROM rust:1.90-slim as builder
-
-WORKDIR /build
-
-# Copy manifest files
-COPY Cargo.toml Cargo.lock ./
-COPY rust-toolchain.toml ./
-
-# Copy source
-COPY src ./src
-COPY benches ./benches
-
-# Build release binary
-RUN cargo build --release
-
-# Runtime stage
-FROM debian:bookworm-slim
-
-# Install CA certificates for HTTPS and curl for health checks
-RUN apt-get update && \
-    apt-get install -y ca-certificates curl && \
-    rm -rf /var/lib/apt/lists/*
-
-# Create app user
-RUN useradd -r -s /bin/false octoroute
-
-# Copy binary from builder
-COPY --from=builder /build/target/release/octoroute /usr/local/bin/
-
-# Create config directory
-RUN mkdir -p /etc/octoroute && \
-    chown octoroute:octoroute /etc/octoroute
-
-USER octoroute
-
-WORKDIR /etc/octoroute
-
-# Expose port
-EXPOSE 3000
-
-# Health check (requires curl in the image)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:3000/health || exit 1
-
-CMD ["/usr/local/bin/octoroute"]
+```text
+--host 127.0.0.1
+--port 8080
+--metrics
 ```
 
-### Build Image
+Do not run the manual and managed llama.cpp processes on port 8080
+simultaneously. After the managed process is healthy, verify the endpoint is
+reachable from Strix loopback and no longer reachable directly from another
+LAN host.
+
+Install the unit before the controlled cutover:
 
 ```bash
-# Build image
-docker build -t octoroute:latest .
-
-# Verify image
-docker images | grep octoroute
+sudo install -o root -g root -m 0644 deploy/strix-llama-server.service \
+  /etc/systemd/system/strix-llama-server.service
+sudo systemctl daemon-reload
 ```
 
-### Run Container
+At cutover, terminate the current manual process gracefully, start the unit,
+and validate `/health`, `/slots?fail_on_no_slot=1`, and
+`/v1/chat/completions/input_tokens` from Strix loopback before starting
+Octoroute. Roll back by stopping the unit and restoring the previous manual
+command with `--host 0.0.0.0` only while clients are still configured for the
+legacy direct endpoint.
+
+## Network
+
+The gateway itself always requires bearer auth, but it should still be
+limited to trusted LAN/VPN clients with a firewall or reverse proxy.
+See [Security](security.md) for browser, rotation, reverse-proxy, and
+incident-response requirements.
+
+Allow outbound:
+
+- Strix llama.cpp;
+- `https://openrouter.ai`.
+
+Do not expose llama.cpp directly to untrusted clients if Octoroute is meant
+to enforce privacy, admission, and spend controls.
+
+## Readiness
+
+Use:
 
 ```bash
-# Create config volume
-mkdir -p /opt/octoroute/config
-cp config.toml /opt/octoroute/config/
-
-# Run container
-docker run -d \
-  --name octoroute \
-  --restart unless-stopped \
-  -p 3000:3000 \
-  -v /opt/octoroute/config:/etc/octoroute:ro \
-  -e RUST_LOG=octoroute=info \
-  octoroute:latest
-
-# Check logs
-docker logs -f octoroute
-
-# Check health
-curl http://localhost:3000/health
+curl --fail http://127.0.0.1:8081/health/live
+curl --fail http://127.0.0.1:8081/health/ready
 ```
 
-### Docker Compose
+The second endpoint is healthy when at least one upstream is available.
 
-Create `docker-compose.yml`:
-
-```yaml
-version: '3.8'
-
-services:
-  octoroute:
-    build: .
-    container_name: octoroute
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./config.toml:/etc/octoroute/config.toml:ro
-      - octoroute-logs:/var/log/octoroute
-    environment:
-      - RUST_LOG=octoroute=info
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 5s
-
-volumes:
-  octoroute-logs:
-```
-
-**Run with Docker Compose**:
+Protected smoke test:
 
 ```bash
-# Start service
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop service
-docker-compose down
+curl --fail http://127.0.0.1:8081/v1/models \
+  -H "Authorization: Bearer $OCTOROUTE_API_KEY"
 ```
 
----
-
-## Reverse Proxy
-
-### Nginx
-
-**Install nginx**:
-
-```bash
-sudo apt-get install nginx
-```
-
-**Configuration** (`/etc/nginx/sites-available/octoroute`):
-
-```nginx
-# HTTP → HTTPS redirect
-server {
-    listen 80;
-    server_name octoroute.homelab.local;
-    return 301 https://$server_name$request_uri;
-}
-
-# HTTPS server
-server {
-    listen 443 ssl http2;
-    server_name octoroute.homelab.local;
-
-    # SSL configuration (use Let's Encrypt or self-signed cert)
-    ssl_certificate /etc/ssl/certs/octoroute.crt;
-    ssl_certificate_key /etc/ssl/private/octoroute.key;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-
-    # Proxy to Octoroute
-    location / {
-        proxy_pass http://localhost:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # Timeout configuration (match Octoroute timeouts)
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 120s;
-        proxy_read_timeout 120s;
-    }
-
-    # Metrics endpoint with authentication
-    location /metrics {
-        auth_basic "Metrics";
-        auth_basic_user_file /etc/nginx/.htpasswd;
-        proxy_pass http://localhost:3000/metrics;
-    }
-
-    # Health check (unauthenticated)
-    location /health {
-        proxy_pass http://localhost:3000/health;
-        access_log off;
-    }
-}
-```
-
-**Create htpasswd file**:
-
-```bash
-# Install apache2-utils
-sudo apt-get install apache2-utils
-
-# Create password file
-sudo htpasswd -c /etc/nginx/.htpasswd prometheus
-
-# Add more users
-sudo htpasswd /etc/nginx/.htpasswd grafana
-```
-
-**Enable site**:
-
-```bash
-# Enable configuration
-sudo ln -s /etc/nginx/sites-available/octoroute /etc/nginx/sites-enabled/
-
-# Test configuration
-sudo nginx -t
-
-# Reload nginx
-sudo systemctl reload nginx
-```
-
----
-
-### Caddy
-
-**Install Caddy**:
-
-```bash
-sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-sudo apt-get update
-sudo apt-get install caddy
-```
-
-**Configuration** (`/etc/caddy/Caddyfile`):
-
-```caddy
-octoroute.homelab.local {
-    # Automatic HTTPS
-    tls internal
-
-    # Proxy to Octoroute
-    reverse_proxy localhost:3000
-
-    # Metrics with basic auth
-    route /metrics {
-        basicauth {
-            prometheus $2a$14$...  # Generate with caddy hash-password
-        }
-        reverse_proxy localhost:3000
-    }
-
-    # Health check (no auth)
-    route /health {
-        reverse_proxy localhost:3000
-    }
-}
-```
-
-**Reload Caddy**:
-
-```bash
-sudo systemctl reload caddy
-```
-
----
-
-## Security Hardening
-
-### Firewall Configuration
-
-**Using ufw**:
-
-```bash
-# Allow SSH (be careful!)
-sudo ufw allow 22/tcp
-
-# Allow HTTPS only (nginx/Caddy handles SSL)
-sudo ufw allow 443/tcp
-
-# Deny direct access to Octoroute port
-sudo ufw deny 3000/tcp
-
-# Allow from Prometheus server (if not using reverse proxy auth)
-sudo ufw allow from 192.168.1.10 to any port 3000 proto tcp
-
-# Enable firewall
-sudo ufw enable
-```
-
-**Using firewalld**:
-
-```bash
-# Allow HTTPS
-sudo firewall-cmd --permanent --add-service=https
-
-# Allow Octoroute from specific IP
-sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.1.10" port protocol="tcp" port="3000" accept'
-
-# Reload firewall
-sudo firewall-cmd --reload
-```
-
-### Network Segmentation
-
-Bind Octoroute to management network interface:
-
-```toml
-[server]
-host = "192.168.100.10"  # Management network only
-port = 3000
-```
-
-### Read-Only Configuration
-
-```bash
-# Make config read-only
-sudo chmod 440 /etc/octoroute/config.toml
-sudo chown octoroute:octoroute /etc/octoroute/config.toml
-```
-
-### Systemd Security Features
-
-Already included in systemd service file:
-
-- `NoNewPrivileges=true`: Prevents privilege escalation
-- `PrivateTmp=true`: Isolated /tmp directory
-- `ProtectSystem=strict`: Read-only system directories
-- `ProtectHome=true`: No access to /home
-- `ReadWritePaths=/var/log/octoroute`: Minimal write access
-
-### AppArmor/SELinux
-
-For additional mandatory access control, configure AppArmor or SELinux profiles:
-
-**AppArmor** (Ubuntu/Debian):
-
-```bash
-# Create profile
-sudo nano /etc/apparmor.d/usr.local.bin.octoroute
-
-# Load profile
-sudo apparmor_parser -r /etc/apparmor.d/usr.local.bin.octoroute
-```
-
----
-
-## Monitoring Setup
-
-### Prometheus Configuration
-
-Add Octoroute to `prometheus.yml`:
-
-```yaml
-scrape_configs:
-  - job_name: 'octoroute'
-    static_configs:
-      - targets: ['octoroute.homelab.local:3000']
-    metrics_path: '/metrics'
-    scrape_interval: 15s
-    scrape_timeout: 10s
-
-    # If using nginx basic auth
-    basic_auth:
-      username: 'prometheus'
-      password: 'your_password'
-```
-
-### Grafana Dashboard
-
-Import dashboard or create custom panels:
-
-1. Open Grafana
-2. Create new dashboard
-3. Add Prometheus data source
-4. Add panels using PromQL queries from [observability.md](observability.md)
-
-### Alerting
-
-**Prometheus Alert Rules** (`/etc/prometheus/rules/octoroute.yml`):
-
-```yaml
-groups:
-  - name: octoroute
-    interval: 60s
-    rules:
-      # Alert on high routing latency
-      - alert: OctorouteHighRoutingLatency
-        expr: histogram_quantile(0.95, rate(octoroute_routing_duration_ms_bucket[5m])) > 1000
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Octoroute routing latency is high"
-          description: "95th percentile routing latency is {{ $value }}ms"
-
-      # Alert on service down
-      - alert: OctorouteDown
-        expr: up{job="octoroute"} == 0
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Octoroute is down"
-          description: "Octoroute has been down for more than 2 minutes"
-
-      # Alert on low rule router hit rate
-      - alert: OctorouteLowRuleHitRate
-        expr: |
-          sum(rate(octoroute_requests_total{strategy="rule"}[5m]))
-          /
-          sum(rate(octoroute_requests_total[5m])) * 100 < 50
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Octoroute rule router hit rate is low"
-          description: "Only {{ $value }}% of requests hitting rule-based router"
-```
-
----
-
-## Backup and Recovery
-
-### Configuration Backup
-
-```bash
-# Backup config
-sudo cp /etc/octoroute/config.toml /etc/octoroute/config.toml.backup.$(date +%Y%m%d)
-
-# Or automated daily backup
-echo "0 2 * * * root cp /etc/octoroute/config.toml /etc/octoroute/config.toml.backup.\$(date +\%Y\%m\%d)" | sudo tee /etc/cron.d/octoroute-backup
-```
-
-### Logs Backup
-
-```bash
-# Archive old logs
-sudo tar -czf /backup/octoroute-logs-$(date +%Y%m%d).tar.gz /var/log/octoroute/
-
-# Automated weekly backup
-echo "0 3 * * 0 root tar -czf /backup/octoroute-logs-\$(date +\%Y\%m\%d).tar.gz /var/log/octoroute/" | sudo tee /etc/cron.d/octoroute-logs-backup
-```
-
-### Recovery Procedure
-
-```bash
-# Stop service
-sudo systemctl stop octoroute
-
-# Restore config
-sudo cp /etc/octoroute/config.toml.backup.20251120 /etc/octoroute/config.toml
-
-# Restore binary (if needed)
-sudo cp /backup/octoroute /usr/local/bin/
-
-# Restart service
-sudo systemctl start octoroute
-
-# Verify
-curl http://localhost:3000/health
-```
-
----
-
-## Updating
-
-### Binary Update
-
-```bash
-# Stop service
-sudo systemctl stop octoroute
-
-# Backup old binary
-sudo cp /usr/local/bin/octoroute /usr/local/bin/octoroute.backup.$(date +%Y%m%d)
-
-# Build/download new binary
-cargo build --release
-sudo cp target/release/octoroute /usr/local/bin/
-
-# Start service
-sudo systemctl start octoroute
-
-# Verify
-sudo systemctl status octoroute
-curl http://localhost:3000/health
-```
-
-### Docker Update
-
-```bash
-# Pull new image or rebuild
-docker-compose build
-
-# Restart with new image
-docker-compose up -d
-
-# Check logs
-docker-compose logs -f
-```
-
----
-
-## Troubleshooting
-
-### Service Won't Start
-
-```bash
-# Check systemd logs
-sudo journalctl -u octoroute -n 50
-
-# Check configuration file exists and is readable
-cat /etc/octoroute/config.toml
-
-# Check permissions
-ls -la /etc/octoroute/config.toml
-ls -la /usr/local/bin/octoroute
-```
-
-### Port Already in Use
-
-```bash
-# Check what's using port 3000
-sudo lsof -i :3000
-
-# Or with ss
-sudo ss -tulpn | grep 3000
-
-# Change port in config.toml
-[server]
-port = 3001
-```
-
-### Can't Reach Model Endpoints
-
-```bash
-# Test connectivity
-curl http://model-endpoint:port/v1/models
-
-# Check DNS resolution
-nslookup model-endpoint
-
-# Check firewall
-sudo ufw status
-```
-
-### High Memory Usage
-
-```bash
-# Check memory usage
-docker stats  # For Docker
-ps aux | grep octoroute  # For binary
-
-# Set memory limit in systemd
-MemoryMax=512M
-
-# Monitor with htop
-htop
-```
-
----
-
-## Best Practices
-
-1. **Use systemd service**: Automatic restart on failure, logs management
-2. **Run behind reverse proxy**: SSL termination, authentication, rate limiting
-3. **Secure metrics endpoint**: Use basic auth or restrict by IP
-4. **Monitor health**: Set up Prometheus alerts for service down and high latency
-5. **Backup configuration**: Automated daily config backups
-6. **Log rotation**: Configure logrotate for /var/log/octoroute
-7. **Network segmentation**: Bind to management network if possible
-8. **Update regularly**: Keep Octoroute and dependencies up to date
-9. **Test before deploying**: Validate config changes in development first
-10. **Document customizations**: Keep notes on deployment-specific configuration
+## Rollout validation
+
+1. Verify `/health/live`.
+2. Verify `/health/ready` reports both component states.
+3. Send `model: local` with `X-Octoroute-Privacy: local-only`.
+4. Occupy the single Strix slot and verify `model: auto` reports
+   `X-Octoroute-Reason: local_busy` and a cloud destination.
+5. Verify the same busy condition with local-only returns 503.
+6. Verify OpenRouter non-streaming and SSE responses expose the actual model.
+7. Scrape `/metrics` with authentication.
+
+## Shutdown
+
+SIGINT and SIGTERM trigger graceful Axum shutdown. In-flight body streams are
+allowed to finish according to Axum/hyper shutdown behavior; dropping a
+client stream releases its Octoroute and upstream permits.
+
+## Release
+
+This architecture is a breaking v2 configuration/API change. Release
+artifacts should use version `2.0.0` and include a v1-to-v2 migration note.
+Do not publish or tag while the tree is dirty or verification is incomplete.
+
+See [Migrating from Octoroute v1 to v2](migration-v2.md) for staged rollout
+and rollback instructions.

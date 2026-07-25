@@ -28,9 +28,9 @@ jobs:
             asset_name: octoroute-linux-aarch64
             use_cross: true
 
-          # macOS x86_64 (Intel) - use macos-13 which is still Intel
+          # macOS x86_64 (Intel)
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-15-intel
             artifact_name: octoroute
             asset_name: octoroute-macos-x86_64
 
@@ -41,7 +41,7 @@ jobs:
             asset_name: octoroute-macos-aarch64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -50,15 +50,15 @@ jobs:
 
       - name: Install cross
         if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --version 0.2.5 --locked
 
       - name: Build release binary
         if: ${{ !matrix.use_cross }}
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Build release binary (cross)
         if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }}
+        run: cross build --locked --release --target ${{ matrix.target }}
 
       - name: Create tarball (Unix)
         run: |
@@ -67,7 +67,7 @@ jobs:
           cd ../../..
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}
           path: ${{ matrix.asset_name }}.tar.gz
@@ -79,10 +79,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -90,7 +90,7 @@ jobs:
         run: ls -la artifacts/*/
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           files: artifacts/*/*.tar.gz
           fail_on_unmatched_files: true

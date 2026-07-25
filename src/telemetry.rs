@@ -1,4 +1,4 @@
-//! Telemetry and observability setup
+//! Telemetry and observability setup.
 //!
 //! Configures structured logging with tracing and tracing-subscriber.
 
@@ -7,7 +7,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 
 static INIT: Once = Once::new();
 
-/// Initialize tracing subscriber for structured logging
+/// Initialize the process-wide structured logging subscriber.
 ///
 /// This can only be called once per process. Subsequent calls are silently ignored.
 ///
@@ -22,9 +22,8 @@ static INIT: Once = Once::new();
 /// ```
 pub fn init(default_level: &str) {
     INIT.call_once(|| {
-        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            EnvFilter::new(format!("octoroute={},tower_http=debug", default_level))
-        });
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(format!("octoroute={default_level}")));
 
         tracing_subscriber::registry()
             .with(filter)

@@ -1,6 +1,2 @@
-[target.aarch64-unknown-linux-gnu]
-pre-build = [
-    "dpkg --add-architecture arm64",
-    "apt-get update",
-    "apt-get install -y libssl-dev:arm64"
-]
+# Octoroute uses reqwest with rustls and has no target-specific OpenSSL
+# dependency or cross-compilation pre-build step.
