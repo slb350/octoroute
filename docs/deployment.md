@@ -181,9 +181,10 @@ client stream releases its Octoroute and upstream permits.
 
 ## Release
 
-This architecture is a breaking v2 configuration/API change. Release
-artifacts should use version `2.0.0` and include a v1-to-v2 migration note.
-Do not publish or tag while the tree is dirty or verification is incomplete.
+The initial `2.0.0` release introduced the breaking v2 configuration/API
+change. Patch release `2.0.1` restores task-aware automatic routing while
+preserving that v2 contract. Do not publish or tag while the tree is dirty or
+verification is incomplete.
 
 See [Migrating from Octoroute v1 to v2](migration-v2.md) for staged rollout
 and rollback instructions.

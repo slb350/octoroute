@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.1] - 2026-07-26
 
 ### Fixed
 
@@ -227,6 +227,7 @@ See [the v1-to-v2 migration guide](docs/migration-v2.md).
 
 ---
 
+[2.0.1]: https://github.com/slb350/octoroute/releases/tag/v2.0.1
 [2.0.0]: https://github.com/slb350/octoroute/releases/tag/v2.0.0
 [1.0.0]: https://github.com/slb350/octoroute/releases/tag/v1.0.0
 [0.1.1]: https://github.com/slb350/octoroute/releases/tag/v0.1.1
