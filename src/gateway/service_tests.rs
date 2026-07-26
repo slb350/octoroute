@@ -27,7 +27,7 @@ use wiremock::{
 };
 
 #[derive(Clone, Default)]
-struct FakeTransport {
+pub(super) struct FakeTransport {
     state: Arc<FakeState>,
 }
 
@@ -35,11 +35,12 @@ struct FakeTransport {
 struct FakeState {
     local_calls: AtomicUsize,
     cloud_calls: AtomicUsize,
+    cloud_models: Mutex<Vec<String>>,
     local_results: Mutex<VecDeque<FakeResult>>,
     cloud_results: Mutex<VecDeque<FakeResult>>,
 }
 
-enum FakeResult {
+pub(super) enum FakeResult {
     Response(StatusCode, &'static str),
     ResponseWithRequestId(StatusCode, &'static str, &'static str),
     MidStreamError,
@@ -47,7 +48,7 @@ enum FakeResult {
 }
 
 #[derive(Debug)]
-struct FakeError;
+pub(super) struct FakeError;
 
 impl fmt::Display for FakeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -58,7 +59,7 @@ impl fmt::Display for FakeError {
 impl std::error::Error for FakeError {}
 
 impl FakeTransport {
-    fn with_local(self, result: FakeResult) -> Self {
+    pub(super) fn with_local(self, result: FakeResult) -> Self {
         self.state
             .local_results
             .lock()
@@ -67,7 +68,7 @@ impl FakeTransport {
         self
     }
 
-    fn with_cloud(self, result: FakeResult) -> Self {
+    pub(super) fn with_cloud(self, result: FakeResult) -> Self {
         self.state
             .cloud_results
             .lock()
@@ -76,12 +77,20 @@ impl FakeTransport {
         self
     }
 
-    fn local_calls(&self) -> usize {
+    pub(super) fn local_calls(&self) -> usize {
         self.state.local_calls.load(Ordering::SeqCst)
     }
 
-    fn cloud_calls(&self) -> usize {
+    pub(super) fn cloud_calls(&self) -> usize {
         self.state.cloud_calls.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn cloud_models(&self) -> Vec<String> {
+        self.state
+            .cloud_models
+            .lock()
+            .expect("cloud models")
+            .clone()
     }
 
     fn next(queue: &Mutex<VecDeque<FakeResult>>) -> Result<PreparedUpstreamResponse, FakeError> {
@@ -124,9 +133,16 @@ impl UpstreamTransport for FakeTransport {
 
     async fn openrouter(
         &self,
-        _request: OpenRouterRequest,
+        request: OpenRouterRequest,
     ) -> Result<PreparedUpstreamResponse, Self::Error> {
         self.state.cloud_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(model) = request.body()["model"].as_str() {
+            self.state
+                .cloud_models
+                .lock()
+                .expect("cloud models")
+                .push(model.to_string());
+        }
         Self::next(&self.state.cloud_results)
     }
 
@@ -135,7 +151,7 @@ impl UpstreamTransport for FakeTransport {
     }
 }
 
-fn authorized_headers() -> HeaderMap {
+pub(super) fn authorized_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
         AUTHORIZATION,
@@ -144,17 +160,21 @@ fn authorized_headers() -> HeaderMap {
     headers
 }
 
-fn body(model: &str) -> Bytes {
+pub(super) fn body(model: &str) -> Bytes {
+    body_with_prompt(model, "hello")
+}
+
+pub(super) fn body_with_prompt(model: &str, prompt: &str) -> Bytes {
     Bytes::from(
         serde_json::to_vec(&json!({
             "model": model,
-            "messages": [{"role": "user", "content": "hello"}]
+            "messages": [{"role": "user", "content": prompt}]
         }))
         .expect("serialize body"),
     )
 }
 
-async fn response_json(response: Response<Body>) -> Value {
+pub(super) async fn response_json(response: Response<Body>) -> Value {
     serde_json::from_slice(
         &to_bytes(response.into_body(), 4096)
             .await
@@ -163,7 +183,7 @@ async fn response_json(response: Response<Body>) -> Value {
     .expect("JSON response")
 }
 
-async fn mount_local_admission(server: &MockServer) {
+async fn mount_idle_local(server: &MockServer, slot_calls: u64) {
     Mock::given(method("GET"))
         .and(path("/health"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
@@ -174,9 +194,13 @@ async fn mount_local_admission(server: &MockServer) {
         .and(path("/slots"))
         .and(query_param("fail_on_no_slot", "1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])))
-        .expect(1)
+        .expect(slot_calls)
         .mount(server)
         .await;
+}
+
+async fn mount_local_admission(server: &MockServer) {
+    mount_idle_local(server, 1).await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions/input_tokens"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"input_tokens": 10})))
@@ -201,7 +225,46 @@ async fn mount_busy_local_admission(server: &MockServer) {
         .await;
 }
 
-fn service(config: GatewayConfig, transport: FakeTransport) -> GatewayService<FakeTransport> {
+pub(super) async fn mount_intelligent_route(
+    server: &MockServer,
+    destination: &str,
+    slot_calls: u64,
+) {
+    let content =
+        serde_json::to_string(&json!({"destination": destination})).expect("route decision");
+    mount_intelligent_response(server, &content, slot_calls).await;
+}
+
+pub(super) async fn mount_intelligent_response(
+    server: &MockServer,
+    content: &str,
+    slot_calls: u64,
+) {
+    mount_idle_local(server, slot_calls).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"content": content}}]
+        })))
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+pub(super) async fn mount_auto_local_admission(server: &MockServer) {
+    mount_intelligent_route(server, "local", 1).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions/input_tokens"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"input_tokens": 10})))
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+pub(super) fn service(
+    config: GatewayConfig,
+    transport: FakeTransport,
+) -> GatewayService<FakeTransport> {
     GatewayService::new(config, transport).expect("gateway service")
 }
 
@@ -320,7 +383,7 @@ async fn committed_response_preserves_safe_upstream_request_id() {
 #[tokio::test]
 async fn auto_falls_back_to_cloud_on_retryable_local_status_before_commit() {
     let local = MockServer::start().await;
-    mount_local_admission(&local).await;
+    mount_auto_local_admission(&local).await;
     let config = gateway_config(&local.uri(), "", "", "");
     let transport = FakeTransport::default()
         .with_local(FakeResult::Response(
@@ -382,7 +445,11 @@ async fn explicit_local_never_falls_back_after_retryable_local_status() {
 async fn automatic_local_connect_failure_falls_back_but_explicit_local_does_not() {
     for (model, expected_cloud) in [("auto", 1), ("local", 0)] {
         let local = MockServer::start().await;
-        mount_local_admission(&local).await;
+        if model == "auto" {
+            mount_auto_local_admission(&local).await;
+        } else {
+            mount_local_admission(&local).await;
+        }
         let config = gateway_config(&local.uri(), "", "", "");
         let mut transport = FakeTransport::default().with_local(FakeResult::Error);
         if expected_cloud == 1 {
@@ -480,70 +547,4 @@ async fn fixed_window_rate_limit_applies_after_authentication() {
     assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(second.headers()["retry-after"], "60");
     assert_eq!(transport.cloud_calls(), 1);
-}
-
-#[tokio::test]
-async fn inbound_concurrency_permit_is_held_until_response_body_drops() {
-    let local = MockServer::start().await;
-    let config = gateway_config_with_server(&local.uri(), "max_in_flight = 1", "", "", "");
-    let transport = FakeTransport::default()
-        .with_cloud(FakeResult::Response(
-            StatusCode::OK,
-            r#"{"model":"openai/gpt-5.2","choices":[]}"#,
-        ))
-        .with_cloud(FakeResult::Response(
-            StatusCode::OK,
-            r#"{"model":"openai/gpt-5.2","choices":[]}"#,
-        ));
-    let gateway = service(config, transport.clone());
-
-    let first = gateway
-        .handle_chat(&authorized_headers(), body("cloud"))
-        .await;
-    let second = gateway
-        .handle_chat(&authorized_headers(), body("cloud"))
-        .await;
-    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
-    drop(first);
-
-    let third = gateway
-        .handle_chat(&authorized_headers(), body("cloud"))
-        .await;
-    assert_eq!(third.status(), StatusCode::OK);
-    assert_eq!(transport.cloud_calls(), 2);
-}
-
-#[tokio::test]
-async fn cloud_concurrency_permit_is_held_until_response_body_drops() {
-    let local = MockServer::start().await;
-    let config = gateway_config(&local.uri(), "", "max_in_flight = 1", "");
-    let transport = FakeTransport::default()
-        .with_cloud(FakeResult::Response(
-            StatusCode::OK,
-            r#"{"model":"openai/gpt-5.2","choices":[]}"#,
-        ))
-        .with_cloud(FakeResult::Response(
-            StatusCode::OK,
-            r#"{"model":"openai/gpt-5.2","choices":[]}"#,
-        ));
-    let gateway = service(config, transport.clone());
-
-    let first = gateway
-        .handle_chat(&authorized_headers(), body("cloud"))
-        .await;
-    let second = gateway
-        .handle_chat(&authorized_headers(), body("cloud"))
-        .await;
-    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(
-        response_json(second).await["error"]["code"],
-        "cloud_concurrency_limit"
-    );
-    drop(first);
-
-    let third = gateway
-        .handle_chat(&authorized_headers(), body("cloud"))
-        .await;
-    assert_eq!(third.status(), StatusCode::OK);
-    assert_eq!(transport.cloud_calls(), 2);
 }

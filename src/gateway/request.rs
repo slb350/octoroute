@@ -74,6 +74,14 @@ impl GatewayRequest {
         self.features.get_or_init(|| infer_features(&self.body))
     }
 
+    /// Original OpenAI messages supplied as unmodified routing context.
+    pub(crate) fn messages(&self) -> &[Value] {
+        self.body
+            .get("messages")
+            .and_then(Value::as_array)
+            .expect("validated gateway requests always contain messages")
+    }
+
     /// Resolve the output-token reservation used for local context admission.
     pub fn output_token_budget(
         &self,

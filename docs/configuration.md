@@ -47,7 +47,7 @@ input_tokens_path = "/v1/chat/completions/input_tokens"
 [upstreams.openrouter]
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
-auto_model = "openrouter/auto-beta"
+auto_model = "openrouter/auto"
 cost_quality_tradeoff = 9
 allowed_models = []
 app_title = "Octoroute"
@@ -58,6 +58,7 @@ probe_timeout_ms = 3000
 [routing]
 default = "prefer_local"
 fallback_before_commit = true
+decision_timeout_ms = 30000
 
 [observability]
 log_level = "info"
@@ -113,7 +114,7 @@ OpenRouter-only plugins and non-text output always route cloud.
 ## OpenRouter
 
 - `base_url` must use HTTPS.
-- `auto_model` defaults to `openrouter/auto-beta`.
+- `auto_model` defaults to `openrouter/auto`.
 - `cost_quality_tradeoff` is an integer from 0 through 10.
 - `allowed_models` accepts OpenRouter wildcard patterns. Empty means the
   configured Auto Router pool is unrestricted.
@@ -126,8 +127,13 @@ OpenRouter-only plugins and non-text output always route cloud.
 
 `default` is:
 
-- `prefer_local`: try eligible local capacity first;
+- `prefer_local`: semantically decide whether compatible work is locally
+  capable, then use local capacity or cloud accordingly;
 - `cloud`: use OpenRouter unless the caller explicitly forces local.
+
+`decision_timeout_ms` bounds the local semantic decision. A timeout, invalid
+decision, or local routing-model failure sends automatic traffic safely to
+OpenRouter. Explicit local and local-only requests bypass semantic routing.
 
 `fallback_before_commit` only applies to automatic requests initially
 admitted locally. Forced-local privacy is never weakened.

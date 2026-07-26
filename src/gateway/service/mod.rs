@@ -3,13 +3,14 @@
 use crate::gateway::{
     auth::BearerAuthenticator,
     config::GatewayConfig,
-    local::{AdmissionOutcome, LlamaCppAdmission, LlamaCppAdmissionBuildError, LocalLease},
+    intelligence::LocalSemanticRouter,
+    local::{LlamaCppAdmission, LlamaCppAdmissionBuildError, LocalLease},
     metrics::{FailurePhase, GatewayMetrics, UpstreamLabel},
     openrouter::OpenRouterRequest,
     request::GatewayRequest,
     routing::{
         LocalAdmissionState, ModelIntent, PrivacyDirective, RouteDecision, RouteDestination,
-        RoutePlan, RoutePolicy, RouteReason,
+        RouteReason,
     },
     transport::{
         GatewayTransport, GatewayTransportError, PreparedUpstreamResponse, UpstreamTransport,
@@ -27,6 +28,7 @@ use uuid::Uuid;
 mod limits;
 mod observability;
 mod responses;
+mod routing;
 
 use limits::{FixedWindowRateLimiter, header_bytes, hold_response_guard, observe_response_body};
 pub(crate) use responses::{authorization_error as metadata_authorization_error, error_response};
@@ -42,6 +44,7 @@ pub struct GatewayService<T> {
     config: Arc<GatewayConfig>,
     authenticator: BearerAuthenticator,
     admission: LlamaCppAdmission,
+    intelligent_router: LocalSemanticRouter,
     transport: T,
     inbound_permits: Arc<Semaphore>,
     cloud_permits: Arc<Semaphore>,
@@ -98,6 +101,8 @@ where
         transport: T,
         admission: LlamaCppAdmission,
     ) -> Result<Self, GatewayServiceBuildError> {
+        let intelligent_router = LocalSemanticRouter::new(&config, admission.clone())
+            .ok_or(GatewayServiceBuildError::Intelligence)?;
         let authenticator = BearerAuthenticator::new(config.server().api_key().clone());
         let inbound_permits = Arc::new(Semaphore::new(config.server().max_in_flight()));
         let cloud_permits = Arc::new(Semaphore::new(config.openrouter().max_in_flight()));
@@ -107,6 +112,7 @@ where
             config: Arc::new(config),
             authenticator,
             admission,
+            intelligent_router,
             transport,
             inbound_permits,
             cloud_permits,
@@ -271,60 +277,6 @@ where
 
         self.route_and_dispatch(request, intent, privacy, request_id)
             .await
-    }
-
-    async fn route_and_dispatch(
-        &self,
-        request: GatewayRequest,
-        intent: ModelIntent,
-        privacy: PrivacyDirective,
-        request_id: &str,
-    ) -> Response<Body> {
-        let routing_started = Instant::now();
-        let policy = RoutePolicy::new(&self.config);
-        let plan = match policy.plan(&request, &intent, privacy) {
-            Ok(plan) => plan,
-            Err(error) => return route_error(error, request_id),
-        };
-        match plan {
-            RoutePlan::Cloud(reason) => {
-                self.record_routing_duration(routing_started);
-                self.dispatch_cloud(request, intent, reason, request_id)
-                    .await
-            }
-            RoutePlan::Local(local_plan) => match self.admission.try_admit(&request).await {
-                Ok(AdmissionOutcome::Admitted(lease)) => {
-                    let decision = local_plan.admitted();
-                    self.record_routing_duration(routing_started);
-                    if decision.fallback_before_commit() {
-                        self.dispatch_local_with_fallback(
-                            request, intent, decision, lease, request_id,
-                        )
-                        .await
-                    } else {
-                        drop(request);
-                        drop(intent);
-                        self.dispatch_local(decision, lease, request_id).await
-                    }
-                }
-                Ok(AdmissionOutcome::Rejected(state)) => {
-                    let decision = match local_plan.resolve(state) {
-                        Ok(decision) => decision,
-                        Err(error) => return route_error(error, request_id),
-                    };
-                    self.record_routing_duration(routing_started);
-                    self.dispatch_cloud(request, intent, decision.reason(), request_id)
-                        .await
-                }
-                Err(error) => error_response(
-                    StatusCode::BAD_REQUEST,
-                    &error.to_string(),
-                    "invalid_request_error",
-                    "invalid_token_budget",
-                    request_id,
-                ),
-            },
-        }
     }
 
     async fn dispatch_local(
@@ -545,6 +497,9 @@ pub enum GatewayServiceBuildError {
     /// llama.cpp admission construction failed.
     #[error(transparent)]
     Admission(LlamaCppAdmissionBuildError),
+    /// Local semantic router construction failed.
+    #[error("could not construct the local semantic router")]
+    Intelligence,
     /// Gateway metric registration failed.
     #[error("could not register gateway metrics")]
     Metrics(#[from] prometheus::Error),

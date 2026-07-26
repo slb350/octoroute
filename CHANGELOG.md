@@ -7,6 +7,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Restored task-aware `auto` routing: Strix now makes a constrained local
+  semantic decision before compatible automatic work is admitted for local
+  inference.
+- Route requests that need stronger intelligence to `openrouter/auto`, even
+  when local capacity is healthy and idle.
+- Fail invalid, timed-out, or unavailable semantic decisions safely to cloud
+  without weakening explicit local or local-only privacy.
+
 ## [2.0.0] - 2026-07-25
 
 ### Added

@@ -29,11 +29,11 @@ Other fields are preserved. Output context admission uses
 
 | Value | Route |
 | --- | --- |
-| `auto` | Prefer eligible idle local capacity, otherwise OpenRouter Auto Beta |
+| `auto` | Intelligently choose capable local execution or OpenRouter Auto |
 | `local` | Force local, never cloud |
 | `strixtea` | Exact configured local alias, never cloud |
-| `cloud` | Force OpenRouter Auto Beta |
-| `openrouter/auto-beta` | Force OpenRouter Auto Beta |
+| `cloud` | Force OpenRouter Auto |
+| `openrouter/auto` | Force OpenRouter Auto |
 | `provider/model` | Force an exact OpenRouter model |
 
 Unknown unqualified names return `400`.
@@ -76,6 +76,8 @@ local_busy
 local_unhealthy
 local_early_failure
 cloud_default
+cloud_quality
+router_failure
 ```
 
 ### Errors

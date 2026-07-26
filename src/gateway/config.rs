@@ -304,7 +304,7 @@ impl LocalUpstreamConfig {
     }
 }
 
-/// OpenRouter connection and Auto Beta policy.
+/// OpenRouter connection and Auto Router policy.
 #[derive(Debug, Clone)]
 pub struct OpenRouterConfig {
     base_url: Url,
@@ -340,12 +340,12 @@ impl OpenRouterConfig {
         &self.auto_model
     }
 
-    /// Auto Beta cost percentile control.
+    /// Auto Router cost/quality control.
     pub fn cost_quality_tradeoff(&self) -> u8 {
         self.cost_quality_tradeoff
     }
 
-    /// Optional Auto Beta model allowlist patterns.
+    /// Optional Auto Router model allowlist patterns.
     pub fn allowed_models(&self) -> &[String] {
         &self.allowed_models
     }
@@ -375,7 +375,7 @@ impl OpenRouterConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RouteDefault {
-    /// Use compatible idle local capacity, otherwise cloud.
+    /// Semantically choose suitable local work, otherwise cloud.
     PreferLocal,
     /// Use cloud unless the caller explicitly requests local.
     Cloud,
@@ -386,6 +386,7 @@ pub enum RouteDefault {
 pub struct RoutingConfig {
     default: RouteDefault,
     fallback_before_commit: bool,
+    decision_timeout_ms: u64,
 }
 
 impl RoutingConfig {
@@ -397,6 +398,11 @@ impl RoutingConfig {
     /// Whether automatic local requests may spill before client commitment.
     pub fn fallback_before_commit(&self) -> bool {
         self.fallback_before_commit
+    }
+
+    /// Deadline for the local semantic routing decision.
+    pub fn decision_timeout_ms(&self) -> u64 {
+        self.decision_timeout_ms
     }
 }
 

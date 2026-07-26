@@ -5,6 +5,7 @@ use crate::gateway::{
     request::{GatewayRequest, RequestFeature},
 };
 use axum::http::HeaderMap;
+use serde::Deserialize;
 use thiserror::Error;
 
 const PRIVACY_HEADER: &str = "x-octoroute-privacy";
@@ -16,7 +17,7 @@ pub enum ModelIntent {
     Auto,
     /// Use the configured local alias with no cloud fallback.
     Local,
-    /// Use OpenRouter Auto Beta.
+    /// Use OpenRouter Auto.
     CloudAuto,
     /// Use an exact OpenRouter model slug.
     CloudModel(String),
@@ -101,7 +102,8 @@ pub enum LocalAdmissionState {
 }
 
 /// Final gateway destination.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum RouteDestination {
     /// Configured local llama.cpp upstream.
     Local,
@@ -142,6 +144,10 @@ pub enum RouteReason {
     LocalEarlyFailure,
     /// Configuration defaults automatic work to cloud.
     CloudDefault,
+    /// Semantic routing determined that stronger cloud intelligence is warranted.
+    CloudQuality,
+    /// Semantic routing failed safely, so automatic work went to cloud.
+    RouterFailure,
 }
 
 impl RouteReason {
@@ -158,6 +164,8 @@ impl RouteReason {
             Self::LocalUnhealthy => "local_unhealthy",
             Self::LocalEarlyFailure => "local_early_failure",
             Self::CloudDefault => "cloud_default",
+            Self::CloudQuality => "cloud_quality",
+            Self::RouterFailure => "router_failure",
         }
     }
 }
@@ -225,6 +233,10 @@ pub(crate) enum LocalRoutePlan {
 }
 
 impl LocalRoutePlan {
+    pub(crate) fn is_automatic(self) -> bool {
+        matches!(self, Self::Automatic { .. })
+    }
+
     /// Complete a successful local admission.
     pub(crate) fn admitted(self) -> RouteDecision {
         let (reason, fallback_before_commit) = match self {

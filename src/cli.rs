@@ -10,8 +10,9 @@ use clap::{Parser, Subcommand};
 #[command(version)]
 #[command(about = "Local-first OpenAI-compatible LLM gateway")]
 #[command(
-    long_about = "Octoroute routes compatible idle work to a local llama.cpp service and \
-    sends everything else to OpenRouter, while preserving OpenAI chat-completion schemas."
+    long_about = "Octoroute intelligently routes work a local llama.cpp model can handle well \
+    to that model and sends harder work to OpenRouter Auto, while preserving OpenAI \
+    chat-completion schemas."
 )]
 pub struct Cli {
     /// Path to configuration file.
@@ -121,6 +122,6 @@ mod tests {
         let config = GatewayConfig::from_toml(template, &TemplateEnvironment)
             .expect("template must be a valid v2 config");
         assert_eq!(config.local().model(), "strixtea");
-        assert_eq!(config.openrouter().auto_model(), "openrouter/auto-beta");
+        assert_eq!(config.openrouter().auto_model(), "openrouter/auto");
     }
 }

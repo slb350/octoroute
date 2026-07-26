@@ -2,7 +2,7 @@
 
 use crate::gateway::{
     config::LocalUpstreamConfig,
-    http_client::{authorized, build},
+    http_client::{authorized, build, endpoint_url},
     request::{GatewayRequest, GatewayRequestError},
     routing::LocalAdmissionState,
 };
@@ -133,21 +133,47 @@ impl LlamaCppAdmission {
         })
     }
 
+    pub(crate) fn http_client(&self) -> Client {
+        self.inner.client.clone()
+    }
+
+    /// Reserve an idle local slot for a bounded semantic routing decision.
+    pub(crate) async fn reserve_for_routing(
+        &self,
+    ) -> Result<OwnedSemaphorePermit, LocalAdmissionState> {
+        self.try_reserve_available().await
+    }
+
+    async fn try_reserve_available(&self) -> Result<OwnedSemaphorePermit, LocalAdmissionState> {
+        let permit = Arc::clone(&self.inner.permits)
+            .try_acquire_owned()
+            .map_err(|_| LocalAdmissionState::Busy)?;
+        let state = self.availability_state().await;
+        if state == LocalAdmissionState::Ready {
+            Ok(permit)
+        } else {
+            Err(state)
+        }
+    }
+
     /// Try every local admission gate without waiting for Octoroute capacity.
     pub async fn try_admit(
         &self,
         request: &GatewayRequest,
     ) -> Result<AdmissionOutcome, GatewayRequestError> {
-        let permit = match Arc::clone(&self.inner.permits).try_acquire_owned() {
+        let permit = match self.try_reserve_available().await {
             Ok(permit) => permit,
-            Err(_) => return Ok(AdmissionOutcome::Rejected(LocalAdmissionState::Busy)),
+            Err(state) => return Ok(AdmissionOutcome::Rejected(state)),
         };
+        self.try_admit_reserved(request, permit).await
+    }
 
-        let availability = self.availability_state().await;
-        if availability != LocalAdmissionState::Ready {
-            return Ok(AdmissionOutcome::Rejected(availability));
-        }
-
+    /// Complete exact token and context admission with capacity already held.
+    pub(crate) async fn try_admit_reserved(
+        &self,
+        request: &GatewayRequest,
+        permit: OwnedSemaphorePermit,
+    ) -> Result<AdmissionOutcome, GatewayRequestError> {
         let output_tokens =
             request.output_token_budget(self.inner.config.default_max_output_tokens())?;
         let request_body = request.body_bytes_for_model(self.inner.config.model())?;
@@ -296,8 +322,7 @@ fn admission_state(slot: SlotState) -> LocalAdmissionState {
 }
 
 fn resolve_path(base: &Url, path: &str) -> Result<Url, LlamaCppAdmissionBuildError> {
-    base.join(path)
-        .map_err(|_| LlamaCppAdmissionBuildError::InvalidPath {
-            path: path.to_string(),
-        })
+    endpoint_url(base, path).ok_or_else(|| LlamaCppAdmissionBuildError::InvalidPath {
+        path: path.to_string(),
+    })
 }

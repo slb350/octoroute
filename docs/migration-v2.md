@@ -1,8 +1,8 @@
 # Migrating from Octoroute v1 to v2
 
-Octoroute 2.0 replaces local size-tier routing with one explicit boundary:
-use Strix when a request is locally compatible and immediately admissible;
-otherwise use OpenRouter.
+Octoroute 2.0 replaces local size-tier routing with one explicit boundary.
+`auto` semantically judges whether Strix can handle the task well and sends
+harder work to OpenRouter Auto.
 
 ## Breaking changes
 
@@ -64,12 +64,13 @@ input_tokens_path = "/v1/chat/completions/input_tokens"
 [upstreams.openrouter]
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
-auto_model = "openrouter/auto-beta"
+auto_model = "openrouter/auto"
 cost_quality_tradeoff = 9
 
 [routing]
 default = "prefer_local"
 fallback_before_commit = true
+decision_timeout_ms = 30000
 ```
 
 Create an ignored `.env` beside the configuration:
@@ -85,7 +86,7 @@ OPENROUTER_API_KEY=<OpenRouter credential>
 | --- | --- |
 | Let Octoroute choose | `auto` |
 | Force the local model | `local` or `strixtea` |
-| Use cloud selection | `cloud` or `openrouter/auto-beta` |
+| Use cloud selection | `cloud` or `openrouter/auto` |
 | Force a cloud model | exact `provider/model` slug |
 
 There is no direct mapping for `fast`, `balanced`, or `deep`. Select

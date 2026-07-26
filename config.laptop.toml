@@ -1,11 +1,10 @@
-# Octoroute v2 production configuration for Strix.
-# Secrets are loaded from process environment variables or the ignored `.env`
-# file beside this configuration.
+# Octoroute v2 configuration for running the gateway on Steve's laptop.
+# Secrets are loaded from the ignored `.env` file beside this configuration.
 
 config_version = 2
 
 [server]
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 8081
 api_key_env = "OCTOROUTE_API_KEY"
 max_request_bytes = 8388608
@@ -16,7 +15,7 @@ requests_per_minute = 120
 [upstreams.local]
 kind = "llama_cpp"
 name = "strix"
-base_url = "http://127.0.0.1:8080"
+base_url = "http://strix.local:8080"
 model = "strixtea"
 context_window = 65536
 context_safety_tokens = 1024

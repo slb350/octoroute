@@ -15,6 +15,7 @@ const DEFAULT_PROBE_TIMEOUT_MS: u64 = 2000;
 const DEFAULT_CLOUD_MAX_IN_FLIGHT: usize = 8;
 const DEFAULT_CLOUD_HEALTH_CACHE_TTL_MS: u64 = 10_000;
 const DEFAULT_CLOUD_PROBE_TIMEOUT_MS: u64 = 3000;
+const DEFAULT_ROUTING_DECISION_TIMEOUT_MS: u64 = 30_000;
 const MAX_CONCURRENCY: usize = 10_000;
 const MAX_REQUESTS_PER_MINUTE: u32 = 1_000_000;
 
@@ -133,6 +134,8 @@ struct RawRoutingConfig {
     default: RouteDefault,
     #[serde(default = "default_true")]
     fallback_before_commit: bool,
+    #[serde(default = "default_routing_decision_timeout_ms")]
+    decision_timeout_ms: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,6 +158,12 @@ impl RawGatewayConfig {
         let server = validate_server(self.server, environment)?;
         let local = validate_local(self.upstreams.local, environment)?;
         let openrouter = validate_openrouter(self.upstreams.openrouter, environment)?;
+        if self.routing.decision_timeout_ms == 0 {
+            return Err(invalid(
+                "routing.decision_timeout_ms",
+                "must be greater than zero",
+            ));
+        }
 
         Ok(GatewayConfig {
             server,
@@ -163,6 +172,7 @@ impl RawGatewayConfig {
             routing: RoutingConfig {
                 default: self.routing.default,
                 fallback_before_commit: self.routing.fallback_before_commit,
+                decision_timeout_ms: self.routing.decision_timeout_ms,
             },
             observability: ObservabilityConfig {
                 log_level: self.observability.log_level,
@@ -512,7 +522,7 @@ const fn default_probe_timeout_ms() -> u64 {
 }
 
 fn default_auto_model() -> String {
-    "openrouter/auto-beta".to_string()
+    "openrouter/auto".to_string()
 }
 
 const fn default_cost_quality_tradeoff() -> u8 {
@@ -541,6 +551,10 @@ const fn default_route() -> RouteDefault {
 
 const fn default_true() -> bool {
     true
+}
+
+const fn default_routing_decision_timeout_ms() -> u64 {
+    DEFAULT_ROUTING_DECISION_TIMEOUT_MS
 }
 
 const fn default_log_level() -> LogLevel {

@@ -9,7 +9,7 @@ fn resolves_virtual_local_and_cloud_models_without_guessing() {
         ("local", ModelIntent::Local),
         ("cloud", ModelIntent::CloudAuto),
         ("puzzle-75b", ModelIntent::Local),
-        ("openrouter/auto-beta", ModelIntent::CloudAuto),
+        ("openrouter/auto", ModelIntent::CloudAuto),
         (
             "anthropic/claude-sonnet-4.6",
             ModelIntent::CloudModel("anthropic/claude-sonnet-4.6".to_string()),
@@ -18,7 +18,7 @@ fn resolves_virtual_local_and_cloud_models_without_guessing() {
 
     for (model, expected) in cases {
         assert_eq!(
-            ModelIntent::resolve(model, local, "openrouter/auto-beta").expect("known model intent"),
+            ModelIntent::resolve(model, local, "openrouter/auto").expect("known model intent"),
             expected
         );
     }
@@ -26,7 +26,7 @@ fn resolves_virtual_local_and_cloud_models_without_guessing() {
 
 #[test]
 fn rejects_unknown_unqualified_models() {
-    let error = ModelIntent::resolve("made-up-model", "puzzle-75b", "openrouter/auto-beta")
+    let error = ModelIntent::resolve("made-up-model", "puzzle-75b", "openrouter/auto")
         .expect_err("unknown model must be rejected");
 
     assert!(matches!(

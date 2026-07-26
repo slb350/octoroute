@@ -1,5 +1,12 @@
 # Local and Cloud Routing Gateway Implementation Plan
 
+> **Superseded in part on 2026-07-25.** This v2.0 planning record introduced
+> the compatibility-and-capacity-only `auto` regression. The active product
+> contract and implementation decision are documented in
+> [intelligent-auto-routing.md](intelligent-auto-routing.md). In particular,
+> `auto` now makes a local semantic task-suitability decision and cloud-bound
+> work targets `openrouter/auto`.
+
 **Status:** Approved direction; implementation not started
 
 **Branch:** `codex/feat/local-cloud-routing-gateway`

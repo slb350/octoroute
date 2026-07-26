@@ -11,7 +11,7 @@ fn auto_request_preserves_fields_and_appends_authoritative_router_plugin() {
         "http://127.0.0.1:8080",
         "",
         r#"
-auto_model = "openrouter/auto-beta"
+auto_model = "openrouter/auto"
 cost_quality_tradeoff = 3
 allowed_models = ["deepseek/*", "google/*"]
 "#,
@@ -32,7 +32,7 @@ allowed_models = ["deepseek/*", "google/*"]
     .expect("OpenRouter body")
     .into_body();
 
-    assert_eq!(body["model"], json!("openrouter/auto-beta"));
+    assert_eq!(body["model"], json!("openrouter/auto"));
     assert_eq!(
         body["future_openrouter_field"],
         json!({"preserve": [1, 2, 3]})
@@ -83,6 +83,7 @@ allowed_models = ["anthropic/*"]
     .expect("OpenRouter body")
     .into_body();
 
+    assert_eq!(body["model"], json!("openrouter/auto"));
     assert_eq!(
         body["plugins"],
         json!([

@@ -29,7 +29,7 @@ input_tokens_path = "/v1/chat/completions/input_tokens"
 [upstreams.openrouter]
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
-auto_model = "openrouter/auto-beta"
+auto_model = "openrouter/auto"
 cost_quality_tradeoff = 9
 app_title = "Octoroute"
 
@@ -57,14 +57,38 @@ fn valid_v2_config_resolves_secrets_without_exposing_them() {
     assert_eq!(config.local().health_cache_ttl_ms(), 1000);
     assert_eq!(config.local().probe_timeout_ms(), 2000);
     assert_eq!(config.local().first_byte_timeout_ms(), None);
-    assert_eq!(config.openrouter().auto_model(), "openrouter/auto-beta");
+    assert_eq!(config.openrouter().auto_model(), "openrouter/auto");
     assert_eq!(config.openrouter().max_in_flight(), 8);
     assert_eq!(config.openrouter().health_cache_ttl_ms(), 10000);
     assert_eq!(config.openrouter().probe_timeout_ms(), 3000);
+    assert_eq!(config.routing().decision_timeout_ms(), 30_000);
 
     let debug = format!("{config:?}");
     assert!(!debug.contains("inbound-secret"));
     assert!(!debug.contains("openrouter-secret"));
+}
+
+#[test]
+fn default_cloud_destination_is_current_openrouter_auto() {
+    let config = super::test_support::gateway_config("http://127.0.0.1:8080", "", "", "");
+
+    assert_eq!(config.openrouter().auto_model(), "openrouter/auto");
+}
+
+#[test]
+fn semantic_routing_timeout_must_be_positive() {
+    let input = valid_config().replace(
+        "fallback_before_commit = true",
+        "fallback_before_commit = true\ndecision_timeout_ms = 0",
+    );
+    let error = GatewayConfig::from_toml(&input, &TestEnvironment::gateway())
+        .expect_err("zero semantic routing timeout must fail startup");
+
+    assert!(matches!(
+        error,
+        GatewayConfigError::Invalid { ref field, .. }
+            if field == "routing.decision_timeout_ms"
+    ));
 }
 
 #[test]

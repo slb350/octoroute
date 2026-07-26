@@ -5,6 +5,7 @@ pub mod config;
 pub mod env;
 pub mod http;
 mod http_client;
+mod intelligence;
 pub mod local;
 pub mod metrics;
 pub mod openrouter;
@@ -22,6 +23,8 @@ mod env_tests;
 #[cfg(test)]
 mod http_tests;
 #[cfg(test)]
+mod intelligence_tests;
+#[cfg(test)]
 mod local_tests;
 #[cfg(test)]
 mod metrics_tests;
@@ -33,6 +36,8 @@ mod request_tests;
 mod routing_policy_tests;
 #[cfg(test)]
 mod routing_tests;
+#[cfg(test)]
+mod service_limits_tests;
 #[cfg(test)]
 mod service_tests;
 #[cfg(test)]

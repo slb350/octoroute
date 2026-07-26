@@ -9,22 +9,26 @@ OpenAI client
      v
  Octoroute
    |    \
-   |     `-- OpenRouter Auto Beta --> cloud model/provider
+   |     `-- OpenRouter `openrouter/auto` --> cloud model/provider
    |
-   `-- Strix llama.cpp (`strixtea`) when compatible, healthy, and idle
+   `-- local semantic decision on Strix
+          |
+          `-- Strix answer when the task is locally capable
 ```
 
 Octoroute owns the local-versus-cloud decision. OpenRouter owns cloud model
-and provider selection. A cloud classifier is not called before local work.
+and provider selection. The routing decision stays on the local network.
 
 ## What it does
 
 - Exposes `POST /v1/chat/completions` and `GET /v1/models`.
 - Preserves unknown request fields and forwards response/SSE bytes opaquely.
-- Routes `auto` requests locally only when Strix supports the requested
-  capabilities, has a free slot, and the exact prompt plus output budget fits
-  the configured context window.
-- Uses OpenRouter `openrouter/auto-beta` for everything else.
+- Semantically evaluates `auto` requests on Strix and keeps them local only
+  when the local model is expected to answer well.
+- Routes work that needs stronger intelligence to OpenRouter
+  `openrouter/auto`, even when Strix is healthy and idle.
+- Also uses OpenRouter when Strix lacks a requested capability, is busy or
+  unhealthy, or cannot fit the exact prompt plus output budget.
 - Accepts exact OpenRouter slugs such as
   `deepseek/deepseek-v4-flash`.
 - Guarantees that `model: local`, the exact local alias, and
@@ -82,12 +86,16 @@ max_in_flight = 1
 [upstreams.openrouter]
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
-auto_model = "openrouter/auto-beta"
+auto_model = "openrouter/auto"
 cost_quality_tradeoff = 9
+
+[routing]
+decision_timeout_ms = 30000
 ```
 
-This profile is for running Octoroute on Strix. When developing on another
-host, change the local base URL to `http://strix.local:8080`.
+This profile is for running Octoroute on Strix. The `config.laptop.toml`
+profile instead binds Octoroute to laptop loopback and uses
+`http://strix.local:8080` as the local upstream.
 
 Start the gateway on Strix:
 
@@ -95,18 +103,25 @@ Start the gateway on Strix:
 cargo run --release -- --config config.toml
 ```
 
-Then point an OpenAI-compatible client at `http://strix.local:8081/v1` and use
-`OCTOROUTE_API_KEY` as its API key.
+Start the gateway on the laptop:
+
+```bash
+cargo run --release -- --config config.laptop.toml
+```
+
+Point an OpenAI-compatible client at `http://strix.local:8081/v1` for the
+Strix deployment or `http://127.0.0.1:8081/v1` for the laptop deployment.
+Use `OCTOROUTE_API_KEY` as the client API key.
 
 ## Model intent
 
 | `model` value | Behavior | Cloud fallback |
 | --- | --- | --- |
-| `auto` | Eligible idle Strix, else OpenRouter | Before commitment |
+| `auto` | Capable Strix or stronger cloud | Before commitment |
 | `local` | Force Strix | Never |
 | `strixtea` | Force the exact configured local alias | Never |
-| `cloud` | Force OpenRouter Auto Beta | OpenRouter-managed only |
-| `openrouter/auto-beta` | Force OpenRouter Auto | OpenRouter-managed only |
+| `cloud` | Force OpenRouter Auto | OpenRouter-managed only |
+| `openrouter/auto` | Force OpenRouter Auto | OpenRouter-managed only |
 | `provider/model` | Force that OpenRouter model | OpenRouter-managed only |
 
 Example:
@@ -142,7 +157,7 @@ cloud service.
 
 - `X-Octoroute-Destination: local|cloud`
 - `X-Octoroute-Reason`: bounded route reason such as `local_capable`,
-  `local_busy`, or `local_early_failure`
+  `cloud_quality`, `local_busy`, or `local_early_failure`
 - `X-Octoroute-Upstream: strix|openrouter`
 - `X-Request-Id`
 
@@ -179,8 +194,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
 
-The implementation plan and decision record are in
-[docs/plans/local-cloud-routing-gateway.md](docs/plans/local-cloud-routing-gateway.md).
+The active routing decision record is
+[docs/plans/intelligent-auto-routing.md](docs/plans/intelligent-auto-routing.md).
 
 ## Scope
 

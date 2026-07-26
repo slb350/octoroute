@@ -111,5 +111,5 @@ provider directly. Keep output limits small and inspect:
 
 ## Design record
 
-See [plans/local-cloud-routing-gateway.md](plans/local-cloud-routing-gateway.md)
-for the full decision table, failure semantics, and completion criteria.
+See [plans/intelligent-auto-routing.md](plans/intelligent-auto-routing.md) for
+the active decision table, failure semantics, and completion criteria.

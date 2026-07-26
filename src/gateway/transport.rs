@@ -2,7 +2,7 @@
 
 use crate::gateway::{
     config::GatewayConfig,
-    http_client::{authorized, build},
+    http_client::{LOCAL_CHAT_COMPLETIONS_PATH, authorized, build, endpoint_url},
     local::LocalLease,
     openrouter::OpenRouterRequest,
 };
@@ -27,7 +27,6 @@ use std::{
 use thiserror::Error;
 use tokio::sync::{Mutex, OwnedSemaphorePermit};
 
-const LOCAL_CHAT_COMPLETIONS_PATH: &str = "v1/chat/completions";
 const OPENROUTER_CHAT_COMPLETIONS_PATH: &str = "chat/completions";
 const OPENROUTER_HEALTH_PATH: &str = "key";
 const OPENROUTER_TITLE: &str = "x-openrouter-title";
@@ -77,13 +76,16 @@ impl GatewayTransport {
     /// Build the shared rustls client and validated endpoint URLs.
     pub fn new(config: &GatewayConfig) -> Result<Self, GatewayTransportError> {
         let client = build().map_err(GatewayTransportError::HttpClient)?;
-        let local_chat_url = endpoint_url(config.local().base_url(), LOCAL_CHAT_COMPLETIONS_PATH)?;
+        let local_chat_url = endpoint_url(config.local().base_url(), LOCAL_CHAT_COMPLETIONS_PATH)
+            .ok_or(GatewayTransportError::InvalidUrl)?;
         let openrouter_chat_url = endpoint_url(
             config.openrouter().base_url(),
             OPENROUTER_CHAT_COMPLETIONS_PATH,
-        )?;
+        )
+        .ok_or(GatewayTransportError::InvalidUrl)?;
         let openrouter_health_url =
-            endpoint_url(config.openrouter().base_url(), OPENROUTER_HEALTH_PATH)?;
+            endpoint_url(config.openrouter().base_url(), OPENROUTER_HEALTH_PATH)
+                .ok_or(GatewayTransportError::InvalidUrl)?;
 
         Ok(Self {
             client,
@@ -336,11 +338,6 @@ pub enum GatewayTransportError {
     /// Configured local deadline elapsed before the first body byte.
     #[error("local upstream timed out before the first body byte")]
     FirstByteTimeout,
-}
-
-fn endpoint_url(base: &Url, path: &str) -> Result<Url, GatewayTransportError> {
-    base.join(path)
-        .map_err(|_| GatewayTransportError::InvalidUrl)
 }
 
 fn safe_response_headers(source: &HeaderMap) -> HeaderMap {

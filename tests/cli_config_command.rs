@@ -32,7 +32,7 @@ fn generated_template_roundtrips_as_valid_v2_configuration() {
     assert_eq!(config.server().port(), 8081);
     assert_eq!(config.local().model(), "strixtea");
     assert_eq!(config.local().base_url().as_str(), "http://127.0.0.1:8080/");
-    assert_eq!(config.openrouter().auto_model(), "openrouter/auto-beta");
+    assert_eq!(config.openrouter().auto_model(), "openrouter/auto");
 }
 
 #[test]
