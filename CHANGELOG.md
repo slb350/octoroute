@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fail invalid, timed-out, or unavailable semantic decisions safely to cloud
   without weakening explicit local or local-only privacy.
 
+### Security
+
+- Pin every third-party GitHub Action and the CI `cargo-audit` installer to
+  reviewed versions, and default workflow token permissions to read-only
+  repository contents.
+
 ## [2.0.0] - 2026-07-25
 
 ### Added

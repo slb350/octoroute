@@ -102,8 +102,11 @@ direct caller can bypass Octoroute admission and race its single-slot check.
 - `Cargo.lock` is tracked for reproducible application builds.
 - CI tests stable and Rust 1.90.0 with `--locked`.
 - CI runs Clippy, rustfmt, rustdoc warnings, and RustSec.
-- Release builds use the lockfile, a pinned `cross`, supported GitHub runner
-  labels, and a supported release action runtime.
+- CI and release workflows default the GitHub token to read-only repository
+  contents. Only the release job receives `contents: write`.
+- Third-party GitHub Actions are pinned to reviewed immutable commits with
+  release comments. Release builds also use the lockfile and a pinned `cross`.
+- CI installs an explicitly versioned `cargo-audit`.
 - Weekly security maintenance refreshes RustSec and compatible dependencies.
 
 Run before deployment:
