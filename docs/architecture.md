@@ -17,11 +17,13 @@ minimal request facts (model, stream, capabilities, privacy)
   |
   `-- automatic local candidate
         |
-        `-- constrained semantic decision on Strix
+        `-- semantic mode
               |
-              +-- needs stronger intelligence --> OpenRouter `openrouter/auto`
-              |
-              `-- locally capable
+              +-- disabled --------------------> local admission
+              +-- shadow decision -------------> local admission
+              `-- enforced decision
+                    +-- cloud ------------------> OpenRouter `openrouter/auto`
+                    `-- local ------------------> local admission
                     |
                     +-- Octoroute semaphore
                     +-- llama.cpp health and free slot
@@ -30,11 +32,12 @@ minimal request facts (model, stream, capabilities, privacy)
                 `-- Strix chat completions
 ```
 
-Octoroute decides whether the task is suitable for the configured local model.
-It uses Strix itself for that bounded semantic decision, so a prompt selected
-for local work has not first been disclosed to a cloud classifier. OpenRouter
-Auto performs cloud model/provider selection only after Octoroute chooses
-cloud.
+When semantic routing is enabled, Octoroute uses Strix itself for that bounded
+decision, so a prompt selected for local work has not first been disclosed to
+a cloud classifier. `shadow` is the default mode and records the decision
+without acting on it; `disabled` skips classification; `enforced` lets the
+decision select local or cloud. OpenRouter Auto performs cloud model/provider
+selection only after Octoroute chooses cloud.
 
 ## Request path
 
@@ -46,11 +49,13 @@ cloud.
 6. Resolve model intent and `X-Octoroute-Privacy`.
 7. Skip semantic routing when cloud is explicit, local capabilities are
    incompatible, or configuration defaults automatic work to cloud.
-8. For an automatic compatible request, reserve an idle Strix slot and request
-   a constrained `local` or `cloud` JSON decision with thinking disabled.
-9. Send a cloud decision to `openrouter/auto`. If the semantic decision fails
-   or local capacity is unavailable, fail safely to cloud.
-10. For a local decision or forced-local request, acquire a non-blocking local
+8. For shadow or enforced mode, reserve an idle Strix slot and request a
+   constrained `local` or `cloud` JSON decision with thinking disabled.
+   Disabled mode skips classification.
+9. In shadow mode, record the bounded outcome and continue local admission.
+   In enforced mode, send a cloud decision or safe classifier failure to
+   `openrouter/auto`.
+10. For a local path or forced-local request, acquire a non-blocking local
     permit, verify health and a free slot, obtain exact input tokens, and
     include the requested or default output reservation in the safe context
     calculation.
@@ -106,8 +111,9 @@ After one body byte is client-visible, upstream switching is impossible.
 - Configuration and secret failures stop startup.
 - Probe transport, status, and schema failures are fail-closed for local
   admission.
-- Semantic routing failures send automatic traffic to OpenRouter with the
-  bounded `router_failure` reason.
+- Enforced semantic-routing failures send automatic traffic to OpenRouter
+  with the bounded `router_failure` reason. Shadow failures do not select a
+  destination when local capacity was successfully reserved.
 - Explicit local returns an error when unavailable; it never silently spills.
 - OpenRouter failures are returned without an Octoroute retry to another cloud
   model. Provider fallback belongs to OpenRouter.

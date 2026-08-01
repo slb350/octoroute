@@ -123,5 +123,9 @@ mod tests {
             .expect("template must be a valid v2 config");
         assert_eq!(config.local().model(), "strixtea");
         assert_eq!(config.openrouter().auto_model(), "openrouter/auto");
+        assert_eq!(
+            config.routing().semantic_mode(),
+            crate::gateway::config::SemanticRoutingMode::Shadow
+        );
     }
 }

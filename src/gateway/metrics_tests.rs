@@ -1,5 +1,6 @@
 use super::{
-    metrics::{FailurePhase, GatewayMetrics, UpstreamLabel},
+    config::SemanticRoutingMode,
+    metrics::{FailurePhase, GatewayMetrics, SemanticDecisionOutcome, UpstreamLabel},
     routing::{RouteDestination, RouteReason},
 };
 use axum::http::StatusCode;
@@ -13,6 +14,9 @@ fn gateway_metrics_use_only_bounded_route_and_failure_labels() {
         .record_route(RouteDestination::Cloud, RouteReason::LocalEarlyFailure)
         .expect("route metric");
     metrics.record_fallback();
+    metrics
+        .record_semantic_decision(SemanticRoutingMode::Shadow, SemanticDecisionOutcome::Cloud)
+        .expect("semantic decision metric");
     metrics
         .record_upstream_failure(UpstreamLabel::Local, FailurePhase::PreCommit)
         .expect("failure metric");
@@ -38,6 +42,9 @@ fn gateway_metrics_use_only_bounded_route_and_failure_labels() {
         "octoroute_route_decisions_total{destination=\"cloud\",reason=\"local_early_failure\"} 1"
     ));
     assert!(encoded.contains("octoroute_local_fallbacks_total 1"));
+    assert!(
+        encoded.contains("octoroute_semantic_decisions_total{mode=\"shadow\",outcome=\"cloud\"} 1")
+    );
     assert!(
         encoded.contains(
             "octoroute_upstream_failures_total{phase=\"pre_commit\",upstream=\"local\"} 1"

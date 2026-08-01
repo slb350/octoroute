@@ -1,10 +1,17 @@
 use super::*;
 use crate::gateway::{
+    config::SemanticRoutingMode,
     intelligence::{IntelligentRoute, IntelligentRouterError},
     local::AdmissionOutcome,
+    metrics::SemanticDecisionOutcome,
     routing::{LocalRoutePlan, RoutePlan, RoutePolicy},
 };
 use tokio::sync::OwnedSemaphorePermit;
+
+enum SemanticRouteAction {
+    Admit(Option<OwnedSemaphorePermit>),
+    Cloud(RouteReason),
+}
 
 impl<T> GatewayService<T>
 where
@@ -30,27 +37,12 @@ where
             }
             RoutePlan::Local(local_plan) => {
                 let reservation = if local_plan.is_automatic() {
-                    match self.intelligent_router.route(&request).await {
-                        Ok(IntelligentRoute::Cloud) => {
-                            self.record_routing_duration(routing_started);
-                            return self
-                                .dispatch_cloud(
-                                    request,
-                                    intent,
-                                    RouteReason::CloudQuality,
-                                    request_id,
-                                )
-                                .await;
-                        }
-                        Ok(IntelligentRoute::Local(permit)) => Some(permit),
-                        Err(error) => {
-                            let reason = semantic_failure_reason(local_plan, &error);
-                            tracing::warn!(
-                                request_id,
-                                %error,
-                                reason = reason.as_str(),
-                                "semantic routing failed safely to cloud"
-                            );
+                    match self
+                        .apply_semantic_mode(&request, local_plan, request_id)
+                        .await
+                    {
+                        SemanticRouteAction::Admit(reservation) => reservation,
+                        SemanticRouteAction::Cloud(reason) => {
                             self.record_routing_duration(routing_started);
                             return self
                                 .dispatch_cloud(request, intent, reason, request_id)
@@ -70,6 +62,79 @@ where
                 )
                 .await
             }
+        }
+    }
+
+    async fn apply_semantic_mode(
+        &self,
+        request: &GatewayRequest,
+        local_plan: LocalRoutePlan,
+        request_id: &str,
+    ) -> SemanticRouteAction {
+        let mode = self.config.routing().semantic_mode();
+        if mode == SemanticRoutingMode::Disabled {
+            return SemanticRouteAction::Admit(None);
+        }
+        match self.intelligent_router.route(request).await {
+            IntelligentRoute::Observed {
+                destination,
+                reservation,
+            } => {
+                self.record_semantic_observation(mode, request_id, Ok(destination));
+                if mode == SemanticRoutingMode::Enforced && destination == RouteDestination::Cloud {
+                    SemanticRouteAction::Cloud(RouteReason::CloudQuality)
+                } else {
+                    SemanticRouteAction::Admit(Some(reservation))
+                }
+            }
+            IntelligentRoute::Failed { error, reservation } => {
+                self.record_semantic_observation(mode, request_id, Err(&error));
+                if mode == SemanticRoutingMode::Shadow {
+                    SemanticRouteAction::Admit(Some(reservation))
+                } else {
+                    SemanticRouteAction::Cloud(semantic_failure_reason(local_plan, &error))
+                }
+            }
+            IntelligentRoute::Unavailable(state) => {
+                let error = IntelligentRouterError::LocalUnavailable(state);
+                self.record_semantic_observation(mode, request_id, Err(&error));
+                SemanticRouteAction::Cloud(semantic_failure_reason(local_plan, &error))
+            }
+        }
+    }
+
+    fn record_semantic_observation(
+        &self,
+        mode: SemanticRoutingMode,
+        request_id: &str,
+        outcome: Result<RouteDestination, &IntelligentRouterError>,
+    ) {
+        let metric_outcome = match outcome {
+            Ok(destination) => SemanticDecisionOutcome::from(destination),
+            Err(_) => SemanticDecisionOutcome::Failure,
+        };
+        if let Err(error) = self.metrics.record_semantic_decision(mode, metric_outcome) {
+            tracing::warn!(%error, "failed to record semantic routing metric");
+        }
+        if mode == SemanticRoutingMode::Shadow {
+            match outcome {
+                Ok(destination) => tracing::debug!(
+                    request_id,
+                    semantic_destination = destination.as_str(),
+                    "observed shadow semantic routing decision"
+                ),
+                Err(error) => tracing::warn!(
+                    request_id,
+                    %error,
+                    "shadow semantic routing decision failed without selecting destination"
+                ),
+            }
+        } else if let Err(error) = outcome {
+            tracing::warn!(
+                request_id,
+                %error,
+                "semantic routing failed safely to cloud"
+            );
         }
     }
 

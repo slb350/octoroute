@@ -21,6 +21,7 @@ Current v2 metrics:
 
 ```text
 octoroute_route_decisions_total{destination,reason}
+octoroute_semantic_decisions_total{mode,outcome}
 octoroute_local_fallbacks_total
 octoroute_local_busy_spillovers_total
 octoroute_upstream_requests_total{upstream,outcome,status_class}
@@ -36,6 +37,10 @@ completion or cancellation. `time_to_first_byte` measures dispatch through
 the first upstream body chunk, which Octoroute buffers before commitment.
 `upstream_requests` classifies HTTP responses by status class and transport
 failures as `status_class="none"`.
+`semantic_decisions` separates the configured `shadow` or `enforced` mode
+from the bounded `local`, `cloud`, or `failure` classifier outcome. Compare it
+with `route_decisions` to evaluate shadow judgment without confusing the
+observed decision with the actual destination.
 
 All labels come from bounded enums or HTTP status classes. Prompt and model
 text are never used as metric labels. Octoroute deliberately does not parse

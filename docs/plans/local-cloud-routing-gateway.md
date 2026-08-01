@@ -1,11 +1,11 @@
 # Local and Cloud Routing Gateway Implementation Plan
 
-> **Superseded in part on 2026-07-25.** This v2.0 planning record introduced
-> the compatibility-and-capacity-only `auto` regression. The active product
-> contract and implementation decision are documented in
-> [intelligent-auto-routing.md](intelligent-auto-routing.md). In particular,
-> `auto` now makes a local semantic task-suitability decision and cloud-bound
-> work targets `openrouter/auto`.
+> **Superseded in part on 2026-07-25 and corrected on 2026-08-01.** This v2.0
+> planning record introduced the compatibility-and-capacity-only `auto`
+> regression, but its classifier evidence gate was sound. The active product
+> contract is [intelligent-auto-routing.md](intelligent-auto-routing.md):
+> semantic routing is now disabled, shadowed, or explicitly enforced, with
+> shadow as the safe default.
 
 **Status:** Approved direction; implementation not started
 

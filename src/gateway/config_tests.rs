@@ -1,5 +1,5 @@
 use super::{
-    config::{GatewayConfig, GatewayConfigError},
+    config::{GatewayConfig, GatewayConfigError, SemanticRoutingMode},
     test_support::TestEnvironment,
 };
 
@@ -61,11 +61,41 @@ fn valid_v2_config_resolves_secrets_without_exposing_them() {
     assert_eq!(config.openrouter().max_in_flight(), 8);
     assert_eq!(config.openrouter().health_cache_ttl_ms(), 10000);
     assert_eq!(config.openrouter().probe_timeout_ms(), 3000);
+    assert_eq!(
+        config.routing().semantic_mode(),
+        SemanticRoutingMode::Shadow
+    );
     assert_eq!(config.routing().decision_timeout_ms(), 30_000);
 
     let debug = format!("{config:?}");
     assert!(!debug.contains("inbound-secret"));
     assert!(!debug.contains("openrouter-secret"));
+}
+
+#[test]
+fn semantic_routing_modes_are_additive_and_closed() {
+    for (configured, expected) in [
+        ("disabled", SemanticRoutingMode::Disabled),
+        ("shadow", SemanticRoutingMode::Shadow),
+        ("enforced", SemanticRoutingMode::Enforced),
+    ] {
+        let input = valid_config().replace(
+            "fallback_before_commit = true",
+            &format!("fallback_before_commit = true\nsemantic_mode = \"{configured}\""),
+        );
+        let config = GatewayConfig::from_toml(&input, &TestEnvironment::gateway())
+            .expect("supported semantic routing mode");
+        assert_eq!(config.routing().semantic_mode(), expected);
+    }
+
+    let input = valid_config().replace(
+        "fallback_before_commit = true",
+        "fallback_before_commit = true\nsemantic_mode = \"experimental\"",
+    );
+    assert!(matches!(
+        GatewayConfig::from_toml(&input, &TestEnvironment::gateway()),
+        Err(GatewayConfigError::Parse { .. })
+    ));
 }
 
 #[test]

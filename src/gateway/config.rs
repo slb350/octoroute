@@ -375,10 +375,32 @@ impl OpenRouterConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RouteDefault {
-    /// Semantically choose suitable local work, otherwise cloud.
+    /// Prefer compatible local work, applying the configured semantic mode.
     PreferLocal,
     /// Use cloud unless the caller explicitly requests local.
     Cloud,
+}
+
+/// Whether local semantic routing is skipped, observed, or enforced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticRoutingMode {
+    /// Skip the semantic classifier and use deterministic local admission.
+    Disabled,
+    /// Observe classifier decisions without letting them select a destination.
+    Shadow,
+    /// Enforce classifier decisions for compatible automatic requests.
+    Enforced,
+}
+
+impl SemanticRoutingMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Shadow => "shadow",
+            Self::Enforced => "enforced",
+        }
+    }
 }
 
 /// Automatic routing behavior.
@@ -386,6 +408,7 @@ pub enum RouteDefault {
 pub struct RoutingConfig {
     default: RouteDefault,
     fallback_before_commit: bool,
+    semantic_mode: SemanticRoutingMode,
     decision_timeout_ms: u64,
 }
 
@@ -398,6 +421,11 @@ impl RoutingConfig {
     /// Whether automatic local requests may spill before client commitment.
     pub fn fallback_before_commit(&self) -> bool {
         self.fallback_before_commit
+    }
+
+    /// Whether semantic routing is skipped, observed, or enforced.
+    pub fn semantic_mode(&self) -> SemanticRoutingMode {
+        self.semantic_mode
     }
 
     /// Deadline for the local semantic routing decision.

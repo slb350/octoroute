@@ -134,6 +134,8 @@ struct RawRoutingConfig {
     default: RouteDefault,
     #[serde(default = "default_true")]
     fallback_before_commit: bool,
+    #[serde(default = "default_semantic_routing_mode")]
+    semantic_mode: SemanticRoutingMode,
     #[serde(default = "default_routing_decision_timeout_ms")]
     decision_timeout_ms: u64,
 }
@@ -172,6 +174,7 @@ impl RawGatewayConfig {
             routing: RoutingConfig {
                 default: self.routing.default,
                 fallback_before_commit: self.routing.fallback_before_commit,
+                semantic_mode: self.routing.semantic_mode,
                 decision_timeout_ms: self.routing.decision_timeout_ms,
             },
             observability: ObservabilityConfig {
@@ -555,6 +558,10 @@ const fn default_true() -> bool {
 
 const fn default_routing_decision_timeout_ms() -> u64 {
     DEFAULT_ROUTING_DECISION_TIMEOUT_MS
+}
+
+const fn default_semantic_routing_mode() -> SemanticRoutingMode {
+    SemanticRoutingMode::Shadow
 }
 
 const fn default_log_level() -> LogLevel {

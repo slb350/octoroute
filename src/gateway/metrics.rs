@@ -1,6 +1,9 @@
 //! Bounded-cardinality Prometheus metrics for the v2 gateway.
 
-use crate::gateway::routing::{RouteDestination, RouteReason};
+use crate::gateway::{
+    config::SemanticRoutingMode,
+    routing::{RouteDestination, RouteReason},
+};
 use axum::http::StatusCode;
 use prometheus::{
     Encoder, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge,
@@ -38,6 +41,33 @@ pub enum FailurePhase {
     MidStream,
 }
 
+/// Stable semantic classifier outcome metric label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SemanticDecisionOutcome {
+    Local,
+    Cloud,
+    Failure,
+}
+
+impl SemanticDecisionOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Cloud => "cloud",
+            Self::Failure => "failure",
+        }
+    }
+}
+
+impl From<RouteDestination> for SemanticDecisionOutcome {
+    fn from(destination: RouteDestination) -> Self {
+        match destination {
+            RouteDestination::Local => Self::Local,
+            RouteDestination::Cloud => Self::Cloud,
+        }
+    }
+}
+
 impl FailurePhase {
     fn as_str(self) -> &'static str {
         match self {
@@ -52,6 +82,7 @@ impl FailurePhase {
 pub struct GatewayMetrics {
     registry: Arc<Registry>,
     route_decisions: IntCounterVec,
+    semantic_decisions: IntCounterVec,
     local_fallbacks: IntCounter,
     local_busy_spillovers: IntCounter,
     upstream_requests: IntCounterVec,
@@ -91,6 +122,13 @@ impl GatewayMetrics {
             "octoroute_local_fallbacks_total",
             "Automatic local attempts replaced by cloud before response commitment",
         ))?;
+        let semantic_decisions = IntCounterVec::new(
+            Opts::new(
+                "octoroute_semantic_decisions_total",
+                "Semantic classifier observations by configured mode and bounded outcome",
+            ),
+            &["mode", "outcome"],
+        )?;
         let local_busy_spillovers = IntCounter::with_opts(Opts::new(
             "octoroute_local_busy_spillovers_total",
             "Automatic requests sent to cloud because local capacity was occupied",
@@ -135,6 +173,7 @@ impl GatewayMetrics {
             &["destination"],
         )?;
         registry.register(Box::new(route_decisions.clone()))?;
+        registry.register(Box::new(semantic_decisions.clone()))?;
         registry.register(Box::new(local_fallbacks.clone()))?;
         registry.register(Box::new(local_busy_spillovers.clone()))?;
         registry.register(Box::new(upstream_requests.clone()))?;
@@ -147,6 +186,7 @@ impl GatewayMetrics {
         Ok(Self {
             registry: Arc::new(registry),
             route_decisions,
+            semantic_decisions,
             local_fallbacks,
             local_busy_spillovers,
             upstream_requests,
@@ -166,6 +206,18 @@ impl GatewayMetrics {
     ) -> Result<(), prometheus::Error> {
         self.route_decisions
             .get_metric_with_label_values(&[destination.as_str(), reason.as_str()])?
+            .inc();
+        Ok(())
+    }
+
+    /// Record one bounded semantic classifier observation.
+    pub(crate) fn record_semantic_decision(
+        &self,
+        mode: SemanticRoutingMode,
+        outcome: SemanticDecisionOutcome,
+    ) -> Result<(), prometheus::Error> {
+        self.semantic_decisions
+            .get_metric_with_label_values(&[mode.as_str(), outcome.as_str()])?
             .inc();
         Ok(())
     }

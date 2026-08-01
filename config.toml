@@ -43,6 +43,7 @@ probe_timeout_ms = 3000
 [routing]
 default = "prefer_local"
 fallback_before_commit = true
+semantic_mode = "shadow"
 decision_timeout_ms = 30000
 
 [observability]

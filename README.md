@@ -11,9 +11,9 @@ OpenAI client
    |    \
    |     `-- OpenRouter `openrouter/auto` --> cloud model/provider
    |
-   `-- local semantic decision on Strix
+   `-- compatible work --> Strix answer
           |
-          `-- Strix answer when the task is locally capable
+          `-- optional local semantic decision: shadow or enforced
 ```
 
 Octoroute owns the local-versus-cloud decision. OpenRouter owns cloud model
@@ -23,10 +23,10 @@ and provider selection. The routing decision stays on the local network.
 
 - Exposes `POST /v1/chat/completions` and `GET /v1/models`.
 - Preserves unknown request fields and forwards response/SSE bytes opaquely.
-- Semantically evaluates `auto` requests on Strix and keeps them local only
-  when the local model is expected to answer well.
-- Routes work that needs stronger intelligence to OpenRouter
-  `openrouter/auto`, even when Strix is healthy and idle.
+- Keeps compatible `auto` work local by default while observing bounded
+  semantic decisions on Strix in shadow mode.
+- Can disable semantic routing entirely or explicitly enforce it so work that
+  needs stronger intelligence routes to OpenRouter `openrouter/auto`.
 - Also uses OpenRouter when Strix lacks a requested capability, is busy or
   unhealthy, or cannot fit the exact prompt plus output budget.
 - Accepts exact OpenRouter slugs such as
@@ -90,8 +90,16 @@ auto_model = "openrouter/auto"
 cost_quality_tradeoff = 9
 
 [routing]
+semantic_mode = "shadow"
 decision_timeout_ms = 30000
 ```
+
+`semantic_mode` is `disabled`, `shadow`, or `enforced`. Shadow is the default:
+it records the classifier outcome without letting that outcome select the
+destination. Enforced mode should be enabled only after its judgment is
+validated against representative labeled traffic. Shadow and enforced modes
+add one local classifier inference—about 760–1500 ms in the measured Strix
+profile—to compatible `auto` requests.
 
 This profile is for running Octoroute on Strix. The `config.laptop.toml`
 profile instead binds Octoroute to laptop loopback and uses

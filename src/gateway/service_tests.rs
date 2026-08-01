@@ -199,14 +199,9 @@ async fn mount_idle_local(server: &MockServer, slot_calls: u64) {
         .await;
 }
 
-async fn mount_local_admission(server: &MockServer) {
+pub(super) async fn mount_local_admission(server: &MockServer) {
     mount_idle_local(server, 1).await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions/input_tokens"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"input_tokens": 10})))
-        .expect(1)
-        .mount(server)
-        .await;
+    mount_input_tokens(server, 10).await;
 }
 
 async fn mount_busy_local_admission(server: &MockServer) {
@@ -253,9 +248,15 @@ pub(super) async fn mount_intelligent_response(
 
 pub(super) async fn mount_auto_local_admission(server: &MockServer) {
     mount_intelligent_route(server, "local", 1).await;
+    mount_input_tokens(server, 10).await;
+}
+
+pub(super) async fn mount_input_tokens(server: &MockServer, input_tokens: u32) {
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions/input_tokens"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"input_tokens": 10})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"input_tokens": input_tokens})),
+        )
         .expect(1)
         .mount(server)
         .await;

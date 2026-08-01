@@ -80,6 +80,10 @@ cloud_quality
 router_failure
 ```
 
+`cloud_quality` and `router_failure` are emitted only when semantic routing is
+`enforced`. In `shadow` mode, classifier outcomes are observable through
+metrics but do not replace the actual destination reason.
+
 ### Errors
 
 Gateway-created errors use:

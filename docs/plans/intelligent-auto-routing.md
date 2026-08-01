@@ -1,8 +1,8 @@
 # Intelligent automatic routing
 
-Status: implemented
+Status: implemented with a shadow-default evidence gate
 
-Decision date: 2026-07-25
+Decision dates: 2026-07-25; evidence gate 2026-08-01
 
 ## Product contract
 
@@ -23,11 +23,15 @@ overrides.
 
 ## Decision
 
-Automatic routing uses a two-stage boundary:
+Automatic routing uses a deterministic boundary plus a configurable semantic
+stage:
 
 1. Apply deterministic intent, privacy, and capability gates.
-2. For compatible automatic work, ask Strix for a constrained semantic
-   `local` or `cloud` decision.
+2. For compatible automatic work, apply `routing.semantic_mode`:
+   - `disabled` skips semantic classification;
+   - `shadow` asks Strix for a constrained decision, records it, and does not
+     let it select the destination;
+   - `enforced` asks Strix and honors its `local` or `cloud` decision.
 
 The local decision request:
 
@@ -40,12 +44,15 @@ The local decision request:
 - reads a bounded response body;
 - never logs the conversation or raw response.
 
-A `local` decision proceeds through the existing health, slot, exact-token,
-and context admission gates. A `cloud` decision sends the original request to
-OpenRouter with model `openrouter/auto`.
+A disabled request, shadow observation, or enforced `local` decision proceeds
+through the existing health, slot, exact-token, and context admission gates.
+Only an enforced `cloud` decision sends the original request to OpenRouter
+with model `openrouter/auto`.
 
-If the semantic decision times out, fails, or returns invalid output,
-automatic traffic fails safely to OpenRouter with reason `router_failure`.
+In enforced mode, a semantic timeout, failure, or invalid output sends
+automatic traffic safely to OpenRouter with reason `router_failure`. In shadow
+mode, the same outcome is recorded as `failure` and local admission continues
+when the classifier already reserved capacity.
 If Strix is busy or unhealthy before classification, the established
 `local_busy` or `local_unhealthy` cloud reason is used.
 
@@ -53,9 +60,15 @@ If Strix is busy or unhealthy before classification, the established
 
 Using a cloud classifier before local inference would disclose prompts that
 ultimately remain local, add cloud cost to every ambiguous request, and break
-the local privacy boundary. The configured Strix model is capable enough to
-make the binary task-suitability decision, and the decision is validated as
-strict bounded JSON.
+the local privacy boundary. Strict bounded JSON validates the decision format,
+not its judgment; enforcement therefore requires representative labeled
+evidence and is never the default.
+
+The 2026-07-26 external benchmark found 44% routing accuracy for enforced
+semantic decisions versus 73% for an always-local baseline on the measured
+compatible tasks. It also measured roughly 760–1500 ms of added latency per
+classified request. Shadow became the default so future prompt or model
+changes can be evaluated without repeating the unvalidated enforcement.
 
 OpenRouter is not Octoroute's local-versus-cloud classifier. After Octoroute
 chooses cloud, OpenRouter Auto selects the cloud model and provider.
@@ -73,11 +86,13 @@ OpenAI-compatible request
   |
   `-- auto + compatible
         |
-        `-- local semantic decision on Strix
+        `-- semantic mode
               |
-              +-- cloud ----------> OpenRouter `openrouter/auto`
-              |
-              `-- local ----------> exact local admission
+              +-- disabled -------> exact local admission
+              +-- shadow ---------> observe + exact local admission
+              `-- enforced Strix decision
+                    +-- cloud -----> OpenRouter `openrouter/auto`
+                    `-- local -----> exact local admission
                                       |
                                       +-- admitted --> Strix answer
                                       `-- rejected --> OpenRouter Auto
@@ -92,15 +107,22 @@ routing reason adds:
 - `router_failure`: semantic routing failed safely to cloud.
 
 `local_capable` now means both semantically suitable and successfully
-admitted, rather than merely protocol-compatible and idle.
+admitted in enforced mode. In disabled or shadow mode it means compatible and
+successfully admitted. `octoroute_semantic_decisions_total{mode,outcome}`
+records bounded shadow/enforced `local`, `cloud`, and `failure` observations;
+it never substitutes for the actual route metric or response headers.
 
 ## Test contract
 
 Regression coverage must prove:
 
 - difficult work routes to OpenRouter Auto even while Strix is healthy and
-  idle;
+  idle in enforced mode;
 - routine work remains local after semantic classification;
+- shadow cloud decisions and failures cannot override compatible local
+  admission;
+- disabled mode never invokes the classifier;
+- shadow/enforced outcomes use bounded metrics;
 - cloud-bound automatic requests use `openrouter/auto`;
 - invalid semantic output fails safely to cloud;
 - busy and unhealthy local states retain their bounded reasons;

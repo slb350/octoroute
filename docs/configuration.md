@@ -58,6 +58,7 @@ probe_timeout_ms = 3000
 [routing]
 default = "prefer_local"
 fallback_before_commit = true
+semantic_mode = "shadow"
 decision_timeout_ms = 30000
 
 [observability]
@@ -127,13 +128,23 @@ OpenRouter-only plugins and non-text output always route cloud.
 
 `default` is:
 
-- `prefer_local`: semantically decide whether compatible work is locally
-  capable, then use local capacity or cloud accordingly;
+- `prefer_local`: apply the configured semantic mode to compatible automatic
+  work, then use local capacity or cloud accordingly;
 - `cloud`: use OpenRouter unless the caller explicitly forces local.
 
-`decision_timeout_ms` bounds the local semantic decision. A timeout, invalid
-decision, or local routing-model failure sends automatic traffic safely to
-OpenRouter. Explicit local and local-only requests bypass semantic routing.
+`semantic_mode` is:
+
+- `disabled`: skip classification and proceed directly to local admission;
+- `shadow` (default): classify and record the bounded outcome, but never let
+  that outcome select cloud; local availability and context admission remain
+  authoritative;
+- `enforced`: honor `local` or `cloud` classifier decisions.
+
+`decision_timeout_ms` bounds semantic decisions in shadow and enforced modes.
+In shadow mode, a classifier failure does not select cloud when local capacity
+was already reserved. In enforced mode, a timeout, invalid decision, or local
+routing-model failure sends automatic traffic safely to OpenRouter. Explicit
+local and local-only requests always bypass semantic routing.
 
 `fallback_before_commit` only applies to automatic requests initially
 admitted locally. Forced-local privacy is never weakened.

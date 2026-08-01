@@ -1,8 +1,8 @@
 # Migrating from Octoroute v1 to v2
 
-Octoroute 2.0 replaces local size-tier routing with one explicit boundary.
-`auto` semantically judges whether Strix can handle the task well and sends
-harder work to OpenRouter Auto.
+Octoroute 2.x replaces local size-tier routing with one explicit boundary.
+`auto` uses compatible Strix capacity or OpenRouter Auto. Semantic judgment is
+configurable and defaults to non-enforcing shadow observation.
 
 ## Breaking changes
 
@@ -70,6 +70,7 @@ cost_quality_tradeoff = 9
 [routing]
 default = "prefer_local"
 fallback_before_commit = true
+semantic_mode = "shadow"
 decision_timeout_ms = 30000
 ```
 
