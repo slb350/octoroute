@@ -75,7 +75,9 @@ selection only after Octoroute chooses cloud.
 
 Unknown fields, message content blocks, OpenRouter plugins, `session_id`,
 streaming comments, data frames, `[DONE]`, usage, cost, and actual response
-model pass through.
+model pass through. Routing inspects message roles and typed-content shapes
+without rewriting them; malformed shapes fail closed, and historical tool
+messages require the configured local tool capability.
 
 ## Privacy and fallback
 

@@ -177,6 +177,83 @@ fn unknown_content_blocks_fail_closed_to_cloud() {
 }
 
 #[test]
+fn malformed_message_shapes_fail_closed_for_automatic_and_forced_local_routes() {
+    let config = config(
+        &["chat", "tools", "image_input", "audio_input", "video_input"],
+        "prefer_local",
+    );
+    let requests = [
+        br#"{
+            "model": "auto",
+            "messages": ["not-an-object"]
+        }"#
+        .as_slice(),
+        br#"{
+            "model": "auto",
+            "messages": [{"role": "user", "content": {"type": "text", "text": "hello"}}]
+        }"#
+        .as_slice(),
+        br#"{
+            "model": "auto",
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "input_image",
+                    "input_image": {"url": "https://example.com/a.png"}
+                }]
+            }]
+        }"#
+        .as_slice(),
+    ];
+
+    for body in requests {
+        let request = GatewayRequest::parse(body).expect("minimally valid gateway request");
+        let policy = RoutePolicy::new(&config);
+        assert!(matches!(
+            policy
+                .plan(&request, &ModelIntent::Auto, PrivacyDirective::None)
+                .expect("automatic malformed request routes safely"),
+            RoutePlan::Cloud(RouteReason::LocalIncompatible)
+        ));
+        assert_eq!(
+            policy
+                .plan(&request, &ModelIntent::Local, PrivacyDirective::None)
+                .expect_err("forced local rejects malformed message content"),
+            RoutePolicyError::LocalIncompatible
+        );
+        assert_eq!(
+            policy
+                .plan(&request, &ModelIntent::Auto, PrivacyDirective::LocalOnly)
+                .expect_err("local-only rejects malformed message content"),
+            RoutePolicyError::LocalIncompatible
+        );
+    }
+}
+
+#[test]
+fn tool_history_is_not_plain_local_chat() {
+    let config = config(&["chat"], "prefer_local");
+    let request = GatewayRequest::parse(
+        br#"{
+            "model": "auto",
+            "messages": [{
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "result"
+            }]
+        }"#,
+    )
+    .expect("valid tool-history request");
+
+    assert!(matches!(
+        RoutePolicy::new(&config)
+            .plan(&request, &ModelIntent::Auto, PrivacyDirective::None)
+            .expect("automatic tool history routes safely"),
+        RoutePlan::Cloud(RouteReason::LocalIncompatible)
+    ));
+}
+
+#[test]
 fn configured_cloud_default_does_not_use_idle_local_model() {
     let config = config(&["chat"], "cloud");
     let request = request("");

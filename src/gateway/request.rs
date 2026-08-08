@@ -16,7 +16,7 @@ pub enum RequestFeature {
     OpenRouterPlugins,
     /// A non-text output modality has no initial local equivalent.
     NonTextOutput,
-    /// An unrecognized or malformed message content block must fail closed.
+    /// An unrecognized or malformed message or content block must fail closed.
     UnsupportedContent,
 }
 
@@ -191,45 +191,124 @@ fn infer_features(body: &Map<String, Value>) -> BTreeSet<RequestFeature> {
         features.insert(RequestFeature::NonTextOutput);
     }
 
-    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
-        return features;
-    };
-    for message in messages {
-        let Some(blocks) = message
-            .as_object()
-            .and_then(|message| message.get("content"))
-            .and_then(Value::as_array)
-        else {
-            continue;
-        };
-        for block in blocks {
-            let Some(block_type) = block
-                .as_object()
-                .and_then(|block| block.get("type"))
-                .and_then(Value::as_str)
-            else {
-                features.insert(RequestFeature::UnsupportedContent);
-                continue;
-            };
-            match block_type {
-                "text" => {}
-                "image_url" | "input_image" => {
-                    features.insert(RequestFeature::Capability(LocalCapability::ImageInput));
-                }
-                "input_audio" | "audio" => {
-                    features.insert(RequestFeature::Capability(LocalCapability::AudioInput));
-                }
-                "input_video" | "video" => {
-                    features.insert(RequestFeature::Capability(LocalCapability::VideoInput));
-                }
-                _ => {
-                    features.insert(RequestFeature::UnsupportedContent);
-                }
-            }
-        }
+    if let Some(messages) = body.get("messages").and_then(Value::as_array) {
+        infer_message_features(messages, &mut features);
     }
 
     features
+}
+
+fn infer_message_features(messages: &[Value], features: &mut BTreeSet<RequestFeature>) {
+    for message in messages {
+        let Some(message) = message.as_object() else {
+            features.insert(RequestFeature::UnsupportedContent);
+            continue;
+        };
+        let Some(role) = message
+            .get("role")
+            .and_then(Value::as_str)
+            .filter(|role| !role.is_empty())
+        else {
+            features.insert(RequestFeature::UnsupportedContent);
+            continue;
+        };
+        if !matches!(role, "developer" | "system" | "user" | "assistant" | "tool") {
+            features.insert(RequestFeature::UnsupportedContent);
+        }
+
+        let has_tool_calls = match message.get("tool_calls") {
+            None | Some(Value::Null) => false,
+            Some(Value::Array(calls)) if !calls.is_empty() => {
+                features.insert(RequestFeature::Capability(LocalCapability::Tools));
+                if !calls.iter().all(valid_tool_call) {
+                    features.insert(RequestFeature::UnsupportedContent);
+                }
+                true
+            }
+            Some(_) => {
+                features.insert(RequestFeature::UnsupportedContent);
+                true
+            }
+        };
+        if present(message.get("function_call")) {
+            features.insert(RequestFeature::Capability(LocalCapability::Tools));
+            features.insert(RequestFeature::UnsupportedContent);
+        }
+        if role == "tool" {
+            features.insert(RequestFeature::Capability(LocalCapability::Tools));
+            if !message.get("tool_call_id").is_some_and(Value::is_string) {
+                features.insert(RequestFeature::UnsupportedContent);
+            }
+        }
+
+        match message.get("content") {
+            Some(Value::String(_)) => {}
+            Some(Value::Array(blocks)) if !blocks.is_empty() => {
+                for block in blocks {
+                    infer_content_block_feature(block, role, features);
+                }
+            }
+            None | Some(Value::Null) if role == "assistant" && has_tool_calls => {}
+            _ => {
+                features.insert(RequestFeature::UnsupportedContent);
+            }
+        }
+    }
+}
+
+fn valid_tool_call(call: &Value) -> bool {
+    let Some(call) = call.as_object() else {
+        return false;
+    };
+    call.get("id").is_some_and(Value::is_string)
+        && call.get("type").and_then(Value::as_str) == Some("function")
+        && call
+            .get("function")
+            .and_then(Value::as_object)
+            .is_some_and(|function| {
+                function.get("name").is_some_and(Value::is_string)
+                    && function.get("arguments").is_some_and(Value::is_string)
+            })
+}
+
+fn infer_content_block_feature(block: &Value, role: &str, features: &mut BTreeSet<RequestFeature>) {
+    let Some(block) = block.as_object() else {
+        features.insert(RequestFeature::UnsupportedContent);
+        return;
+    };
+    let valid_text = || block.get("text").is_some_and(Value::is_string);
+    let valid_media = |field: &str, value_fields: &[&str]| {
+        block
+            .get(field)
+            .and_then(Value::as_object)
+            .is_some_and(|media| {
+                value_fields.iter().any(|field| {
+                    media
+                        .get(*field)
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.is_empty())
+                })
+            })
+    };
+    let capability = match block.get("type").and_then(Value::as_str) {
+        Some("text") if valid_text() => None,
+        Some("image_url") if role == "user" && valid_media("image_url", &["url"]) => {
+            Some(LocalCapability::ImageInput)
+        }
+        Some("input_audio") if role == "user" && valid_media("input_audio", &["data", "url"]) => {
+            Some(LocalCapability::AudioInput)
+        }
+        Some("input_video") if role == "user" && valid_media("input_video", &["data", "url"]) => {
+            Some(LocalCapability::VideoInput)
+        }
+        _ => {
+            features.insert(RequestFeature::UnsupportedContent);
+            return;
+        }
+    };
+    if let Some(capability) = capability {
+        features.insert(RequestFeature::Capability(capability));
+    }
 }
 
 fn present(value: Option<&Value>) -> bool {

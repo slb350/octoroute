@@ -65,6 +65,111 @@ fn detects_all_features_without_flattening_messages() {
 }
 
 #[test]
+fn malformed_message_and_content_shapes_fail_closed() {
+    let malformed_messages = [
+        json!(["not-an-object"]),
+        json!([{"content": "missing role"}]),
+        json!([{"role": "future-role", "content": "unknown role"}]),
+        json!([{"role": "user"}]),
+        json!([{"role": "assistant", "content": null}]),
+        json!([{"role": "user", "content": {"type": "text", "text": "hello"}}]),
+        json!([{"role": "user", "content": [{"type": "text", "text": 42}]}]),
+        json!([{"role": "user", "content": []}]),
+        json!([{"role": "assistant", "content": null, "tool_calls": []}]),
+        json!([{"role": "tool", "content": "missing tool-call id"}]),
+        json!([{
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": 42,
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{}"}
+            }]
+        }]),
+    ];
+
+    for messages in malformed_messages {
+        let request = gateway_request(json!({
+            "model": "auto",
+            "messages": messages
+        }));
+
+        assert!(
+            request
+                .features()
+                .contains(&RequestFeature::UnsupportedContent),
+            "malformed messages were treated as local-compatible: {messages}"
+        );
+    }
+}
+
+#[test]
+fn tool_history_requires_local_tool_capability() {
+    let requests = [
+        json!({
+            "model": "auto",
+            "messages": [{
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"}
+                }]
+            }]
+        }),
+        json!({
+            "model": "auto",
+            "messages": [{
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "result"
+            }]
+        }),
+    ];
+
+    for body in requests {
+        let request = gateway_request(body);
+        assert!(
+            request
+                .features()
+                .contains(&RequestFeature::Capability(LocalCapability::Tools))
+        );
+        assert!(
+            !request
+                .features()
+                .contains(&RequestFeature::UnsupportedContent)
+        );
+    }
+}
+
+#[test]
+fn only_verified_llama_cpp_content_block_names_are_local_capabilities() {
+    let unsupported_blocks = [
+        json!({"type": "input_image", "input_image": {"url": "https://example.com/a.png"}}),
+        json!({"type": "audio", "audio": {"data": "AA=="}}),
+        json!({"type": "video", "video": {"data": "AA=="}}),
+    ];
+
+    for block in unsupported_blocks {
+        let request = gateway_request(json!({
+            "model": "auto",
+            "messages": [{
+                "role": "user",
+                "content": [block]
+            }]
+        }));
+
+        assert!(
+            request
+                .features()
+                .contains(&RequestFeature::UnsupportedContent),
+            "unverified content block alias was accepted"
+        );
+    }
+}
+
+#[test]
 fn absent_stream_does_not_request_local_streaming_capability() {
     let request = gateway_request(json!({
         "model": "auto",

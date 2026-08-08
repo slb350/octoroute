@@ -25,6 +25,14 @@ Other fields are preserved. Output context admission uses
 `max_completion_tokens` first, then `max_tokens`, then
 `default_max_output_tokens`. A null optional limit is treated as unset.
 
+Local eligibility requires message objects with supported roles and string or
+verified nonempty typed-array content. Only an assistant message with valid
+tool calls may omit content or set it to null. Tool-role or assistant
+tool-call history requires the local `tools` capability even when the request
+omits top-level tool definitions. Malformed message/content shapes and
+unsupported typed block names route automatic requests to cloud; forced-local
+requests return `400` rather than sending an incompatible body to Strix.
+
 ### Model values
 
 | Value | Route |

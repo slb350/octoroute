@@ -23,6 +23,8 @@ and provider selection. The routing decision stays on the local network.
 
 - Exposes `POST /v1/chat/completions` and `GET /v1/models`.
 - Preserves unknown request fields and forwards response/SSE bytes opaquely.
+- Keeps malformed message/content shapes away from local inference and
+  requires verified local tool capability for tool-call history.
 - Keeps compatible `auto` work local by default while observing bounded
   semantic decisions on Strix in shadow mode.
 - Can disable semantic routing entirely or explicitly enforce it so work that
