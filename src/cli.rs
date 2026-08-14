@@ -31,6 +31,18 @@ pub enum Command {
         #[arg(short, long)]
         output: Option<String>,
     },
+    /// Analyze labeled semantic-forecast JSONL without starting the gateway.
+    Calibrate {
+        /// Labeled forecast artifact JSONL path.
+        #[arg(short, long)]
+        input: String,
+        /// Optional report path; stdout is used when omitted.
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Threshold-grid increment from 0.01 through 0.25.
+        #[arg(long, default_value_t = 0.05)]
+        grid_step: f64,
+    },
 }
 
 /// Generate template configuration content.
@@ -77,6 +89,30 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Config { output: Some(ref path) }) if path == "my-config.toml"
+        ));
+    }
+
+    #[test]
+    fn calibrate_subcommand_is_offline_and_explicit() {
+        let cli = Cli::parse_from([
+            "octoroute",
+            "calibrate",
+            "--input",
+            "forecasts.jsonl",
+            "--output",
+            "report.json",
+            "--grid-step",
+            "0.1",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Calibrate {
+                ref input,
+                ref output,
+                grid_step,
+            }) if input == "forecasts.jsonl"
+                && output.as_deref() == Some("report.json")
+                && grid_step == 0.1
         ));
     }
 

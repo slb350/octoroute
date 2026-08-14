@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and capabilities, including measured limitations and anti-framing guidance.
 - Expose bounded local-success probability histograms by semantic mode and
   capability boundary without using generated text as metric labels.
+- Add an offline `calibrate` command for strict labeled JSONL artifacts,
+  calibration bins, Brier score, threshold sweeps, baseline comparison,
+  latency, cloud outcomes, and estimated cloud cost.
 
 ## [2.1.2] - 2026-08-08
 

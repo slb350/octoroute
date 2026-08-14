@@ -222,11 +222,12 @@ forecasts.
 
 ### 3. Labeled replay and calibration gate
 
-- Extend the existing Strix benchmark harness to retain raw forecast fields.
+- [x] Define a strict, bounded JSONL artifact contract for raw forecast fields.
+- [x] Add credential-free replay and threshold-sweep tooling.
 - Replay the existing labeled challenge set with the same model and
   temperature.
-- Sweep deterministic thresholds offline.
-- Compare against always-local and the previous binary classifier.
+- [x] Sweep deterministic thresholds offline.
+- [x] Compare against always-local and the previous binary classifier.
 - Keep enforcement blocked unless the selected policy beats the compatible
   baseline on declared quality and cost criteria.
 

@@ -205,6 +205,7 @@ See:
 - [Security](docs/security.md)
 - [Deployment](docs/deployment.md)
 - [Observability](docs/observability.md)
+- [Forecast calibration](docs/calibration.md)
 - [Development](docs/development.md)
 
 ## Development

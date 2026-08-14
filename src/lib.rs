@@ -3,6 +3,10 @@
 //! The gateway sends compatible work to one local llama.cpp service and routes
 //! everything else to OpenRouter while preserving explicit local-only privacy.
 
+pub mod calibration;
 pub mod cli;
 pub mod gateway;
 pub mod telemetry;
+
+#[cfg(test)]
+mod calibration_tests;

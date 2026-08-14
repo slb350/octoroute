@@ -200,7 +200,7 @@ impl RawGatewayConfig {
 }
 
 fn validate_probability(field: &str, value: f64) -> Result<(), GatewayConfigError> {
-    if value.is_finite() && (0.0..=1.0).contains(&value) {
+    if is_probability(value) {
         Ok(())
     } else {
         Err(invalid(

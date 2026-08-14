@@ -1,7 +1,7 @@
 //! Local semantic routing for automatic local-versus-cloud decisions.
 
 use crate::gateway::{
-    config::{GatewayConfig, MAX_SEMANTIC_BOUNDARY_STEPS, RoutingConfig},
+    config::{GatewayConfig, MAX_SEMANTIC_BOUNDARY_STEPS, RoutingConfig, is_probability},
     http_client::{LOCAL_CHAT_COMPLETIONS_PATH, authorized, endpoint_url},
     local::LlamaCppAdmission,
     request::GatewayRequest,
@@ -291,19 +291,34 @@ pub(crate) enum SemanticBoundary {
 }
 
 impl SemanticBoundary {
-    const ALL: [Self; 4] = [
+    pub(crate) const ALL: [Self; 4] = [
         Self::Supported,
         Self::Uncertain,
         Self::Unsupported,
         Self::Unmatched,
     ];
 
-    const fn threshold_steps(self) -> u8 {
+    pub(crate) fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|boundary| *boundary == self)
+            .expect("every semantic boundary is present in ALL")
+    }
+
+    pub(crate) const fn threshold_steps(self) -> u8 {
         match self {
             Self::Supported => 0,
             Self::Uncertain | Self::Unmatched => 1,
             Self::Unsupported => MAX_SEMANTIC_BOUNDARY_STEPS,
         }
+    }
+
+    pub(crate) fn required_probability(
+        self,
+        local_success_threshold: f64,
+        boundary_threshold_step: f64,
+    ) -> f64 {
+        local_success_threshold + f64::from(self.threshold_steps()) * boundary_threshold_step
     }
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -327,7 +342,7 @@ impl SemanticBoundary {
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum SemanticRule {
+pub(crate) enum SemanticRule {
     BoundedVerification,
     InspectableInputs,
     ExplicitContract,
@@ -348,7 +363,7 @@ impl SemanticRule {
         Self::NoMatchingRule,
     ];
 
-    const fn boundary(self) -> SemanticBoundary {
+    pub(crate) const fn boundary(self) -> SemanticBoundary {
         match self {
             Self::BoundedVerification | Self::InspectableInputs | Self::ExplicitContract => {
                 SemanticBoundary::Supported
@@ -361,7 +376,7 @@ impl SemanticRule {
         }
     }
 
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::BoundedVerification => "bounded_verification",
             Self::InspectableInputs => "inspectable_inputs",
@@ -397,7 +412,9 @@ impl SemanticRule {
 pub(crate) struct SemanticAssessment {
     destination: RouteDestination,
     boundary: SemanticBoundary,
+    primary_rule: SemanticRule,
     local_success_probability: f64,
+    required_probability: f64,
 }
 
 impl SemanticAssessment {
@@ -411,6 +428,14 @@ impl SemanticAssessment {
 
     pub(crate) const fn local_success_probability(self) -> f64 {
         self.local_success_probability
+    }
+
+    pub(crate) const fn primary_rule(self) -> &'static str {
+        self.primary_rule.as_str()
+    }
+
+    pub(crate) const fn required_probability(self) -> f64 {
+        self.required_probability
     }
 }
 
@@ -430,7 +455,7 @@ impl SemanticPolicy {
 
     fn assess(self, forecast: RouteForecast) -> Result<SemanticAssessment, IntelligentRouterError> {
         let probability = forecast.p_local_success;
-        if !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
+        if !is_probability(probability) {
             return Err(IntelligentRouterError::InvalidDecision);
         }
         if forecast.crux.trim().is_empty() || forecast.crux.chars().count() > MAX_CRUX_CHARS {
@@ -439,9 +464,9 @@ impl SemanticPolicy {
         if forecast.primary_rule.boundary() != forecast.capability_boundary {
             return Err(IntelligentRouterError::InvalidDecision);
         }
-        let required_probability = self.local_success_threshold
-            + f64::from(forecast.capability_boundary.threshold_steps())
-                * self.boundary_threshold_step;
+        let required_probability = forecast
+            .capability_boundary
+            .required_probability(self.local_success_threshold, self.boundary_threshold_step);
         let destination = if probability >= required_probability {
             RouteDestination::Local
         } else {
@@ -450,7 +475,9 @@ impl SemanticPolicy {
         Ok(SemanticAssessment {
             destination,
             boundary: forecast.capability_boundary,
+            primary_rule: forecast.primary_rule,
             local_success_probability: probability,
+            required_probability,
         })
     }
 }

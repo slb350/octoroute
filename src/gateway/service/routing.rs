@@ -132,7 +132,9 @@ where
                     request_id,
                     semantic_destination = assessment.destination().as_str(),
                     capability_boundary = assessment.boundary().as_str(),
+                    semantic_primary_rule = assessment.primary_rule(),
                     local_success_probability = assessment.local_success_probability(),
+                    required_probability = assessment.required_probability(),
                     "observed shadow semantic routing forecast"
                 ),
                 Err(error) => tracing::warn!(

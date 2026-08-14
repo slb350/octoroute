@@ -11,6 +11,10 @@ mod validation;
 const CONFIG_VERSION: u8 = 2;
 pub(crate) const MAX_SEMANTIC_BOUNDARY_STEPS: u8 = 2;
 
+pub(crate) fn is_probability(value: f64) -> bool {
+    value.is_finite() && (0.0..=1.0).contains(&value)
+}
+
 /// Source used to resolve secret-bearing environment variables.
 pub trait Environment {
     /// Return an environment variable without logging its value.

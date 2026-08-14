@@ -5,7 +5,7 @@ pub mod config;
 pub mod env;
 pub mod http;
 mod http_client;
-mod intelligence;
+pub(crate) mod intelligence;
 pub mod local;
 pub mod metrics;
 pub mod openrouter;
