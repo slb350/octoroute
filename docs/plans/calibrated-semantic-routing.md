@@ -133,7 +133,8 @@ when saved forecast artifacts are available.
 
 The first capability-card revision will:
 
-- identify the configured local model alias and the Strix deployment role;
+- identify the configured local model alias, immutable model revision, and the
+  Strix deployment role;
 - describe only capabilities enabled by validated Octoroute configuration;
 - distinguish deterministic verification from merely plausible output;
 - state measured limitations from the existing benchmark, including database
@@ -221,7 +222,8 @@ forecasts.
 ### 2. Capability card and safe observability
 
 - [x] Add the versioned Strix capability card and forecast instructions.
-- [x] Include configured local identity and enabled capabilities.
+- [x] Include configured local alias, immutable revision, and enabled
+  capabilities.
 - [x] Add bounded probability/boundary metrics without logging generated text.
 - [x] Document the new fields, metrics, and prompt contract.
 

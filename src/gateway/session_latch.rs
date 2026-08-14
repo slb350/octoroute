@@ -76,7 +76,7 @@ impl SessionLatch {
 
     pub(crate) fn is_latched_at(&self, key: SessionKey, now: Instant) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        remove_if_expired(&mut state, key.0, now);
+        purge_expired(&mut state, now);
         state
             .entries
             .get(&key.0)
@@ -85,12 +85,12 @@ impl SessionLatch {
 
     pub(crate) fn record_hard_evidence_at(&self, key: SessionKey, now: Instant) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        remove_if_expired(&mut state, key.0, now);
-        if !state.entries.contains_key(&key.0) && state.entries.len() == self.max_entries {
-            purge_expired(&mut state, now);
-            if state.entries.len() == self.max_entries {
-                evict_oldest(&mut state);
-            }
+        purge_expired(&mut state, now);
+        if !state.entries.contains_key(&key.0)
+            && state.entries.len() == self.max_entries
+            && !evict_oldest_pending(&mut state, self.evidence_threshold)
+        {
+            return;
         }
         state.sequence = state.sequence.wrapping_add(1);
         let sequence = state.sequence;
@@ -110,7 +110,7 @@ impl SessionLatch {
 
     pub(crate) fn clear_pending_at(&self, key: SessionKey, now: Instant) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        remove_if_expired(&mut state, key.0, now);
+        purge_expired(&mut state, now);
         if state
             .entries
             .get(&key.0)
@@ -119,15 +119,14 @@ impl SessionLatch {
             remove_entry(&mut state, key.0);
         }
     }
-}
 
-fn remove_if_expired(state: &mut LatchState, key: SessionHash, now: Instant) {
-    if state
-        .entries
-        .get(&key)
-        .is_some_and(|entry| entry.expires_at <= now)
-    {
-        remove_entry(state, key);
+    #[cfg(test)]
+    pub(crate) fn retained_entry_count(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entries
+            .len()
     }
 }
 
@@ -140,10 +139,18 @@ fn purge_expired(state: &mut LatchState, now: Instant) {
     }
 }
 
-fn evict_oldest(state: &mut LatchState) {
-    if let Some((_, key)) = state.order.first().copied() {
-        remove_entry(state, key);
-    }
+fn evict_oldest_pending(state: &mut LatchState, evidence_threshold: u8) -> bool {
+    let pending = state.order.iter().find_map(|(_, key)| {
+        state
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.hard_evidence < evidence_threshold)
+            .then_some(*key)
+    });
+    let Some(key) = pending else {
+        return false;
+    };
+    remove_entry(state, key).is_some()
 }
 
 fn remove_entry(state: &mut LatchState, key: SessionHash) -> Option<LatchEntry> {

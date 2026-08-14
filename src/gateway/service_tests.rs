@@ -426,6 +426,14 @@ async fn committed_response_preserves_safe_upstream_request_id() {
         .await;
 
     assert_eq!(response.headers()["x-request-id"], "upstream-request-123");
+    let gateway_request_id = response
+        .headers()
+        .get("x-octoroute-request-id")
+        .expect("gateway correlation header")
+        .to_str()
+        .expect("ASCII request ID");
+    assert_ne!(gateway_request_id, "upstream-request-123");
+    uuid::Uuid::parse_str(gateway_request_id).expect("gateway request ID is a UUID");
 }
 
 #[tokio::test]

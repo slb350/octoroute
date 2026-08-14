@@ -2,17 +2,23 @@
 
 use crate::gateway::{
     config::{MAX_SEMANTIC_BOUNDARY_STEPS, is_probability},
-    intelligence::{SemanticBoundary, SemanticRule, probability_meets_threshold},
+    intelligence::{
+        SEMANTIC_PROBABILITY_BUCKETS, SemanticBoundary, SemanticRule, probability_meets_threshold,
+    },
 };
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, cmp::Ordering, collections::HashSet};
+use std::{borrow::Cow, cmp::Ordering, collections::HashSet, fmt};
 use thiserror::Error;
 
 /// Maximum accepted labeled artifact size.
 pub const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RECORDS: usize = 100_000;
 const MAX_LABEL_BYTES: usize = 128;
-const CALIBRATION_BIN_COUNT: usize = 10;
+const MAX_CLOUD_COST_USD: f64 = 1_000_000.0;
+const CALIBRATION_BIN_COUNT: usize = SEMANTIC_PROBABILITY_BUCKETS.len();
+const REPORT_ROUNDING_FACTOR: f64 = 1_000_000.0;
+// The record and cost caps must keep even the rounded aggregate finite.
+const _: () = assert!(MAX_CLOUD_COST_USD * MAX_RECORDS as f64 * REPORT_ROUNDING_FACTOR < f64::MAX);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,6 +27,8 @@ struct RawCalibrationRecord<'a> {
     challenge_id: Cow<'a, str>,
     #[serde(borrow)]
     model_alias: Cow<'a, str>,
+    #[serde(borrow)]
+    model_revision: Cow<'a, str>,
     #[serde(borrow)]
     capability_card_version: Cow<'a, str>,
     #[serde(borrow)]
@@ -54,6 +62,7 @@ struct CalibrationDataset {
 #[derive(PartialEq, Eq, Serialize)]
 struct DatasetIdentity {
     model_alias: String,
+    model_revision: String,
     capability_card_version: String,
     capability_card_fingerprint: String,
 }
@@ -80,11 +89,11 @@ struct CalibrationQuality {
 
 #[derive(Serialize)]
 struct CalibrationBin {
-    lower_inclusive: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    upper_exclusive: Option<f64>,
+    lower_inclusive: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    upper_inclusive: Option<f64>,
+    lower_exclusive: Option<f64>,
+    upper_inclusive: f64,
     count: usize,
     average_probability: Option<f64>,
     local_success_rate: Option<f64>,
@@ -143,7 +152,7 @@ pub fn analyze_jsonl(input: &str, grid_step: f64) -> Result<String, CalibrationE
         .cloned()
         .ok_or(CalibrationError::NoRecords)?;
     let report = CalibrationReport {
-        schema_version: 2,
+        schema_version: 3,
         dataset: dataset.identity,
         record_count,
         calibration,
@@ -203,6 +212,7 @@ fn parse_records(input: &str) -> Result<CalibrationDataset, CalibrationError> {
         let RawCalibrationRecord {
             challenge_id,
             model_alias,
+            model_revision,
             capability_card_version,
             capability_card_fingerprint,
             p_local_success,
@@ -220,6 +230,7 @@ fn parse_records(input: &str) -> Result<CalibrationDataset, CalibrationError> {
         match &identity {
             Some(expected)
                 if expected.model_alias != model_alias.as_ref()
+                    || expected.model_revision != model_revision.as_ref()
                     || expected.capability_card_version != capability_card_version.as_ref()
                     || expected.capability_card_fingerprint
                         != capability_card_fingerprint.as_ref() =>
@@ -230,6 +241,7 @@ fn parse_records(input: &str) -> Result<CalibrationDataset, CalibrationError> {
             None => {
                 identity = Some(DatasetIdentity {
                     model_alias: model_alias.into_owned(),
+                    model_revision: model_revision.into_owned(),
                     capability_card_version: capability_card_version.into_owned(),
                     capability_card_fingerprint: capability_card_fingerprint.into_owned(),
                 });
@@ -252,9 +264,10 @@ fn parse_records(input: &str) -> Result<CalibrationDataset, CalibrationError> {
 fn validate_record(record: &RawCalibrationRecord<'_>, line: usize) -> Result<(), CalibrationError> {
     let valid_cost = record
         .cloud_cost_usd
-        .is_none_or(|cost| cost.is_finite() && cost >= 0.0);
+        .is_none_or(|cost| cost.is_finite() && (0.0..=MAX_CLOUD_COST_USD).contains(&cost));
     if valid_label(&record.challenge_id)
         && valid_label(&record.model_alias)
+        && valid_model_revision(&record.model_revision)
         && valid_label(&record.capability_card_version)
         && valid_sha256_fingerprint(&record.capability_card_fingerprint)
         && is_probability(record.p_local_success)
@@ -269,6 +282,12 @@ fn validate_record(record: &RawCalibrationRecord<'_>, line: usize) -> Result<(),
 
 fn valid_label(value: &str) -> bool {
     !value.is_empty() && value.len() <= MAX_LABEL_BYTES && !value.chars().any(char::is_control)
+}
+
+fn valid_model_revision(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_LABEL_BYTES
+        && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
 }
 
 fn valid_sha256_fingerprint(value: &str) -> bool {
@@ -291,11 +310,10 @@ fn calibration_quality(records: &[CalibrationRecord]) -> CalibrationQuality {
     for record in records {
         let outcome = usize::from(record.local_success);
         squared_error_sum += (record.p_local_success - outcome as f64).powi(2);
-        let index = if record.p_local_success == 1.0 {
-            CALIBRATION_BIN_COUNT - 1
-        } else {
-            (record.p_local_success * CALIBRATION_BIN_COUNT as f64) as usize
-        };
+        let index = SEMANTIC_PROBABILITY_BUCKETS
+            .iter()
+            .position(|upper| record.p_local_success <= *upper)
+            .unwrap_or(CALIBRATION_BIN_COUNT - 1);
         let bin = &mut accumulators[index];
         bin.count += 1;
         bin.probability_sum += record.p_local_success;
@@ -305,12 +323,11 @@ fn calibration_quality(records: &[CalibrationRecord]) -> CalibrationQuality {
         .into_iter()
         .enumerate()
         .map(|(index, bin)| {
-            let upper = round6((index + 1) as f64 / CALIBRATION_BIN_COUNT as f64);
-            let final_bin = index == CALIBRATION_BIN_COUNT - 1;
+            let lower = (index != 0).then(|| SEMANTIC_PROBABILITY_BUCKETS[index - 1]);
             CalibrationBin {
-                lower_inclusive: round6(index as f64 / CALIBRATION_BIN_COUNT as f64),
-                upper_exclusive: (!final_bin).then_some(upper),
-                upper_inclusive: final_bin.then_some(upper),
+                lower_inclusive: (index == 0).then_some(0.0),
+                lower_exclusive: lower,
+                upper_inclusive: SEMANTIC_PROBABILITY_BUCKETS[index],
                 count: bin.count,
                 average_probability: ratio_float(bin.probability_sum, bin.count),
                 local_success_rate: ratio(bin.success_count, bin.count),
@@ -524,11 +541,11 @@ fn average(values: impl Iterator<Item = f64>) -> Option<f64> {
 }
 
 fn round6(value: f64) -> f64 {
-    (value * 1_000_000.0).round() / 1_000_000.0
+    (value * REPORT_ROUNDING_FACTOR).round() / REPORT_ROUNDING_FACTOR
 }
 
 /// Safe offline-calibration failures which never include artifact contents.
-#[derive(Debug, Error)]
+#[derive(Error)]
 pub enum CalibrationError {
     #[error("forecast artifact exceeds the 64 MiB limit")]
     ArtifactTooLarge,
@@ -541,11 +558,20 @@ pub enum CalibrationError {
     #[error("duplicate challenge identifier at line {line}")]
     DuplicateChallenge { line: usize },
     #[error(
-        "forecast artifact mixes model aliases, capability-card versions, or card fingerprints at line {line}"
+        "forecast artifact mixes model aliases, model revisions, capability-card versions, or card fingerprints at line {line}"
     )]
     MixedDataset { line: usize },
+    #[error("forecast artifact is not valid UTF-8")]
+    InvalidEncoding,
     #[error("grid step must evenly divide one and be from 0.01 through 0.25")]
     InvalidGridStep,
     #[error("failed to serialize calibration report")]
     Serialization,
+}
+
+impl fmt::Debug for CalibrationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `main` errors are rendered with `Debug`; keep that operator surface bounded and safe.
+        fmt::Display::fmt(self, formatter)
+    }
 }

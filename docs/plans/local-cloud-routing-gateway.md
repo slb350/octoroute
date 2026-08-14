@@ -331,6 +331,7 @@ It should not deserialize and re-create the complete OpenAI schema.
   - `X-Octoroute-Destination`
   - `X-Octoroute-Reason`
   - `X-Octoroute-Upstream`
+  - `X-Octoroute-Request-Id`
   - `X-Request-Id`
 - Never rewrite OpenRouter's selected `model` back to
   `openrouter/auto-beta`.
@@ -379,6 +380,7 @@ kind = "llama_cpp"
 name = "strix"
 base_url = "http://127.0.0.1:8080"
 model = "strixtea"
+model_revision = "agents-a1-q8_0"
 context_window = 65536
 context_safety_tokens = 1024
 max_in_flight = 1

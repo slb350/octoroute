@@ -85,3 +85,33 @@ fn gateway_metrics_use_only_bounded_route_and_failure_labels() {
     assert!(encoded.contains("octoroute_request_duration_seconds_count{destination=\"cloud\"} 1"));
     assert!(encoded.contains("octoroute_in_flight_requests{destination=\"cloud\"} 0"));
 }
+
+#[test]
+fn semantic_probability_histogram_uses_ten_upper_inclusive_deciles() {
+    let metrics = GatewayMetrics::new().expect("metrics registry");
+    metrics
+        .record_semantic_forecast(
+            SemanticRoutingMode::Shadow,
+            SemanticBoundary::Supported,
+            0.1,
+        )
+        .expect("boundary forecast");
+    metrics
+        .record_semantic_forecast(
+            SemanticRoutingMode::Shadow,
+            SemanticBoundary::Supported,
+            0.100_001,
+        )
+        .expect("next-decile forecast");
+
+    let encoded = metrics.encode().expect("Prometheus encoding");
+    assert!(encoded.contains(
+        "octoroute_semantic_local_success_probability_bucket{boundary=\"supported\",mode=\"shadow\",le=\"0.1\"} 1"
+    ), "{encoded}");
+    assert!(encoded.contains(
+        "octoroute_semantic_local_success_probability_bucket{boundary=\"supported\",mode=\"shadow\",le=\"0.2\"} 2"
+    ), "{encoded}");
+    assert!(!encoded.contains(
+        "octoroute_semantic_local_success_probability_bucket{boundary=\"supported\",mode=\"shadow\",le=\"0\"}"
+    ));
+}

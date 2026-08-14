@@ -60,7 +60,7 @@ fn read_bounded_artifact(
     if bytes.len() > max_bytes {
         return Err(CalibrationError::ArtifactTooLarge.into());
     }
-    Ok(String::from_utf8(bytes)?)
+    String::from_utf8(bytes).map_err(|_| CalibrationError::InvalidEncoding.into())
 }
 
 fn handle_config_command(output: Option<String>) -> Result<(), Box<dyn std::error::Error>> {

@@ -2,7 +2,7 @@
 
 use crate::gateway::{
     config::SemanticRoutingMode,
-    intelligence::SemanticBoundary,
+    intelligence::{SEMANTIC_PROBABILITY_BUCKETS, SemanticBoundary},
     routing::{RouteDestination, RouteReason},
 };
 use axum::http::StatusCode;
@@ -153,7 +153,7 @@ impl GatewayMetrics {
                 "octoroute_semantic_local_success_probability",
                 "Validated local-success forecasts by configured mode and capability boundary",
             )
-            .buckets(vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]),
+            .buckets(SEMANTIC_PROBABILITY_BUCKETS.to_vec()),
             &["mode", "boundary"],
         )?;
         let semantic_sampling = IntCounterVec::new(

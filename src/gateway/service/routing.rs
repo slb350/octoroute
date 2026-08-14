@@ -203,6 +203,7 @@ where
                     semantic_primary_rule = assessment.primary_rule(),
                     local_success_probability = assessment.local_success_probability(),
                     required_probability = assessment.required_probability(),
+                    model_revision = self.config.local().model_revision(),
                     capability_card_version = self.intelligent_router.capability_card_version(),
                     capability_card_fingerprint =
                         self.intelligent_router.capability_card_fingerprint(),

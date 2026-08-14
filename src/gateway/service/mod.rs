@@ -38,7 +38,8 @@ use responses::{authorization_error, insert_header, rate_limit_response, route_e
 const DESTINATION_HEADER: &str = "x-octoroute-destination";
 const REASON_HEADER: &str = "x-octoroute-reason";
 const UPSTREAM_HEADER: &str = "x-octoroute-upstream";
-const REQUEST_ID_HEADER: &str = "x-request-id";
+pub(crate) const REQUEST_ID_HEADER: &str = "x-request-id";
+pub(crate) const OCTOROUTE_REQUEST_ID_HEADER: &str = "x-octoroute-request-id";
 
 /// Complete authenticated v2 chat-completions service.
 pub struct GatewayService<T> {
@@ -470,6 +471,11 @@ where
         insert_header(response.headers_mut(), DESTINATION_HEADER, destination_name);
         insert_header(response.headers_mut(), REASON_HEADER, reason.as_str());
         insert_header(response.headers_mut(), UPSTREAM_HEADER, upstream_name);
+        insert_header(
+            response.headers_mut(),
+            OCTOROUTE_REQUEST_ID_HEADER,
+            request_id,
+        );
         if !response.headers().contains_key(REQUEST_ID_HEADER) {
             insert_header(response.headers_mut(), REQUEST_ID_HEADER, request_id);
         }

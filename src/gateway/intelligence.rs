@@ -21,6 +21,10 @@ use tokio::sync::OwnedSemaphorePermit;
 mod capability_card;
 use capability_card::{CapabilityCard, render_capability_card};
 
+/// Shared upper-inclusive deciles for Prometheus and offline calibration.
+pub(crate) const SEMANTIC_PROBABILITY_BUCKETS: [f64; 10] =
+    [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+
 const MAX_ROUTER_RESPONSE_BYTES: usize = 16 * 1024;
 const ROUTER_MAX_TOKENS: u32 = 192;
 const MAX_CRUX_CHARS: usize = 240;

@@ -33,19 +33,45 @@ fn non_hard_observation_clears_pending_evidence_but_not_an_active_latch() {
 }
 
 #[test]
-fn capacity_evicts_the_oldest_hashed_session_entry() {
+fn capacity_pressure_never_evicts_an_active_latch() {
     let latch = SessionLatch::new(Duration::from_secs(60), 1, 2);
     let now = Instant::now();
-    let older = SessionKey::new("older");
-    let newer = SessionKey::new("newer");
+    let active = SessionKey::new("active");
+    let pending = SessionKey::new("pending");
     for _ in 0..2 {
-        latch.record_hard_evidence_at(older, now);
+        latch.record_hard_evidence_at(active, now);
     }
-    assert!(latch.is_latched_at(older, now));
+    assert!(latch.is_latched_at(active, now));
 
-    for _ in 0..2 {
-        latch.record_hard_evidence_at(newer, now + Duration::from_secs(1));
-    }
-    assert!(latch.is_latched_at(newer, now + Duration::from_secs(1)));
-    assert!(!latch.is_latched_at(older, now + Duration::from_secs(1)));
+    latch.record_hard_evidence_at(pending, now + Duration::from_secs(1));
+
+    assert!(latch.is_latched_at(active, now + Duration::from_secs(1)));
+    assert!(!latch.is_latched_at(pending, now + Duration::from_secs(1)));
+}
+
+#[test]
+fn capacity_pressure_evicts_the_oldest_pending_entry() {
+    let latch = SessionLatch::new(Duration::from_secs(60), 1, 2);
+    let now = Instant::now();
+    let older = SessionKey::new("older-pending");
+    let newer = SessionKey::new("newer-pending");
+    latch.record_hard_evidence_at(older, now);
+
+    latch.record_hard_evidence_at(newer, now + Duration::from_secs(1));
+    latch.record_hard_evidence_at(newer, now + Duration::from_secs(2));
+
+    assert!(latch.is_latched_at(newer, now + Duration::from_secs(2)));
+    assert!(!latch.is_latched_at(older, now + Duration::from_secs(2)));
+}
+
+#[test]
+fn every_operation_sweeps_expired_entries_below_capacity() {
+    let latch = SessionLatch::new(Duration::from_secs(60), 8, 2);
+    let now = Instant::now();
+    latch.record_hard_evidence_at(SessionKey::new("expired"), now);
+    assert_eq!(latch.retained_entry_count(), 1);
+
+    assert!(!latch.is_latched_at(SessionKey::new("unrelated"), now + Duration::from_secs(61)));
+
+    assert_eq!(latch.retained_entry_count(), 0);
 }

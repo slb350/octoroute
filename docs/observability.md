@@ -2,8 +2,10 @@
 
 ## Response headers
 
-Every response has `X-Request-Id`. Octoroute preserves an allowlisted upstream
-request ID and generates one when the response does not already contain one.
+Every response has `X-Octoroute-Request-Id`, an Octoroute-generated correlation
+UUID. Every response also has `X-Request-Id`; Octoroute preserves an allowlisted
+upstream request ID and otherwise uses the gateway correlation UUID. Use
+`X-Octoroute-Request-Id` to join responses to shadow forecast events.
 Successful upstream responses also expose:
 
 - `X-Octoroute-Destination`
@@ -46,10 +48,11 @@ observed decision with the actual destination.
 `semantic_sampling` counts compatible automatic shadow requests using only the
 closed `sampled` and `skipped` outcomes. It is absent for disabled, enforced,
 forced-local, and already cloud-bound traffic.
-`semantic_local_success_probability` is a histogram with fixed buckets from
-zero through one and only the closed `mode` and `boundary` labels. Its count
-also provides the boundary distribution. Failed or skipped forecasts are not
-observed in this histogram.
+`semantic_local_success_probability` is a histogram with ten fixed
+upper-inclusive deciles `(previous, upper]`, with the first bin `[0.0, 0.1]`,
+and only the closed `mode` and `boundary` labels. Offline calibration uses the
+same boundaries. Its count also provides the boundary distribution. Failed or
+skipped forecasts are not observed in this histogram.
 
 All labels come from bounded enums or HTTP status classes. Prompt and model
 text are never used as metric labels. Octoroute deliberately does not parse

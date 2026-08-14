@@ -43,14 +43,15 @@ the policy outcome without acting on it; `disabled` skips forecasting;
 `enforced` lets the policy outcome select local or cloud. OpenRouter Auto
 performs cloud model/provider selection only after Octoroute chooses cloud.
 
-The local forecast prompt carries `octoroute-strix-capability-card/v1`, built
+The local forecast prompt carries `octoroute-strix-capability-card/v2`, built
 once at gateway construction from the configured upstream name, model alias,
-and closed enabled-capability set. Its qualitative rules include measured
-limitations and prohibit inferring task difficulty from phrasing. Dynamic
-identity values are JSON-escaped data; the card contains no origin, credential,
-prompt, health, slot, or other mutable runtime state. Octoroute fingerprints
-the exact rendered card with SHA-256 and emits that bounded identity in shadow
-forecast events so offline calibration rejects mixed capability populations.
+immutable model revision, and closed enabled-capability set. Its qualitative
+rules include measured limitations and prohibit inferring task difficulty from
+phrasing. Dynamic identity values are JSON-escaped data; the card contains no
+origin, credential, prompt, health, slot, or other mutable runtime state.
+Octoroute fingerprints the exact rendered card with SHA-256 and emits that
+bounded identity in shadow forecast events so offline calibration rejects mixed
+model or capability populations.
 
 ## Request path
 

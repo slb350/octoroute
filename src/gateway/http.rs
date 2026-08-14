@@ -3,8 +3,8 @@
 use crate::gateway::{
     routing::LocalAdmissionState,
     service::{
-        GatewayService, MetadataAuthorizationError, error_response,
-        metadata_authorization_error as build_metadata_authorization_error,
+        GatewayService, MetadataAuthorizationError, OCTOROUTE_REQUEST_ID_HEADER, REQUEST_ID_HEADER,
+        error_response, metadata_authorization_error as build_metadata_authorization_error,
     },
     transport::UpstreamTransport,
 };
@@ -40,11 +40,22 @@ where
 
 async fn security_headers(request: Request<Body>, next: Next) -> Response<Body> {
     let mut response = next.run(request).await;
-    if !response.headers().contains_key("x-request-id") {
-        response.headers_mut().insert(
-            "x-request-id",
-            HeaderValue::from_str(&Uuid::new_v4().to_string()).expect("UUID is a valid header"),
-        );
+    let gateway_request_id = response
+        .headers()
+        .get(OCTOROUTE_REQUEST_ID_HEADER)
+        .cloned()
+        .unwrap_or_else(|| {
+            HeaderValue::from_str(&Uuid::new_v4().to_string()).expect("UUID is a valid header")
+        });
+    if !response.headers().contains_key(OCTOROUTE_REQUEST_ID_HEADER) {
+        response
+            .headers_mut()
+            .insert(OCTOROUTE_REQUEST_ID_HEADER, gateway_request_id.clone());
+    }
+    if !response.headers().contains_key(REQUEST_ID_HEADER) {
+        response
+            .headers_mut()
+            .insert(REQUEST_ID_HEADER, gateway_request_id);
     }
     for (name, value) in [
         ("x-content-type-options", "nosniff"),

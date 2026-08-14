@@ -52,6 +52,7 @@ kind = "llama_cpp"
 name = "strix"
 base_url = "http://127.0.0.1:8080"
 model = "strixtea"
+model_revision = "agents-a1-q8_0"
 context_window = 65536
 context_safety_tokens = 1024
 default_max_output_tokens = 4096

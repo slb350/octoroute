@@ -31,6 +31,7 @@ kind = "llama_cpp"
 name = "strix"
 base_url = "http://127.0.0.1:8080"
 model = "strixtea"
+model_revision = "agents-a1-q8_0"
 context_window = 65536
 context_safety_tokens = 1024
 default_max_output_tokens = 4096
@@ -91,6 +92,10 @@ local base URL to `http://strix.local:8080`.
 - `base_url` accepts HTTP or HTTPS, has no credentials/query/fragment, and is
   normalized with a trailing slash.
 - `model` is the exact alias sent to llama.cpp.
+- `model_revision` is a required immutable release identifier for the loaded
+  weights. It is limited to 128 visible ASCII bytes without whitespace and must
+  change whenever the weights change under the same alias; it becomes part of
+  the capability-card fingerprint and calibration dataset identity.
 - `context_safety_tokens + default_max_output_tokens` must leave input
   capacity.
 - `max_in_flight` is Octoroute’s non-blocking semaphore. Match it to safe

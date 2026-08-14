@@ -10,6 +10,7 @@ const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_HEADER_BYTES: usize = 1024 * 1024;
 const MAX_CONCURRENCY: usize = 10_000;
 const MAX_REQUESTS_PER_MINUTE: u32 = 1_000_000;
+const MAX_MODEL_REVISION_BYTES: usize = 128;
 
 pub(super) fn parse(
     input: &str,
@@ -75,6 +76,7 @@ struct RawLocalUpstreamConfig {
     name: String,
     base_url: String,
     model: String,
+    model_revision: Option<String>,
     context_window: u32,
     context_safety_tokens: u32,
     #[serde(default = "default_max_output_tokens")]
@@ -306,6 +308,13 @@ fn validate_local(
     validate_nonempty("upstreams.local.name", &raw.name)?;
     validate_header_value("upstreams.local.name", &raw.name)?;
     validate_nonempty("upstreams.local.model", &raw.model)?;
+    let model_revision = raw.model_revision.ok_or_else(|| {
+        invalid(
+            "upstreams.local.model_revision",
+            "is required and must identify the loaded model weights",
+        )
+    })?;
+    validate_model_revision("upstreams.local.model_revision", &model_revision)?;
     if raw.context_window == 0 {
         return Err(invalid(
             "upstreams.local.context_window",
@@ -367,6 +376,7 @@ fn validate_local(
         name: raw.name,
         base_url,
         model: raw.model,
+        model_revision,
         context_window: raw.context_window,
         context_safety_tokens: raw.context_safety_tokens,
         default_max_output_tokens: raw.default_max_output_tokens,
@@ -540,6 +550,22 @@ fn validate_path(field: &str, value: &str) -> Result<(), GatewayConfigError> {
 fn validate_nonempty(field: &str, value: &str) -> Result<(), GatewayConfigError> {
     if value.trim().is_empty() {
         Err(invalid(field, "must not be empty"))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_model_revision(field: &str, value: &str) -> Result<(), GatewayConfigError> {
+    if value.is_empty()
+        || value.len() > MAX_MODEL_REVISION_BYTES
+        || !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+    {
+        Err(invalid(
+            field,
+            format!(
+                "must be 1 through {MAX_MODEL_REVISION_BYTES} visible ASCII bytes without whitespace"
+            ),
+        ))
     } else {
         Ok(())
     }

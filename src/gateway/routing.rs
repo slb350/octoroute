@@ -5,6 +5,7 @@ use crate::gateway::{
     request::{GatewayRequest, RequestFeature},
 };
 use axum::http::HeaderMap;
+use serde::Deserialize;
 use thiserror::Error;
 
 const PRIVACY_HEADER: &str = "x-octoroute-privacy";
@@ -101,7 +102,8 @@ pub enum LocalAdmissionState {
 }
 
 /// Final gateway destination.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum RouteDestination {
     /// Configured local llama.cpp upstream.
     Local,

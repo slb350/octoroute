@@ -225,6 +225,7 @@ pub struct LocalUpstreamConfig {
     name: String,
     base_url: Url,
     model: String,
+    model_revision: String,
     context_window: u32,
     context_safety_tokens: u32,
     default_max_output_tokens: u32,
@@ -254,6 +255,11 @@ impl LocalUpstreamConfig {
     /// Exact llama.cpp model alias.
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    /// Immutable operator-supplied revision for the loaded model weights.
+    pub fn model_revision(&self) -> &str {
+        &self.model_revision
     }
 
     /// Configured context window.

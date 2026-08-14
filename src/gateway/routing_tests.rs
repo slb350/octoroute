@@ -1,4 +1,6 @@
-use super::routing::{ModelIntent, ModelIntentError, PrivacyDirective, PrivacyDirectiveError};
+use super::routing::{
+    ModelIntent, ModelIntentError, PrivacyDirective, PrivacyDirectiveError, RouteDestination,
+};
 use axum::http::{HeaderMap, HeaderValue};
 
 #[test]
@@ -70,5 +72,19 @@ fn rejects_unknown_or_repeated_privacy_headers() {
     assert_eq!(
         PrivacyDirective::from_headers(&repeated),
         Err(PrivacyDirectiveError::Invalid)
+    );
+}
+
+#[test]
+fn route_destination_retains_its_public_lowercase_deserialization_contract() {
+    assert_eq!(
+        serde_json::from_str::<RouteDestination>(r#""local""#)
+            .expect("lowercase local destination"),
+        RouteDestination::Local
+    );
+    assert_eq!(
+        serde_json::from_str::<RouteDestination>(r#""cloud""#)
+            .expect("lowercase cloud destination"),
+        RouteDestination::Cloud
     );
 }

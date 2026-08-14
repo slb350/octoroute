@@ -82,6 +82,7 @@ kind = "llama_cpp"
 name = "strix"
 base_url = "http://127.0.0.1:8080"
 model = "strixtea"
+model_revision = "agents-a1-q8_0"
 context_window = 65536
 max_in_flight = 1
 
@@ -127,12 +128,14 @@ cloud for 15 minutes by default. IDs are SHA-256 hashed in memory, storage is
 bounded, and explicit local or `local-only` intent always bypasses the latch.
 
 The forecast prompt includes the versioned
-`octoroute-strix-capability-card/v1`. It identifies the configured local alias,
-lists only capabilities enabled in configuration, and records measured local
-limitations without exposing URLs, credentials, prompts, or runtime state. A
-SHA-256 fingerprint of the exact rendered card is included in bounded shadow
-events and required by calibration artifacts, preventing rows from different
-capability configurations from being analyzed as one population.
+`octoroute-strix-capability-card/v2`. It identifies the configured local alias
+and immutable `model_revision`, lists only capabilities enabled in
+configuration, and records measured local limitations without exposing URLs,
+credentials, prompts, or runtime state. A SHA-256 fingerprint of the exact
+rendered card is included in bounded shadow events and required by calibration
+artifacts, preventing rows from different model revisions or capability
+configurations from being analyzed as one population. Change `model_revision`
+whenever the loaded weights change, even if the llama.cpp alias stays stable.
 In shadow mode only, explicitly typed and paired tool results can contribute
 closed trajectory evidence; malformed, ordinary, or unsupported tool history
 abstains, and the evidence never selects a route directly.
@@ -203,7 +206,12 @@ cloud service.
 - `X-Octoroute-Reason`: bounded route reason such as `local_capable`,
   `cloud_quality`, `local_busy`, or `local_early_failure`
 - `X-Octoroute-Upstream: strix|openrouter`
+- `X-Octoroute-Request-Id`: Octoroute-generated correlation UUID
 - `X-Request-Id`
+
+`X-Request-Id` preserves a safe upstream request ID when one is returned;
+`X-Octoroute-Request-Id` always identifies the gateway request and is the join
+key for shadow forecast events.
 
 Octoroute never rewrites OpenRouter’s returned `model`; callers see the model
 that actually answered.

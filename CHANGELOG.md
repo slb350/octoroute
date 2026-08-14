@@ -32,6 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add deterministic request-ID-based shadow sampling with a full-observation
   default, bounded sampled/skipped metrics, and enforced-mode isolation.
 
+### Fixed
+
+- Bind capability cards and calibration artifacts to a required immutable local
+  model revision, so changing weights under a stable alias invalidates prior
+  calibration.
+- Keep calibration failures bounded for malformed UTF-8, reject cloud costs
+  that cannot produce finite reports, and align offline bins with Prometheus's
+  upper-inclusive deciles.
+- Sweep expired session state on every latch operation and preserve active
+  latches under capacity pressure by evicting pending entries only.
+- Expose a dedicated gateway correlation header without overwriting safe
+  upstream request IDs, and restore lowercase `RouteDestination`
+  deserialization for downstream callers.
+
 ## [2.1.2] - 2026-08-08
 
 ### Fixed

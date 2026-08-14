@@ -69,7 +69,12 @@ Successful upstream responses include:
 - `X-Octoroute-Destination`
 - `X-Octoroute-Reason`
 - `X-Octoroute-Upstream`
+- `X-Octoroute-Request-Id`
 - `X-Request-Id`
+
+The Octoroute request ID is always the gateway-generated correlation UUID.
+`X-Request-Id` preserves a safe upstream value when present and otherwise
+matches it.
 
 Reason values are bounded:
 

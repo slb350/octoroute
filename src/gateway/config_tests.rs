@@ -18,6 +18,7 @@ kind = "llama_cpp"
 name = "strix"
 base_url = "http://127.0.0.1:8080"
 model = "puzzle-75b"
+model_revision = "test-model-revision"
 context_window = 65536
 context_safety_tokens = 1024
 max_in_flight = 1
@@ -53,6 +54,7 @@ fn valid_v2_config_resolves_secrets_without_exposing_them() {
     assert_eq!(config.server().max_in_flight(), 32);
     assert_eq!(config.server().requests_per_minute(), 120);
     assert_eq!(config.local().model(), "puzzle-75b");
+    assert_eq!(config.local().model_revision(), "test-model-revision");
     assert_eq!(config.local().default_max_output_tokens(), 4096);
     assert_eq!(config.local().health_cache_ttl_ms(), 1000);
     assert_eq!(config.local().probe_timeout_ms(), 2000);
@@ -72,6 +74,34 @@ fn valid_v2_config_resolves_secrets_without_exposing_them() {
     let debug = format!("{config:?}");
     assert!(!debug.contains("inbound-secret"));
     assert!(!debug.contains("openrouter-secret"));
+}
+
+#[test]
+fn local_model_revision_is_required_and_bounded() {
+    let missing = valid_config().replace("model_revision = \"test-model-revision\"\n", "");
+    let error = GatewayConfig::from_toml(&missing, &TestEnvironment::gateway())
+        .expect_err("model revision must be explicit");
+    assert!(matches!(
+        error,
+        GatewayConfigError::Invalid { ref field, .. }
+            if field == "upstreams.local.model_revision"
+    ));
+
+    for replacement in [
+        r#"model_revision = "revision\nInjected""#.to_string(),
+        r#"model_revision = "two words""#.to_string(),
+        format!(r#"model_revision = "{}""#, "x".repeat(129)),
+    ] {
+        let input =
+            valid_config().replace("model_revision = \"test-model-revision\"", &replacement);
+        let error = GatewayConfig::from_toml(&input, &TestEnvironment::gateway())
+            .expect_err("unsafe model revision must fail startup");
+        assert!(matches!(
+            error,
+            GatewayConfigError::Invalid { ref field, .. }
+                if field == "upstreams.local.model_revision"
+        ));
+    }
 }
 
 #[test]
