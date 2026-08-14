@@ -72,6 +72,10 @@ pub(super) const fn default_boundary_threshold_step() -> f64 {
     0.10
 }
 
+pub(super) const fn default_shadow_sample_rate() -> f64 {
+    1.0
+}
+
 pub(super) const fn default_session_latch_ttl_ms() -> u64 {
     15 * 60 * 1000
 }

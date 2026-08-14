@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add an opt-in enforced-mode cloud-only session latch using consecutive hard
   forecast evidence, bounded SHA-256-hashed state, TTL expiry, deterministic
   eviction, and forced-local overrides.
+- Add deterministic request-ID-based shadow sampling with a full-observation
+  default, bounded sampled/skipped metrics, and enforced-mode isolation.
 
 ## [2.1.2] - 2026-08-08
 

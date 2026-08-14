@@ -134,6 +134,8 @@ struct RawRoutingConfig {
     local_success_threshold: f64,
     #[serde(default = "default_boundary_threshold_step")]
     boundary_threshold_step: f64,
+    #[serde(default = "default_shadow_sample_rate")]
+    shadow_sample_rate: f64,
     #[serde(default)]
     session_latch_enabled: bool,
     #[serde(default = "default_session_latch_ttl_ms")]
@@ -177,6 +179,10 @@ impl RawGatewayConfig {
         validate_probability(
             "routing.boundary_threshold_step",
             self.routing.boundary_threshold_step,
+        )?;
+        validate_probability(
+            "routing.shadow_sample_rate",
+            self.routing.shadow_sample_rate,
         )?;
         if self.routing.local_success_threshold
             + (f64::from(MAX_SEMANTIC_BOUNDARY_STEPS) * self.routing.boundary_threshold_step)
@@ -224,6 +230,7 @@ impl RawGatewayConfig {
                 decision_timeout_ms: self.routing.decision_timeout_ms,
                 local_success_threshold: self.routing.local_success_threshold,
                 boundary_threshold_step: self.routing.boundary_threshold_step,
+                shadow_sample_rate: self.routing.shadow_sample_rate,
                 session_latch: self
                     .routing
                     .session_latch_enabled

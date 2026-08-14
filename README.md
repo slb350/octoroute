@@ -96,6 +96,7 @@ semantic_mode = "shadow"
 decision_timeout_ms = 30000
 local_success_threshold = 0.50
 boundary_threshold_step = 0.10
+shadow_sample_rate = 1.0
 session_latch_enabled = false
 session_latch_ttl_ms = 900000
 session_latch_max_entries = 1024
@@ -112,6 +113,12 @@ mode should be enabled only after its judgment is
 validated against representative labeled traffic. Shadow and enforced modes
 add one local forecasting inference—about 760–1500 ms in the measured Strix
 profile—to compatible `auto` requests.
+
+`shadow_sample_rate` can deterministically sample compatible shadow requests
+from `0.0` through `1.0` using the server-generated request ID. The default is
+`1.0`, and benchmark or calibration runs must retain full sampling. Skipped
+requests proceed directly to ordinary local admission. Enforced mode is never
+sampled.
 
 The optional session latch is disabled by default and can be enabled only with
 `semantic_mode = "enforced"`. Two consecutive hard

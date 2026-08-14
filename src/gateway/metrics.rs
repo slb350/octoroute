@@ -50,6 +50,22 @@ pub(crate) enum SemanticDecisionOutcome {
     Failure,
 }
 
+/// Stable shadow sampling outcome metric label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SemanticSamplingOutcome {
+    Sampled,
+    Skipped,
+}
+
+impl SemanticSamplingOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Sampled => "sampled",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
 impl SemanticDecisionOutcome {
     fn as_str(self) -> &'static str {
         match self {
@@ -84,6 +100,7 @@ pub struct GatewayMetrics {
     registry: Arc<Registry>,
     route_decisions: IntCounterVec,
     semantic_decisions: IntCounterVec,
+    semantic_sampling: IntCounterVec,
     semantic_local_success_probability: HistogramVec,
     local_fallbacks: IntCounter,
     local_busy_spillovers: IntCounter,
@@ -139,6 +156,13 @@ impl GatewayMetrics {
             .buckets(vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]),
             &["mode", "boundary"],
         )?;
+        let semantic_sampling = IntCounterVec::new(
+            Opts::new(
+                "octoroute_semantic_sampling_total",
+                "Compatible automatic shadow requests by bounded sampling outcome",
+            ),
+            &["outcome"],
+        )?;
         let local_busy_spillovers = IntCounter::with_opts(Opts::new(
             "octoroute_local_busy_spillovers_total",
             "Automatic requests sent to cloud because local capacity was occupied",
@@ -184,6 +208,7 @@ impl GatewayMetrics {
         )?;
         registry.register(Box::new(route_decisions.clone()))?;
         registry.register(Box::new(semantic_decisions.clone()))?;
+        registry.register(Box::new(semantic_sampling.clone()))?;
         registry.register(Box::new(semantic_local_success_probability.clone()))?;
         registry.register(Box::new(local_fallbacks.clone()))?;
         registry.register(Box::new(local_busy_spillovers.clone()))?;
@@ -198,6 +223,7 @@ impl GatewayMetrics {
             registry: Arc::new(registry),
             route_decisions,
             semantic_decisions,
+            semantic_sampling,
             semantic_local_success_probability,
             local_fallbacks,
             local_busy_spillovers,
@@ -230,6 +256,17 @@ impl GatewayMetrics {
     ) -> Result<(), prometheus::Error> {
         self.semantic_decisions
             .get_metric_with_label_values(&[mode.as_str(), outcome.as_str()])?
+            .inc();
+        Ok(())
+    }
+
+    /// Record whether one compatible automatic shadow request was sampled.
+    pub(crate) fn record_semantic_sampling(
+        &self,
+        outcome: SemanticSamplingOutcome,
+    ) -> Result<(), prometheus::Error> {
+        self.semantic_sampling
+            .get_metric_with_label_values(&[outcome.as_str()])?
             .inc();
         Ok(())
     }

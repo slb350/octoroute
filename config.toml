@@ -47,6 +47,7 @@ semantic_mode = "shadow"
 decision_timeout_ms = 30000
 local_success_threshold = 0.50
 boundary_threshold_step = 0.10
+shadow_sample_rate = 1.0
 session_latch_enabled = false
 session_latch_ttl_ms = 900000
 session_latch_max_entries = 1024

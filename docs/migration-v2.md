@@ -74,6 +74,7 @@ semantic_mode = "shadow"
 decision_timeout_ms = 30000
 local_success_threshold = 0.50
 boundary_threshold_step = 0.10
+shadow_sample_rate = 1.0
 ```
 
 Create an ignored `.env` beside the configuration:

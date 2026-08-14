@@ -176,6 +176,35 @@ fn semantic_routing_probability_policy_must_remain_bounded() {
 }
 
 #[test]
+fn shadow_sampling_rate_is_bounded_and_defaults_to_full_observation() {
+    let default = GatewayConfig::from_toml(valid_config(), &TestEnvironment::gateway())
+        .expect("default configuration");
+    assert_eq!(default.routing().shadow_sample_rate(), 1.0);
+
+    let configured = valid_config().replace(
+        "fallback_before_commit = true",
+        "fallback_before_commit = true\nshadow_sample_rate = 0.25",
+    );
+    let config = GatewayConfig::from_toml(&configured, &TestEnvironment::gateway())
+        .expect("bounded shadow sample rate");
+    assert_eq!(config.routing().shadow_sample_rate(), 0.25);
+
+    for value in ["-0.1", "1.1", "nan"] {
+        let input = valid_config().replace(
+            "fallback_before_commit = true",
+            &format!("fallback_before_commit = true\nshadow_sample_rate = {value}"),
+        );
+        let error = GatewayConfig::from_toml(&input, &TestEnvironment::gateway())
+            .expect_err("invalid shadow sample rate must fail startup");
+        assert!(matches!(
+            error,
+            GatewayConfigError::Invalid { ref field, .. }
+                if field == "routing.shadow_sample_rate"
+        ));
+    }
+}
+
+#[test]
 fn session_latch_is_opt_in_bounded_and_enforced_only() {
     let default = GatewayConfig::from_toml(valid_config(), &TestEnvironment::gateway())
         .expect("default configuration");

@@ -63,21 +63,24 @@ prompt, health, slot, or other mutable runtime state.
 8. For an opt-in enforced-mode session latch, hash a bounded `session_id` and
    send an active latch directly to `openrouter/auto`. Forced-local intent
    bypasses this lookup.
-9. For shadow or enforced mode, reserve an idle Strix slot and request a
+9. In shadow mode, deterministically sample the server-generated request ID at
+   `shadow_sample_rate`; skipped requests continue directly to local admission.
+   Benchmark and calibration traffic uses `1.0`. Enforced mode is never sampled.
+10. For sampled shadow or enforced mode, reserve an idle Strix slot and request a
    constrained success forecast with thinking disabled, then apply the
    configured deterministic threshold policy. Disabled mode skips forecasting.
-10. In shadow mode, record the bounded outcome and continue local admission.
+11. In shadow mode, record the bounded outcome and continue local admission.
    In enforced mode, send a cloud decision or safe classifier failure to
    `openrouter/auto`. An enabled latch records only consecutive hard
    `unsupported`/`known_local_limit` cloud evidence.
-11. For a local path or forced-local request, acquire a non-blocking local
+12. For a local path or forced-local request, acquire a non-blocking local
     permit, verify health and a free slot, obtain exact input tokens, and
     include the requested or default output reservation in the safe context
     calculation.
-12. Dispatch to one upstream with its own credential.
-13. Buffer the first upstream body chunk. Before this commit point, eligible
+13. Dispatch to one upstream with its own credential.
+14. Buffer the first upstream body chunk. Before this commit point, eligible
     automatic local failures may spill to cloud.
-14. Stream all remaining bytes with backpressure. The upstream and concurrency
+15. Stream all remaining bytes with backpressure. The upstream and concurrency
     permits live until the body completes or is dropped.
 
 ## Schema fidelity

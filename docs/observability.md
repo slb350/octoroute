@@ -22,6 +22,7 @@ Current v2 metrics:
 ```text
 octoroute_route_decisions_total{destination,reason}
 octoroute_semantic_decisions_total{mode,outcome}
+octoroute_semantic_sampling_total{outcome}
 octoroute_semantic_local_success_probability{mode,boundary}
 octoroute_local_fallbacks_total
 octoroute_local_busy_spillovers_total
@@ -42,6 +43,9 @@ failures as `status_class="none"`.
 from the bounded `local`, `cloud`, or `failure` policy outcome. Compare it
 with `route_decisions` to evaluate shadow judgment without confusing the
 observed decision with the actual destination.
+`semantic_sampling` counts compatible automatic shadow requests using only the
+closed `sampled` and `skipped` outcomes. It is absent for disabled, enforced,
+forced-local, and already cloud-bound traffic.
 `semantic_local_success_probability` is a histogram with fixed buckets from
 zero through one and only the closed `mode` and `boundary` labels. Its count
 also provides the boundary distribution. Failed or skipped forecasts are not

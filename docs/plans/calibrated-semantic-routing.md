@@ -165,6 +165,7 @@ semantic_mode = "shadow"
 decision_timeout_ms = 30000
 local_success_threshold = 0.50
 boundary_threshold_step = 0.10
+shadow_sample_rate = 1.0
 ```
 
 These defaults are starting values for shadow evaluation, not a claim that the
@@ -241,8 +242,8 @@ forecasts.
 
 ### 5. Optional operational refinements
 
-- Consider a bounded shadow sample rate after enough representative evidence
-  exists, while benchmark runs remain at full sampling.
+- [x] Add deterministic bounded shadow sampling while keeping benchmark and
+  calibration runs at full sampling.
 - [x] Add a bounded, hashed, TTL-based cloud-only session latch after repeated
   hard evidence. Explicit local and local-only intent always override it, and
   local decisions are never latched.

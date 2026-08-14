@@ -11,6 +11,7 @@ pub mod metrics;
 pub mod openrouter;
 pub mod request;
 pub mod routing;
+pub(crate) mod sampling;
 pub mod service;
 pub(crate) mod session_latch;
 pub(crate) mod trajectory;
@@ -38,6 +39,8 @@ mod request_tests;
 mod routing_policy_tests;
 #[cfg(test)]
 mod routing_tests;
+#[cfg(test)]
+mod sampling_tests;
 #[cfg(test)]
 mod service_limits_tests;
 #[cfg(test)]

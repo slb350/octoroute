@@ -62,6 +62,7 @@ semantic_mode = "shadow"
 decision_timeout_ms = 30000
 local_success_threshold = 0.50
 boundary_threshold_step = 0.10
+shadow_sample_rate = 1.0
 session_latch_enabled = false
 session_latch_ttl_ms = 900000
 session_latch_max_entries = 1024
@@ -155,6 +156,16 @@ In shadow mode, a forecasting failure does not select cloud when local capacity
 was already reserved. In enforced mode, a timeout, invalid decision, or local
 routing-model failure sends automatic traffic safely to OpenRouter. Explicit
 local and local-only requests always bypass semantic routing.
+
+`shadow_sample_rate` is a finite probability from `0.0` through `1.0` and
+defaults to `1.0`. It applies only to compatible automatic traffic in shadow
+mode. Octoroute hashes the server-generated request ID for a deterministic
+decision without hashing prompt content or retaining sampling state. Skipped
+requests continue through normal local admission and do not produce semantic
+forecast or decision metrics. `octoroute_semantic_sampling_total{outcome}`
+records the bounded `sampled` or `skipped` outcome. Enforced mode always runs
+the forecaster regardless of this setting. Keep the value at `1.0` for
+benchmark and calibration collection.
 
 `session_latch_enabled` is an optional enforced-mode refinement and is false by
 default. When enabled, `session_latch_evidence_threshold` consecutive cloud

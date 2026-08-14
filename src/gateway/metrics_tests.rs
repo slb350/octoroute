@@ -1,7 +1,10 @@
 use super::{
     config::SemanticRoutingMode,
     intelligence::SemanticBoundary,
-    metrics::{FailurePhase, GatewayMetrics, SemanticDecisionOutcome, UpstreamLabel},
+    metrics::{
+        FailurePhase, GatewayMetrics, SemanticDecisionOutcome, SemanticSamplingOutcome,
+        UpstreamLabel,
+    },
     routing::{RouteDestination, RouteReason},
 };
 use axum::http::StatusCode;
@@ -25,6 +28,9 @@ fn gateway_metrics_use_only_bounded_route_and_failure_labels() {
             0.55,
         )
         .expect("semantic forecast metric");
+    metrics
+        .record_semantic_sampling(SemanticSamplingOutcome::Sampled)
+        .expect("semantic sampling metric");
     metrics
         .record_upstream_failure(UpstreamLabel::Local, FailurePhase::PreCommit)
         .expect("failure metric");
@@ -59,6 +65,7 @@ fn gateway_metrics_use_only_bounded_route_and_failure_labels() {
     assert!(encoded.contains(
         "octoroute_semantic_local_success_probability_sum{boundary=\"uncertain\",mode=\"shadow\"} 0.55"
     ));
+    assert!(encoded.contains("octoroute_semantic_sampling_total{outcome=\"sampled\"} 1"));
     assert!(
         encoded.contains(
             "octoroute_upstream_failures_total{phase=\"pre_commit\",upstream=\"local\"} 1"

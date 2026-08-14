@@ -430,6 +430,7 @@ pub struct RoutingConfig {
     decision_timeout_ms: u64,
     local_success_threshold: f64,
     boundary_threshold_step: f64,
+    shadow_sample_rate: f64,
     session_latch: Option<SessionLatchConfig>,
 }
 
@@ -470,6 +471,11 @@ impl RoutingConfig {
     /// Additional probability required for each capability-boundary step.
     pub fn boundary_threshold_step(&self) -> f64 {
         self.boundary_threshold_step
+    }
+
+    /// Fraction of compatible automatic shadow requests that invoke the forecaster.
+    pub fn shadow_sample_rate(&self) -> f64 {
+        self.shadow_sample_rate
     }
 
     /// Optional repeated-evidence session latch policy.

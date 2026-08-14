@@ -3,8 +3,9 @@ use crate::gateway::{
     config::SemanticRoutingMode,
     intelligence::{IntelligentRoute, IntelligentRouterError, SemanticAssessment},
     local::AdmissionOutcome,
-    metrics::SemanticDecisionOutcome,
+    metrics::{SemanticDecisionOutcome, SemanticSamplingOutcome},
     routing::{LocalRoutePlan, RoutePlan, RoutePolicy},
+    sampling::DeterministicSampler,
     trajectory::TrajectorySignals,
 };
 use tokio::sync::OwnedSemaphorePermit;
@@ -94,6 +95,19 @@ where
             return SemanticRouteAction::Admit(None);
         }
         let trajectory = if mode == SemanticRoutingMode::Shadow {
+            let sampled = DeterministicSampler::new(self.config.routing().shadow_sample_rate())
+                .includes(request_id);
+            let outcome = if sampled {
+                SemanticSamplingOutcome::Sampled
+            } else {
+                SemanticSamplingOutcome::Skipped
+            };
+            if let Err(error) = self.metrics.record_semantic_sampling(outcome) {
+                tracing::warn!(%error, "failed to record semantic sampling metric");
+            }
+            if !sampled {
+                return SemanticRouteAction::Admit(None);
+            }
             TrajectorySignals::extract(request)
         } else {
             None
