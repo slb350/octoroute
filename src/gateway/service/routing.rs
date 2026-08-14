@@ -117,12 +117,21 @@ where
         if let Err(error) = self.metrics.record_semantic_decision(mode, metric_outcome) {
             tracing::warn!(%error, "failed to record semantic routing metric");
         }
+        if let Ok(assessment) = outcome
+            && let Err(error) = self.metrics.record_semantic_forecast(
+                mode,
+                assessment.boundary(),
+                assessment.local_success_probability(),
+            )
+        {
+            tracing::warn!(%error, "failed to record semantic forecast metric");
+        }
         if mode == SemanticRoutingMode::Shadow {
             match outcome {
                 Ok(assessment) => tracing::debug!(
                     request_id,
                     semantic_destination = assessment.destination().as_str(),
-                    capability_boundary = assessment.boundary(),
+                    capability_boundary = assessment.boundary().as_str(),
                     local_success_probability = assessment.local_success_probability(),
                     "observed shadow semantic routing forecast"
                 ),

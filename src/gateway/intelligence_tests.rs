@@ -270,12 +270,13 @@ async fn shadow_mode_observes_cloud_but_keeps_compatible_work_local() {
     assert_eq!(response.headers()["x-octoroute-reason"], "local_capable");
     assert_eq!(transport.local_calls(), 1);
     assert_eq!(transport.cloud_calls(), 0);
+    let metrics = gateway.metrics_text().expect("metrics");
     assert!(
-        gateway
-            .metrics_text()
-            .expect("metrics")
-            .contains("octoroute_semantic_decisions_total{mode=\"shadow\",outcome=\"cloud\"} 1")
+        metrics.contains("octoroute_semantic_decisions_total{mode=\"shadow\",outcome=\"cloud\"} 1")
     );
+    assert!(metrics.contains(
+        "octoroute_semantic_local_success_probability_count{boundary=\"supported\",mode=\"shadow\"} 1"
+    ));
 }
 
 #[tokio::test]

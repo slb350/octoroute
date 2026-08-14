@@ -217,8 +217,8 @@ forecasts.
 
 - [x] Add the versioned Strix capability card and forecast instructions.
 - [x] Include configured local identity and enabled capabilities.
-- Add bounded probability/boundary metrics without logging generated text.
-- Document the new fields, metrics, and prompt contract.
+- [x] Add bounded probability/boundary metrics without logging generated text.
+- [x] Document the new fields, metrics, and prompt contract.
 
 ### 3. Labeled replay and calibration gate
 

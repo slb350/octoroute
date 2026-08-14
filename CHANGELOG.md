@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the default while the provisional thresholds await labeled calibration.
 - Add a versioned Strix capability card derived from configured local identity
   and capabilities, including measured limitations and anti-framing guidance.
+- Expose bounded local-success probability histograms by semantic mode and
+  capability boundary without using generated text as metric labels.
 
 ## [2.1.2] - 2026-08-08
 

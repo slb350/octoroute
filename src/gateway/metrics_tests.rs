@@ -1,5 +1,6 @@
 use super::{
     config::SemanticRoutingMode,
+    intelligence::SemanticBoundary,
     metrics::{FailurePhase, GatewayMetrics, SemanticDecisionOutcome, UpstreamLabel},
     routing::{RouteDestination, RouteReason},
 };
@@ -17,6 +18,13 @@ fn gateway_metrics_use_only_bounded_route_and_failure_labels() {
     metrics
         .record_semantic_decision(SemanticRoutingMode::Shadow, SemanticDecisionOutcome::Cloud)
         .expect("semantic decision metric");
+    metrics
+        .record_semantic_forecast(
+            SemanticRoutingMode::Shadow,
+            SemanticBoundary::Uncertain,
+            0.55,
+        )
+        .expect("semantic forecast metric");
     metrics
         .record_upstream_failure(UpstreamLabel::Local, FailurePhase::PreCommit)
         .expect("failure metric");
@@ -45,6 +53,12 @@ fn gateway_metrics_use_only_bounded_route_and_failure_labels() {
     assert!(
         encoded.contains("octoroute_semantic_decisions_total{mode=\"shadow\",outcome=\"cloud\"} 1")
     );
+    assert!(encoded.contains(
+        "octoroute_semantic_local_success_probability_count{boundary=\"uncertain\",mode=\"shadow\"} 1"
+    ));
+    assert!(encoded.contains(
+        "octoroute_semantic_local_success_probability_sum{boundary=\"uncertain\",mode=\"shadow\"} 0.55"
+    ));
     assert!(
         encoded.contains(
             "octoroute_upstream_failures_total{phase=\"pre_commit\",upstream=\"local\"} 1"

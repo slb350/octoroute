@@ -2,6 +2,7 @@
 
 use crate::gateway::{
     config::SemanticRoutingMode,
+    intelligence::SemanticBoundary,
     routing::{RouteDestination, RouteReason},
 };
 use axum::http::StatusCode;
@@ -83,6 +84,7 @@ pub struct GatewayMetrics {
     registry: Arc<Registry>,
     route_decisions: IntCounterVec,
     semantic_decisions: IntCounterVec,
+    semantic_local_success_probability: HistogramVec,
     local_fallbacks: IntCounter,
     local_busy_spillovers: IntCounter,
     upstream_requests: IntCounterVec,
@@ -129,6 +131,14 @@ impl GatewayMetrics {
             ),
             &["mode", "outcome"],
         )?;
+        let semantic_local_success_probability = HistogramVec::new(
+            HistogramOpts::new(
+                "octoroute_semantic_local_success_probability",
+                "Validated local-success forecasts by configured mode and capability boundary",
+            )
+            .buckets(vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]),
+            &["mode", "boundary"],
+        )?;
         let local_busy_spillovers = IntCounter::with_opts(Opts::new(
             "octoroute_local_busy_spillovers_total",
             "Automatic requests sent to cloud because local capacity was occupied",
@@ -174,6 +184,7 @@ impl GatewayMetrics {
         )?;
         registry.register(Box::new(route_decisions.clone()))?;
         registry.register(Box::new(semantic_decisions.clone()))?;
+        registry.register(Box::new(semantic_local_success_probability.clone()))?;
         registry.register(Box::new(local_fallbacks.clone()))?;
         registry.register(Box::new(local_busy_spillovers.clone()))?;
         registry.register(Box::new(upstream_requests.clone()))?;
@@ -187,6 +198,7 @@ impl GatewayMetrics {
             registry: Arc::new(registry),
             route_decisions,
             semantic_decisions,
+            semantic_local_success_probability,
             local_fallbacks,
             local_busy_spillovers,
             upstream_requests,
@@ -219,6 +231,19 @@ impl GatewayMetrics {
         self.semantic_decisions
             .get_metric_with_label_values(&[mode.as_str(), outcome.as_str()])?
             .inc();
+        Ok(())
+    }
+
+    /// Record one validated, bounded semantic success forecast.
+    pub(crate) fn record_semantic_forecast(
+        &self,
+        mode: SemanticRoutingMode,
+        boundary: SemanticBoundary,
+        local_success_probability: f64,
+    ) -> Result<(), prometheus::Error> {
+        self.semantic_local_success_probability
+            .get_metric_with_label_values(&[mode.as_str(), boundary.as_str()])?
+            .observe(local_success_probability);
         Ok(())
     }
 

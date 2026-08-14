@@ -283,7 +283,7 @@ struct RouteForecast {
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum SemanticBoundary {
+pub(crate) enum SemanticBoundary {
     Supported,
     Uncertain,
     Unsupported,
@@ -306,7 +306,7 @@ impl SemanticBoundary {
         }
     }
 
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Supported => "supported",
             Self::Uncertain => "uncertain",
@@ -405,8 +405,8 @@ impl SemanticAssessment {
         self.destination
     }
 
-    pub(crate) const fn boundary(self) -> &'static str {
-        self.boundary.as_str()
+    pub(crate) const fn boundary(self) -> SemanticBoundary {
+        self.boundary
     }
 
     pub(crate) const fn local_success_probability(self) -> f64 {
