@@ -148,6 +148,8 @@ pub enum RouteReason {
     CloudQuality,
     /// Semantic routing failed safely, so automatic work went to cloud.
     RouterFailure,
+    /// Repeated hard evidence latched this automatic session to cloud.
+    SessionCloudLatch,
 }
 
 impl RouteReason {
@@ -166,6 +168,7 @@ impl RouteReason {
             Self::CloudDefault => "cloud_default",
             Self::CloudQuality => "cloud_quality",
             Self::RouterFailure => "router_failure",
+            Self::SessionCloudLatch => "session_cloud_latch",
         }
     }
 }

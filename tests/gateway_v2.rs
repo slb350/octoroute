@@ -42,6 +42,7 @@ kind = "llama_cpp"
 name = "strix"
 base_url = "{}"
 model = "puzzle-75b"
+model_revision = "test-model-revision"
 context_window = 65536
 context_safety_tokens = 1024
 max_in_flight = 1

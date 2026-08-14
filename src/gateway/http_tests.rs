@@ -155,6 +155,10 @@ async fn all_http_responses_apply_api_security_headers_without_enabling_cors() {
         .expect("liveness");
 
     assert!(response.headers().contains_key("x-request-id"));
+    assert_eq!(
+        response.headers()["x-octoroute-request-id"],
+        response.headers()["x-request-id"]
+    );
     assert_eq!(response.headers()["x-content-type-options"], "nosniff");
     assert_eq!(response.headers()["x-frame-options"], "DENY");
     assert_eq!(response.headers()["referrer-policy"], "no-referrer");

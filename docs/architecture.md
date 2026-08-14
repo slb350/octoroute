@@ -17,6 +17,8 @@ minimal request facts (model, stream, capabilities, privacy)
   |
   `-- automatic local candidate
         |
+        +-- active hashed session latch ------> OpenRouter `openrouter/auto`
+        |
         `-- semantic mode
               |
               +-- disabled --------------------> local admission
@@ -32,12 +34,24 @@ minimal request facts (model, stream, capabilities, privacy)
                 `-- Strix chat completions
 ```
 
-When semantic routing is enabled, Octoroute uses Strix itself for that bounded
-decision, so a prompt selected for local work has not first been disclosed to
-a cloud classifier. `shadow` is the default mode and records the decision
-without acting on it; `disabled` skips classification; `enforced` lets the
-decision select local or cloud. OpenRouter Auto performs cloud model/provider
-selection only after Octoroute chooses cloud.
+When semantic routing is enabled, Octoroute uses Strix itself for a bounded
+success forecast, so a prompt selected for local work has not first been
+disclosed to a cloud classifier. Strix returns a probability, capability
+boundary, closed rule, and short crux; deterministic Octoroute policy selects
+the destination from that forecast. `shadow` is the default mode and records
+the policy outcome without acting on it; `disabled` skips forecasting;
+`enforced` lets the policy outcome select local or cloud. OpenRouter Auto
+performs cloud model/provider selection only after Octoroute chooses cloud.
+
+The local forecast prompt carries `octoroute-strix-capability-card/v2`, built
+once at gateway construction from the configured upstream name, model alias,
+immutable model revision, and closed enabled-capability set. Its qualitative
+rules include measured limitations and prohibit inferring task difficulty from
+phrasing. Dynamic identity values are JSON-escaped data; the card contains no
+origin, credential, prompt, health, slot, or other mutable runtime state.
+Octoroute fingerprints the exact rendered card with SHA-256 and emits that
+bounded identity in shadow forecast events so offline calibration rejects mixed
+model or capability populations.
 
 ## Request path
 
@@ -49,20 +63,27 @@ selection only after Octoroute chooses cloud.
 6. Resolve model intent and `X-Octoroute-Privacy`.
 7. Skip semantic routing when cloud is explicit, local capabilities are
    incompatible, or configuration defaults automatic work to cloud.
-8. For shadow or enforced mode, reserve an idle Strix slot and request a
-   constrained `local` or `cloud` JSON decision with thinking disabled.
-   Disabled mode skips classification.
-9. In shadow mode, record the bounded outcome and continue local admission.
+8. For an opt-in enforced-mode session latch, hash a bounded `session_id` and
+   send an active latch directly to `openrouter/auto`. Forced-local intent
+   bypasses this lookup.
+9. In shadow mode, deterministically sample the server-generated request ID at
+   `shadow_sample_rate`; skipped requests continue directly to local admission.
+   Benchmark and calibration traffic uses `1.0`. Enforced mode is never sampled.
+10. For sampled shadow or enforced mode, reserve an idle Strix slot and request
+    a constrained success forecast with thinking disabled, then apply the
+    configured deterministic threshold policy. Disabled mode skips forecasting.
+11. In shadow mode, record the bounded outcome and continue local admission.
    In enforced mode, send a cloud decision or safe classifier failure to
-   `openrouter/auto`.
-10. For a local path or forced-local request, acquire a non-blocking local
+   `openrouter/auto`. An enabled latch records only consecutive hard
+   `unsupported`/`known_local_limit` cloud evidence.
+12. For a local path or forced-local request, acquire a non-blocking local
     permit, verify health and a free slot, obtain exact input tokens, and
     include the requested or default output reservation in the safe context
     calculation.
-11. Dispatch to one upstream with its own credential.
-12. Buffer the first upstream body chunk. Before this commit point, eligible
+13. Dispatch to one upstream with its own credential.
+14. Buffer the first upstream body chunk. Before this commit point, eligible
     automatic local failures may spill to cloud.
-13. Stream all remaining bytes with backpressure. The upstream and concurrency
+15. Stream all remaining bytes with backpressure. The upstream and concurrency
     permits live until the body completes or is dropped.
 
 ## Schema fidelity

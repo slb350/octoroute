@@ -52,6 +52,7 @@ kind = "llama_cpp"
 name = "strix"
 base_url = "http://127.0.0.1:8080"
 model = "strixtea"
+model_revision = "agents-a1-q8_0"
 context_window = 65536
 context_safety_tokens = 1024
 default_max_output_tokens = 4096
@@ -72,6 +73,9 @@ default = "prefer_local"
 fallback_before_commit = true
 semantic_mode = "shadow"
 decision_timeout_ms = 30000
+local_success_threshold = 0.50
+boundary_threshold_step = 0.10
+shadow_sample_rate = 1.0
 ```
 
 Create an ignored `.env` beside the configuration:

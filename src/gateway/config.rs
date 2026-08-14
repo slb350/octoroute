@@ -2,13 +2,18 @@
 
 use reqwest::Url;
 use secrecy::SecretString;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, net::IpAddr};
 use thiserror::Error;
 
 mod validation;
 
 const CONFIG_VERSION: u8 = 2;
+pub(crate) const MAX_SEMANTIC_BOUNDARY_STEPS: u8 = 2;
+
+pub(crate) fn is_probability(value: f64) -> bool {
+    value.is_finite() && (0.0..=1.0).contains(&value)
+}
 
 /// Source used to resolve secret-bearing environment variables.
 pub trait Environment {
@@ -180,7 +185,7 @@ impl ServerConfig {
 }
 
 /// Capabilities which may be admitted to the local model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalCapability {
     /// OpenAI chat-completion messages.
@@ -201,12 +206,26 @@ pub enum LocalCapability {
     Reasoning,
 }
 
+impl LocalCapability {
+    pub(crate) const ALL: [Self; 8] = [
+        Self::Chat,
+        Self::Stream,
+        Self::Tools,
+        Self::StructuredOutput,
+        Self::ImageInput,
+        Self::AudioInput,
+        Self::VideoInput,
+        Self::Reasoning,
+    ];
+}
+
 /// llama.cpp upstream and admission settings.
 #[derive(Debug, Clone)]
 pub struct LocalUpstreamConfig {
     name: String,
     base_url: Url,
     model: String,
+    model_revision: String,
     context_window: u32,
     context_safety_tokens: u32,
     default_max_output_tokens: u32,
@@ -236,6 +255,11 @@ impl LocalUpstreamConfig {
     /// Exact llama.cpp model alias.
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    /// Immutable operator-supplied revision for the loaded model weights.
+    pub fn model_revision(&self) -> &str {
+        &self.model_revision
     }
 
     /// Configured context window.
@@ -410,6 +434,18 @@ pub struct RoutingConfig {
     fallback_before_commit: bool,
     semantic_mode: SemanticRoutingMode,
     decision_timeout_ms: u64,
+    local_success_threshold: f64,
+    boundary_threshold_step: f64,
+    shadow_sample_rate: f64,
+    session_latch: Option<SessionLatchConfig>,
+}
+
+/// Bounded in-memory policy for repeated hard cloud evidence within one session.
+#[derive(Debug, Clone)]
+pub struct SessionLatchConfig {
+    ttl_ms: u64,
+    max_entries: usize,
+    evidence_threshold: u8,
 }
 
 impl RoutingConfig {
@@ -431,6 +467,43 @@ impl RoutingConfig {
     /// Deadline for the local semantic routing decision.
     pub fn decision_timeout_ms(&self) -> u64 {
         self.decision_timeout_ms
+    }
+
+    /// Minimum forecast probability for a supported request to remain local.
+    pub fn local_success_threshold(&self) -> f64 {
+        self.local_success_threshold
+    }
+
+    /// Additional probability required for each capability-boundary step.
+    pub fn boundary_threshold_step(&self) -> f64 {
+        self.boundary_threshold_step
+    }
+
+    /// Fraction of compatible automatic shadow requests that invoke the forecaster.
+    pub fn shadow_sample_rate(&self) -> f64 {
+        self.shadow_sample_rate
+    }
+
+    /// Optional repeated-evidence session latch policy.
+    pub fn session_latch(&self) -> Option<&SessionLatchConfig> {
+        self.session_latch.as_ref()
+    }
+}
+
+impl SessionLatchConfig {
+    /// Time-to-live for pending evidence and active session latches.
+    pub fn ttl_ms(&self) -> u64 {
+        self.ttl_ms
+    }
+
+    /// Maximum number of hashed session entries retained in memory.
+    pub fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
+    /// Consecutive hard forecasts required before a session is latched.
+    pub fn evidence_threshold(&self) -> u8 {
+        self.evidence_threshold
     }
 }
 

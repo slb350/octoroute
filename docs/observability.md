@@ -2,8 +2,10 @@
 
 ## Response headers
 
-Every response has `X-Request-Id`. Octoroute preserves an allowlisted upstream
-request ID and generates one when the response does not already contain one.
+Every response has `X-Octoroute-Request-Id`, an Octoroute-generated correlation
+UUID. Every response also has `X-Request-Id`; Octoroute preserves an allowlisted
+upstream request ID and otherwise uses the gateway correlation UUID. Use
+`X-Octoroute-Request-Id` to join responses to shadow forecast events.
 Successful upstream responses also expose:
 
 - `X-Octoroute-Destination`
@@ -22,6 +24,8 @@ Current v2 metrics:
 ```text
 octoroute_route_decisions_total{destination,reason}
 octoroute_semantic_decisions_total{mode,outcome}
+octoroute_semantic_sampling_total{outcome}
+octoroute_semantic_local_success_probability{mode,boundary}
 octoroute_local_fallbacks_total
 octoroute_local_busy_spillovers_total
 octoroute_upstream_requests_total{upstream,outcome,status_class}
@@ -38,9 +42,17 @@ the first upstream body chunk, which Octoroute buffers before commitment.
 `upstream_requests` classifies HTTP responses by status class and transport
 failures as `status_class="none"`.
 `semantic_decisions` separates the configured `shadow` or `enforced` mode
-from the bounded `local`, `cloud`, or `failure` classifier outcome. Compare it
+from the bounded `local`, `cloud`, or `failure` policy outcome. Compare it
 with `route_decisions` to evaluate shadow judgment without confusing the
 observed decision with the actual destination.
+`semantic_sampling` counts compatible automatic shadow requests using only the
+closed `sampled` and `skipped` outcomes. It is absent for disabled, enforced,
+forced-local, and already cloud-bound traffic.
+`semantic_local_success_probability` is a histogram with ten fixed
+upper-inclusive deciles `(previous, upper]`, with the first bin `[0.0, 0.1]`,
+and only the closed `mode` and `boundary` labels. Offline calibration uses the
+same boundaries. Its count also provides the boundary distribution. Failed or
+skipped forecasts are not observed in this histogram.
 
 All labels come from bounded enums or HTTP status classes. Prompt and model
 text are never used as metric labels. Octoroute deliberately does not parse
@@ -55,6 +67,8 @@ Suggested alerts:
 - high local or cloud first-byte latency;
 - in-flight requests that remain near configured concurrency limits;
 - unexpected disappearance of local route decisions;
+- forecast probabilities or capability boundaries drifting materially from
+  the labeled calibration population;
 - readiness returning 503.
 
 ## Health

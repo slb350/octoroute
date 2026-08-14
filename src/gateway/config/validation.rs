@@ -3,21 +3,14 @@ use reqwest::header::HeaderValue;
 use serde::Deserialize;
 use std::{collections::BTreeSet, net::IpAddr, str::FromStr};
 
-const DEFAULT_MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+mod defaults;
+use defaults::*;
+
 const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
-const DEFAULT_MAX_HEADER_BYTES: usize = 32 * 1024;
 const MAX_HEADER_BYTES: usize = 1024 * 1024;
-const DEFAULT_SERVER_MAX_IN_FLIGHT: usize = 32;
-const DEFAULT_REQUESTS_PER_MINUTE: u32 = 120;
-const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4096;
-const DEFAULT_HEALTH_CACHE_TTL_MS: u64 = 1000;
-const DEFAULT_PROBE_TIMEOUT_MS: u64 = 2000;
-const DEFAULT_CLOUD_MAX_IN_FLIGHT: usize = 8;
-const DEFAULT_CLOUD_HEALTH_CACHE_TTL_MS: u64 = 10_000;
-const DEFAULT_CLOUD_PROBE_TIMEOUT_MS: u64 = 3000;
-const DEFAULT_ROUTING_DECISION_TIMEOUT_MS: u64 = 30_000;
 const MAX_CONCURRENCY: usize = 10_000;
 const MAX_REQUESTS_PER_MINUTE: u32 = 1_000_000;
+const MAX_MODEL_REVISION_BYTES: usize = 128;
 
 pub(super) fn parse(
     input: &str,
@@ -83,6 +76,7 @@ struct RawLocalUpstreamConfig {
     name: String,
     base_url: String,
     model: String,
+    model_revision: Option<String>,
     context_window: u32,
     context_safety_tokens: u32,
     #[serde(default = "default_max_output_tokens")]
@@ -138,6 +132,20 @@ struct RawRoutingConfig {
     semantic_mode: SemanticRoutingMode,
     #[serde(default = "default_routing_decision_timeout_ms")]
     decision_timeout_ms: u64,
+    #[serde(default = "default_local_success_threshold")]
+    local_success_threshold: f64,
+    #[serde(default = "default_boundary_threshold_step")]
+    boundary_threshold_step: f64,
+    #[serde(default = "default_shadow_sample_rate")]
+    shadow_sample_rate: f64,
+    #[serde(default)]
+    session_latch_enabled: bool,
+    #[serde(default = "default_session_latch_ttl_ms")]
+    session_latch_ttl_ms: u64,
+    #[serde(default = "default_session_latch_max_entries")]
+    session_latch_max_entries: usize,
+    #[serde(default = "default_session_latch_evidence_threshold")]
+    session_latch_evidence_threshold: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,6 +174,52 @@ impl RawGatewayConfig {
                 "must be greater than zero",
             ));
         }
+        validate_probability(
+            "routing.local_success_threshold",
+            self.routing.local_success_threshold,
+        )?;
+        validate_probability(
+            "routing.boundary_threshold_step",
+            self.routing.boundary_threshold_step,
+        )?;
+        validate_probability(
+            "routing.shadow_sample_rate",
+            self.routing.shadow_sample_rate,
+        )?;
+        if self.routing.local_success_threshold
+            + (f64::from(MAX_SEMANTIC_BOUNDARY_STEPS) * self.routing.boundary_threshold_step)
+            > 1.0
+        {
+            return Err(invalid(
+                "routing.boundary_threshold_step",
+                "must keep the strictest semantic threshold at or below one",
+            ));
+        }
+        if !(1_000..=86_400_000).contains(&self.routing.session_latch_ttl_ms) {
+            return Err(invalid(
+                "routing.session_latch_ttl_ms",
+                "must be from 1000 through 86400000",
+            ));
+        }
+        validate_usize_range(
+            "routing.session_latch_max_entries",
+            self.routing.session_latch_max_entries,
+            10_000,
+        )?;
+        if !(2..=10).contains(&self.routing.session_latch_evidence_threshold) {
+            return Err(invalid(
+                "routing.session_latch_evidence_threshold",
+                "must be from 2 through 10",
+            ));
+        }
+        if self.routing.session_latch_enabled
+            && self.routing.semantic_mode != SemanticRoutingMode::Enforced
+        {
+            return Err(invalid(
+                "routing.session_latch_enabled",
+                "requires routing.semantic_mode = \"enforced\"",
+            ));
+        }
 
         Ok(GatewayConfig {
             server,
@@ -176,11 +230,33 @@ impl RawGatewayConfig {
                 fallback_before_commit: self.routing.fallback_before_commit,
                 semantic_mode: self.routing.semantic_mode,
                 decision_timeout_ms: self.routing.decision_timeout_ms,
+                local_success_threshold: self.routing.local_success_threshold,
+                boundary_threshold_step: self.routing.boundary_threshold_step,
+                shadow_sample_rate: self.routing.shadow_sample_rate,
+                session_latch: self
+                    .routing
+                    .session_latch_enabled
+                    .then_some(SessionLatchConfig {
+                        ttl_ms: self.routing.session_latch_ttl_ms,
+                        max_entries: self.routing.session_latch_max_entries,
+                        evidence_threshold: self.routing.session_latch_evidence_threshold,
+                    }),
             },
             observability: ObservabilityConfig {
                 log_level: self.observability.log_level,
             },
         })
+    }
+}
+
+fn validate_probability(field: &str, value: f64) -> Result<(), GatewayConfigError> {
+    if is_probability(value) {
+        Ok(())
+    } else {
+        Err(invalid(
+            field,
+            "must be a finite number from zero through one",
+        ))
     }
 }
 
@@ -232,6 +308,13 @@ fn validate_local(
     validate_nonempty("upstreams.local.name", &raw.name)?;
     validate_header_value("upstreams.local.name", &raw.name)?;
     validate_nonempty("upstreams.local.model", &raw.model)?;
+    let model_revision = raw.model_revision.ok_or_else(|| {
+        invalid(
+            "upstreams.local.model_revision",
+            "is required and must identify the loaded model weights",
+        )
+    })?;
+    validate_model_revision("upstreams.local.model_revision", &model_revision)?;
     if raw.context_window == 0 {
         return Err(invalid(
             "upstreams.local.context_window",
@@ -293,6 +376,7 @@ fn validate_local(
         name: raw.name,
         base_url,
         model: raw.model,
+        model_revision,
         context_window: raw.context_window,
         context_safety_tokens: raw.context_safety_tokens,
         default_max_output_tokens: raw.default_max_output_tokens,
@@ -471,6 +555,22 @@ fn validate_nonempty(field: &str, value: &str) -> Result<(), GatewayConfigError>
     }
 }
 
+fn validate_model_revision(field: &str, value: &str) -> Result<(), GatewayConfigError> {
+    if value.is_empty()
+        || value.len() > MAX_MODEL_REVISION_BYTES
+        || !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+    {
+        Err(invalid(
+            field,
+            format!(
+                "must be 1 through {MAX_MODEL_REVISION_BYTES} visible ASCII bytes without whitespace"
+            ),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn validate_header_value(field: &str, value: &str) -> Result<(), GatewayConfigError> {
     HeaderValue::from_str(value)
         .map(|_| ())
@@ -494,76 +594,4 @@ fn validate_usize_range(
     } else {
         Err(invalid(field, format!("must be between 1 and {maximum}")))
     }
-}
-
-const fn default_max_request_bytes() -> usize {
-    DEFAULT_MAX_REQUEST_BYTES
-}
-
-const fn default_max_header_bytes() -> usize {
-    DEFAULT_MAX_HEADER_BYTES
-}
-
-const fn default_server_max_in_flight() -> usize {
-    DEFAULT_SERVER_MAX_IN_FLIGHT
-}
-
-const fn default_requests_per_minute() -> u32 {
-    DEFAULT_REQUESTS_PER_MINUTE
-}
-
-const fn default_max_output_tokens() -> u32 {
-    DEFAULT_MAX_OUTPUT_TOKENS
-}
-
-const fn default_health_cache_ttl_ms() -> u64 {
-    DEFAULT_HEALTH_CACHE_TTL_MS
-}
-
-const fn default_probe_timeout_ms() -> u64 {
-    DEFAULT_PROBE_TIMEOUT_MS
-}
-
-fn default_auto_model() -> String {
-    "openrouter/auto".to_string()
-}
-
-const fn default_cost_quality_tradeoff() -> u8 {
-    9
-}
-
-fn default_app_title() -> String {
-    "Octoroute".to_string()
-}
-
-const fn default_cloud_max_in_flight() -> usize {
-    DEFAULT_CLOUD_MAX_IN_FLIGHT
-}
-
-const fn default_cloud_health_cache_ttl_ms() -> u64 {
-    DEFAULT_CLOUD_HEALTH_CACHE_TTL_MS
-}
-
-const fn default_cloud_probe_timeout_ms() -> u64 {
-    DEFAULT_CLOUD_PROBE_TIMEOUT_MS
-}
-
-const fn default_route() -> RouteDefault {
-    RouteDefault::PreferLocal
-}
-
-const fn default_true() -> bool {
-    true
-}
-
-const fn default_routing_decision_timeout_ms() -> u64 {
-    DEFAULT_ROUTING_DECISION_TIMEOUT_MS
-}
-
-const fn default_semantic_routing_mode() -> SemanticRoutingMode {
-    SemanticRoutingMode::Shadow
-}
-
-const fn default_log_level() -> LogLevel {
-    LogLevel::Info
 }

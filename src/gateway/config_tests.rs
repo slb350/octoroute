@@ -18,6 +18,7 @@ kind = "llama_cpp"
 name = "strix"
 base_url = "http://127.0.0.1:8080"
 model = "puzzle-75b"
+model_revision = "test-model-revision"
 context_window = 65536
 context_safety_tokens = 1024
 max_in_flight = 1
@@ -53,6 +54,7 @@ fn valid_v2_config_resolves_secrets_without_exposing_them() {
     assert_eq!(config.server().max_in_flight(), 32);
     assert_eq!(config.server().requests_per_minute(), 120);
     assert_eq!(config.local().model(), "puzzle-75b");
+    assert_eq!(config.local().model_revision(), "test-model-revision");
     assert_eq!(config.local().default_max_output_tokens(), 4096);
     assert_eq!(config.local().health_cache_ttl_ms(), 1000);
     assert_eq!(config.local().probe_timeout_ms(), 2000);
@@ -66,10 +68,40 @@ fn valid_v2_config_resolves_secrets_without_exposing_them() {
         SemanticRoutingMode::Shadow
     );
     assert_eq!(config.routing().decision_timeout_ms(), 30_000);
+    assert_eq!(config.routing().local_success_threshold(), 0.50);
+    assert_eq!(config.routing().boundary_threshold_step(), 0.10);
 
     let debug = format!("{config:?}");
     assert!(!debug.contains("inbound-secret"));
     assert!(!debug.contains("openrouter-secret"));
+}
+
+#[test]
+fn local_model_revision_is_required_and_bounded() {
+    let missing = valid_config().replace("model_revision = \"test-model-revision\"\n", "");
+    let error = GatewayConfig::from_toml(&missing, &TestEnvironment::gateway())
+        .expect_err("model revision must be explicit");
+    assert!(matches!(
+        error,
+        GatewayConfigError::Invalid { ref field, .. }
+            if field == "upstreams.local.model_revision"
+    ));
+
+    for replacement in [
+        r#"model_revision = "revision\nInjected""#.to_string(),
+        r#"model_revision = "two words""#.to_string(),
+        format!(r#"model_revision = "{}""#, "x".repeat(129)),
+    ] {
+        let input =
+            valid_config().replace("model_revision = \"test-model-revision\"", &replacement);
+        let error = GatewayConfig::from_toml(&input, &TestEnvironment::gateway())
+            .expect_err("unsafe model revision must fail startup");
+        assert!(matches!(
+            error,
+            GatewayConfigError::Invalid { ref field, .. }
+                if field == "upstreams.local.model_revision"
+        ));
+    }
 }
 
 #[test]
@@ -118,6 +150,140 @@ fn semantic_routing_timeout_must_be_positive() {
         error,
         GatewayConfigError::Invalid { ref field, .. }
             if field == "routing.decision_timeout_ms"
+    ));
+}
+
+#[test]
+fn semantic_routing_probability_policy_is_configurable() {
+    let input = valid_config().replace(
+        "fallback_before_commit = true",
+        "fallback_before_commit = true\nlocal_success_threshold = 0.65\nboundary_threshold_step = 0.15",
+    );
+    let config = GatewayConfig::from_toml(&input, &TestEnvironment::gateway())
+        .expect("valid semantic probability policy");
+
+    assert_eq!(config.routing().local_success_threshold(), 0.65);
+    assert_eq!(config.routing().boundary_threshold_step(), 0.15);
+}
+
+#[test]
+fn semantic_routing_probability_policy_must_remain_bounded() {
+    for (field, value) in [
+        ("local_success_threshold", "-0.01"),
+        ("local_success_threshold", "1.01"),
+        ("local_success_threshold", "nan"),
+        ("boundary_threshold_step", "-0.01"),
+        ("boundary_threshold_step", "0.26"),
+        ("boundary_threshold_step", "inf"),
+    ] {
+        let input = valid_config().replace(
+            "fallback_before_commit = true",
+            &format!("fallback_before_commit = true\n{field} = {value}"),
+        );
+        let error = GatewayConfig::from_toml(&input, &TestEnvironment::gateway())
+            .expect_err("invalid semantic probability policy must fail startup");
+
+        assert!(matches!(
+            error,
+            GatewayConfigError::Invalid {
+                field: ref actual,
+                ..
+            } if actual == &format!("routing.{field}")
+        ));
+    }
+
+    let input = valid_config().replace(
+        "fallback_before_commit = true",
+        "fallback_before_commit = true\nlocal_success_threshold = 0.60\nboundary_threshold_step = 0.25",
+    );
+    let error = GatewayConfig::from_toml(&input, &TestEnvironment::gateway())
+        .expect_err("the strictest boundary threshold must not exceed one");
+    assert!(matches!(
+        error,
+        GatewayConfigError::Invalid { ref field, .. }
+            if field == "routing.boundary_threshold_step"
+    ));
+}
+
+#[test]
+fn shadow_sampling_rate_is_bounded_and_defaults_to_full_observation() {
+    let default = GatewayConfig::from_toml(valid_config(), &TestEnvironment::gateway())
+        .expect("default configuration");
+    assert_eq!(default.routing().shadow_sample_rate(), 1.0);
+
+    let configured = valid_config().replace(
+        "fallback_before_commit = true",
+        "fallback_before_commit = true\nshadow_sample_rate = 0.25",
+    );
+    let config = GatewayConfig::from_toml(&configured, &TestEnvironment::gateway())
+        .expect("bounded shadow sample rate");
+    assert_eq!(config.routing().shadow_sample_rate(), 0.25);
+
+    for value in ["-0.1", "1.1", "nan"] {
+        let input = valid_config().replace(
+            "fallback_before_commit = true",
+            &format!("fallback_before_commit = true\nshadow_sample_rate = {value}"),
+        );
+        let error = GatewayConfig::from_toml(&input, &TestEnvironment::gateway())
+            .expect_err("invalid shadow sample rate must fail startup");
+        assert!(matches!(
+            error,
+            GatewayConfigError::Invalid { ref field, .. }
+                if field == "routing.shadow_sample_rate"
+        ));
+    }
+}
+
+#[test]
+fn session_latch_is_opt_in_bounded_and_enforced_only() {
+    let default = GatewayConfig::from_toml(valid_config(), &TestEnvironment::gateway())
+        .expect("default configuration");
+    assert!(default.routing().session_latch().is_none());
+
+    let configured = valid_config().replace(
+        "fallback_before_commit = true",
+        "fallback_before_commit = true\nsemantic_mode = \"enforced\"\nsession_latch_enabled = true\nsession_latch_ttl_ms = 60000\nsession_latch_max_entries = 64\nsession_latch_evidence_threshold = 3",
+    );
+    let config = GatewayConfig::from_toml(&configured, &TestEnvironment::gateway())
+        .expect("bounded enforced session latch");
+    let latch = config.routing().session_latch().expect("enabled latch");
+    assert_eq!(latch.ttl_ms(), 60_000);
+    assert_eq!(latch.max_entries(), 64);
+    assert_eq!(latch.evidence_threshold(), 3);
+
+    for (field, value) in [
+        ("session_latch_ttl_ms", "999"),
+        ("session_latch_ttl_ms", "86400001"),
+        ("session_latch_max_entries", "0"),
+        ("session_latch_max_entries", "10001"),
+        ("session_latch_evidence_threshold", "1"),
+        ("session_latch_evidence_threshold", "11"),
+    ] {
+        let input = valid_config().replace(
+            "fallback_before_commit = true",
+            &format!(
+                "fallback_before_commit = true\nsemantic_mode = \"enforced\"\nsession_latch_enabled = true\n{field} = {value}"
+            ),
+        );
+        let error = GatewayConfig::from_toml(&input, &TestEnvironment::gateway())
+            .expect_err("invalid latch bound must fail startup");
+        assert!(matches!(
+            error,
+            GatewayConfigError::Invalid { field: ref actual, .. }
+                if actual == &format!("routing.{field}")
+        ));
+    }
+
+    let shadow = valid_config().replace(
+        "fallback_before_commit = true",
+        "fallback_before_commit = true\nsession_latch_enabled = true",
+    );
+    let error = GatewayConfig::from_toml(&shadow, &TestEnvironment::gateway())
+        .expect_err("an active latch must require enforced semantic mode");
+    assert!(matches!(
+        error,
+        GatewayConfigError::Invalid { ref field, .. }
+            if field == "routing.session_latch_enabled"
     ));
 }
 

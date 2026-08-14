@@ -1,4 +1,4 @@
-use super::MetadataAuthorizationError;
+use super::{MetadataAuthorizationError, OCTOROUTE_REQUEST_ID_HEADER, REQUEST_ID_HEADER};
 use crate::gateway::routing::RoutePolicyError;
 use axum::{
     Json,
@@ -10,8 +10,6 @@ use axum::{
     response::IntoResponse,
 };
 use serde_json::json;
-
-const REQUEST_ID_HEADER: &str = "x-request-id";
 
 pub(crate) fn authorization_error(
     error: MetadataAuthorizationError,
@@ -78,6 +76,11 @@ pub(crate) fn error_response(
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     insert_header(response.headers_mut(), REQUEST_ID_HEADER, request_id);
+    insert_header(
+        response.headers_mut(),
+        OCTOROUTE_REQUEST_ID_HEADER,
+        request_id,
+    );
     response
 }
 

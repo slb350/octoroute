@@ -12,6 +12,7 @@ use crate::gateway::{
         LocalAdmissionState, ModelIntent, PrivacyDirective, RouteDecision, RouteDestination,
         RouteReason,
     },
+    session_latch::{SessionKey, SessionLatch},
     transport::{
         GatewayTransport, GatewayTransportError, PreparedUpstreamResponse, UpstreamTransport,
     },
@@ -37,7 +38,8 @@ use responses::{authorization_error, insert_header, rate_limit_response, route_e
 const DESTINATION_HEADER: &str = "x-octoroute-destination";
 const REASON_HEADER: &str = "x-octoroute-reason";
 const UPSTREAM_HEADER: &str = "x-octoroute-upstream";
-const REQUEST_ID_HEADER: &str = "x-request-id";
+pub(crate) const REQUEST_ID_HEADER: &str = "x-request-id";
+pub(crate) const OCTOROUTE_REQUEST_ID_HEADER: &str = "x-octoroute-request-id";
 
 /// Complete authenticated v2 chat-completions service.
 pub struct GatewayService<T> {
@@ -45,6 +47,7 @@ pub struct GatewayService<T> {
     authenticator: BearerAuthenticator,
     admission: LlamaCppAdmission,
     intelligent_router: LocalSemanticRouter,
+    session_latch: Option<SessionLatch>,
     transport: T,
     inbound_permits: Arc<Semaphore>,
     cloud_permits: Arc<Semaphore>,
@@ -103,6 +106,7 @@ where
     ) -> Result<Self, GatewayServiceBuildError> {
         let intelligent_router = LocalSemanticRouter::new(&config, admission.clone())
             .ok_or(GatewayServiceBuildError::Intelligence)?;
+        let session_latch = SessionLatch::from_config(config.routing());
         let authenticator = BearerAuthenticator::new(config.server().api_key().clone());
         let inbound_permits = Arc::new(Semaphore::new(config.server().max_in_flight()));
         let cloud_permits = Arc::new(Semaphore::new(config.openrouter().max_in_flight()));
@@ -113,6 +117,7 @@ where
             authenticator,
             admission,
             intelligent_router,
+            session_latch,
             transport,
             inbound_permits,
             cloud_permits,
@@ -466,6 +471,11 @@ where
         insert_header(response.headers_mut(), DESTINATION_HEADER, destination_name);
         insert_header(response.headers_mut(), REASON_HEADER, reason.as_str());
         insert_header(response.headers_mut(), UPSTREAM_HEADER, upstream_name);
+        insert_header(
+            response.headers_mut(),
+            OCTOROUTE_REQUEST_ID_HEADER,
+            request_id,
+        );
         if !response.headers().contains_key(REQUEST_ID_HEADER) {
             insert_header(response.headers_mut(), REQUEST_ID_HEADER, request_id);
         }

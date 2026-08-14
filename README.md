@@ -82,6 +82,7 @@ kind = "llama_cpp"
 name = "strix"
 base_url = "http://127.0.0.1:8080"
 model = "strixtea"
+model_revision = "agents-a1-q8_0"
 context_window = 65536
 max_in_flight = 1
 
@@ -94,14 +95,50 @@ cost_quality_tradeoff = 9
 [routing]
 semantic_mode = "shadow"
 decision_timeout_ms = 30000
+local_success_threshold = 0.50
+boundary_threshold_step = 0.10
+shadow_sample_rate = 1.0
+session_latch_enabled = false
+session_latch_ttl_ms = 900000
+session_latch_max_entries = 1024
+session_latch_evidence_threshold = 2
 ```
 
 `semantic_mode` is `disabled`, `shadow`, or `enforced`. Shadow is the default:
-it records the classifier outcome without letting that outcome select the
-destination. Enforced mode should be enabled only after its judgment is
+it records the forecast-derived outcome without letting that outcome select
+the destination. The local model forecasts `p_local_success` and a closed
+capability boundary; Octoroute—not the model—applies the configured threshold.
+`boundary_threshold_step` raises that threshold for uncertain, unsupported,
+and unmatched forecasts, with two steps for unsupported forecasts. Enforced
+mode should be enabled only after its judgment is
 validated against representative labeled traffic. Shadow and enforced modes
-add one local classifier inference—about 760–1500 ms in the measured Strix
+add one local forecasting inference—about 760–1500 ms in the measured Strix
 profile—to compatible `auto` requests.
+
+`shadow_sample_rate` can deterministically sample compatible shadow requests
+from `0.0` through `1.0` using the server-generated request ID. The default is
+`1.0`, and benchmark or calibration runs must retain full sampling. Skipped
+requests proceed directly to ordinary local admission. Enforced mode is never
+sampled.
+
+The optional session latch is disabled by default and can be enabled only with
+`semantic_mode = "enforced"`. Two consecutive hard
+`unsupported`/`known_local_limit` forecasts latch a valid `session_id` to
+cloud for 15 minutes by default. IDs are SHA-256 hashed in memory, storage is
+bounded, and explicit local or `local-only` intent always bypasses the latch.
+
+The forecast prompt includes the versioned
+`octoroute-strix-capability-card/v2`. It identifies the configured local alias
+and immutable `model_revision`, lists only capabilities enabled in
+configuration, and records measured local limitations without exposing URLs,
+credentials, prompts, or runtime state. A SHA-256 fingerprint of the exact
+rendered card is included in bounded shadow events and required by calibration
+artifacts, preventing rows from different model revisions or capability
+configurations from being analyzed as one population. Change `model_revision`
+whenever the loaded weights change, even if the llama.cpp alias stays stable.
+In shadow mode only, explicitly typed and paired tool results can contribute
+closed trajectory evidence; malformed, ordinary, or unsupported tool history
+abstains, and the evidence never selects a route directly.
 
 This profile is for running Octoroute on Strix. The `config.laptop.toml`
 profile instead binds Octoroute to laptop loopback and uses
@@ -169,7 +206,12 @@ cloud service.
 - `X-Octoroute-Reason`: bounded route reason such as `local_capable`,
   `cloud_quality`, `local_busy`, or `local_early_failure`
 - `X-Octoroute-Upstream: strix|openrouter`
+- `X-Octoroute-Request-Id`: Octoroute-generated correlation UUID
 - `X-Request-Id`
+
+`X-Request-Id` preserves a safe upstream request ID when one is returned;
+`X-Octoroute-Request-Id` always identifies the gateway request and is the join
+key for shadow forecast events.
 
 Octoroute never rewrites OpenRouter’s returned `model`; callers see the model
 that actually answered.
@@ -194,6 +236,8 @@ See:
 - [Security](docs/security.md)
 - [Deployment](docs/deployment.md)
 - [Observability](docs/observability.md)
+- [Forecast calibration](docs/calibration.md)
+- [Trajectory signals](docs/trajectory-signals.md)
 - [Development](docs/development.md)
 
 ## Development

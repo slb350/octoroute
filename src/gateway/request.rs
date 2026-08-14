@@ -7,6 +7,8 @@ use serde_json::{Map, Value};
 use std::{collections::BTreeSet, sync::OnceLock};
 use thiserror::Error;
 
+const MAX_SESSION_ID_BYTES: usize = 128;
+
 /// A feature inferred from the request envelope without rewriting messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RequestFeature {
@@ -80,6 +82,18 @@ impl GatewayRequest {
             .get("messages")
             .and_then(Value::as_array)
             .expect("validated gateway requests always contain messages")
+    }
+
+    /// Bounded client session identifier eligible for hashed in-memory policy state.
+    pub(crate) fn session_id(&self) -> Option<&str> {
+        self.body
+            .get("session_id")
+            .and_then(Value::as_str)
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= MAX_SESSION_ID_BYTES
+                    && !value.chars().any(char::is_control)
+            })
     }
 
     /// Resolve the output-token reservation used for local context admission.
@@ -220,7 +234,7 @@ fn infer_message_features(messages: &[Value], features: &mut BTreeSet<RequestFea
             None | Some(Value::Null) => false,
             Some(Value::Array(calls)) if !calls.is_empty() => {
                 features.insert(RequestFeature::Capability(LocalCapability::Tools));
-                if !calls.iter().all(valid_tool_call) {
+                if !calls.iter().all(|call| valid_tool_call_id(call).is_some()) {
                     features.insert(RequestFeature::UnsupportedContent);
                 }
                 true
@@ -256,19 +270,19 @@ fn infer_message_features(messages: &[Value], features: &mut BTreeSet<RequestFea
     }
 }
 
-fn valid_tool_call(call: &Value) -> bool {
-    let Some(call) = call.as_object() else {
-        return false;
-    };
-    call.get("id").is_some_and(Value::is_string)
-        && call.get("type").and_then(Value::as_str) == Some("function")
-        && call
-            .get("function")
-            .and_then(Value::as_object)
-            .is_some_and(|function| {
-                function.get("name").is_some_and(Value::is_string)
-                    && function.get("arguments").is_some_and(Value::is_string)
-            })
+pub(super) fn valid_tool_call_id(call: &Value) -> Option<&str> {
+    let call = call.as_object()?;
+    let id = call.get("id")?.as_str().filter(|id| !id.is_empty())?;
+    if call.get("type")?.as_str()? != "function" {
+        return None;
+    }
+    let function = call.get("function")?.as_object()?;
+    function
+        .get("name")?
+        .as_str()
+        .filter(|name| !name.is_empty())?;
+    function.get("arguments")?.as_str()?;
+    Some(id)
 }
 
 fn infer_content_block_feature(block: &Value, role: &str, features: &mut BTreeSet<RequestFeature>) {

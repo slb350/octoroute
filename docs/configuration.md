@@ -31,6 +31,7 @@ kind = "llama_cpp"
 name = "strix"
 base_url = "http://127.0.0.1:8080"
 model = "strixtea"
+model_revision = "agents-a1-q8_0"
 context_window = 65536
 context_safety_tokens = 1024
 default_max_output_tokens = 4096
@@ -60,6 +61,13 @@ default = "prefer_local"
 fallback_before_commit = true
 semantic_mode = "shadow"
 decision_timeout_ms = 30000
+local_success_threshold = 0.50
+boundary_threshold_step = 0.10
+shadow_sample_rate = 1.0
+session_latch_enabled = false
+session_latch_ttl_ms = 900000
+session_latch_max_entries = 1024
+session_latch_evidence_threshold = 2
 
 [observability]
 log_level = "info"
@@ -84,6 +92,10 @@ local base URL to `http://strix.local:8080`.
 - `base_url` accepts HTTP or HTTPS, has no credentials/query/fragment, and is
   normalized with a trailing slash.
 - `model` is the exact alias sent to llama.cpp.
+- `model_revision` is a required immutable release identifier for the loaded
+  weights. It is limited to 128 visible ASCII bytes without whitespace and must
+  change whenever the weights change under the same alias; it becomes part of
+  the capability-card fingerprint and calibration dataset identity.
 - `context_safety_tokens + default_max_output_tokens` must leave input
   capacity.
 - `max_in_flight` is Octoroute’s non-blocking semaphore. Match it to safe
@@ -134,17 +146,42 @@ OpenRouter-only plugins and non-text output always route cloud.
 
 `semantic_mode` is:
 
-- `disabled`: skip classification and proceed directly to local admission;
-- `shadow` (default): classify and record the bounded outcome, but never let
-  that outcome select cloud; local availability and context admission remain
-  authoritative;
-- `enforced`: honor `local` or `cloud` classifier decisions.
+- `disabled`: skip semantic forecasting and proceed directly to local admission;
+- `shadow` (default): forecast and record the bounded policy outcome, but never
+  let that outcome select cloud; local availability and context admission
+  remain authoritative;
+- `enforced`: honor the destination selected by deterministic forecast policy.
 
 `decision_timeout_ms` bounds semantic decisions in shadow and enforced modes.
-In shadow mode, a classifier failure does not select cloud when local capacity
+`local_success_threshold` is the minimum forecast probability for a supported
+request to remain local. `boundary_threshold_step` adds one step for uncertain
+or unmatched forecasts and two steps for unsupported forecasts. Both values
+must be finite probabilities, and the strictest threshold must not exceed one.
+In shadow mode, a forecasting failure does not select cloud when local capacity
 was already reserved. In enforced mode, a timeout, invalid decision, or local
 routing-model failure sends automatic traffic safely to OpenRouter. Explicit
 local and local-only requests always bypass semantic routing.
+
+`shadow_sample_rate` is a finite probability from `0.0` through `1.0` and
+defaults to `1.0`. It applies only to compatible automatic traffic in shadow
+mode. Octoroute hashes the server-generated request ID for a deterministic
+decision without hashing prompt content or retaining sampling state. Skipped
+requests continue through normal local admission and do not produce semantic
+forecast or decision metrics. `octoroute_semantic_sampling_total{outcome}`
+records the bounded `sampled` or `skipped` outcome. Enforced mode always runs
+the forecaster regardless of this setting. Keep the value at `1.0` for
+benchmark and calibration collection.
+
+`session_latch_enabled` is an optional enforced-mode refinement and is false by
+default. When enabled, `session_latch_evidence_threshold` consecutive cloud
+forecasts with the closed `unsupported`/`known_local_limit` evidence pair
+latch compatible automatic requests carrying the same valid `session_id` to
+cloud. `session_latch_ttl_ms` bounds both pending evidence and active latches;
+`session_latch_max_entries` bounds the in-memory table. Session IDs are limited
+to 128 non-control bytes for policy use and stored only as SHA-256 hashes. A
+non-hard forecast clears pending evidence. Explicit local and `local-only`
+requests always bypass the latch. Valid ranges are 1000-86400000 ms, 1-10000
+entries, and an evidence threshold of 2-10.
 
 `fallback_before_commit` only applies to automatic requests initially
 admitted locally. Forced-local privacy is never weakened.

@@ -69,7 +69,12 @@ Successful upstream responses include:
 - `X-Octoroute-Destination`
 - `X-Octoroute-Reason`
 - `X-Octoroute-Upstream`
+- `X-Octoroute-Request-Id`
 - `X-Request-Id`
+
+The Octoroute request ID is always the gateway-generated correlation UUID.
+`X-Request-Id` preserves a safe upstream value when present and otherwise
+matches it.
 
 Reason values are bounded:
 
@@ -86,11 +91,15 @@ local_early_failure
 cloud_default
 cloud_quality
 router_failure
+session_cloud_latch
 ```
 
 `cloud_quality` and `router_failure` are emitted only when semantic routing is
 `enforced`. In `shadow` mode, classifier outcomes are observable through
 metrics but do not replace the actual destination reason.
+`session_cloud_latch` is emitted only when the optional enforced-mode session
+latch is active for automatic traffic; explicit local and `local-only`
+requests bypass the latch.
 
 ### Errors
 

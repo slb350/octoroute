@@ -3,7 +3,7 @@ use super::{
     local::LocalLease,
     openrouter::OpenRouterRequest,
     service::GatewayService,
-    test_support::{gateway_config, gateway_config_with_server},
+    test_support::gateway_config,
     transport::{PreparedUpstreamResponse, UpstreamTransport},
 };
 use async_trait::async_trait;
@@ -225,14 +225,57 @@ pub(super) async fn mount_intelligent_route(
     destination: &str,
     slot_calls: u64,
 ) {
-    let content =
-        serde_json::to_string(&json!({"destination": destination})).expect("route decision");
-    mount_intelligent_response(server, &content, slot_calls).await;
+    let probability = if destination == "local" { 0.8 } else { 0.2 };
+    mount_intelligent_forecast(
+        server,
+        probability,
+        "supported",
+        "bounded_verification",
+        slot_calls,
+    )
+    .await;
+}
+
+pub(super) async fn mount_intelligent_forecast(
+    server: &MockServer,
+    probability: f64,
+    boundary: &str,
+    rule: &str,
+    slot_calls: u64,
+) {
+    mount_intelligent_forecast_count(server, probability, boundary, rule, 1, slot_calls).await;
+}
+
+pub(super) async fn mount_intelligent_forecast_count(
+    server: &MockServer,
+    probability: f64,
+    boundary: &str,
+    rule: &str,
+    forecast_calls: u64,
+    slot_calls: u64,
+) {
+    let content = serde_json::to_string(&json!({
+        "p_local_success": probability,
+        "capability_boundary": boundary,
+        "primary_rule": rule,
+        "crux": "The decisive capability boundary for this request."
+    }))
+    .expect("route forecast");
+    mount_intelligent_response_count(server, &content, forecast_calls, slot_calls).await;
 }
 
 pub(super) async fn mount_intelligent_response(
     server: &MockServer,
     content: &str,
+    slot_calls: u64,
+) {
+    mount_intelligent_response_count(server, content, 1, slot_calls).await;
+}
+
+pub(super) async fn mount_intelligent_response_count(
+    server: &MockServer,
+    content: &str,
+    forecast_calls: u64,
     slot_calls: u64,
 ) {
     mount_idle_local(server, slot_calls).await;
@@ -241,7 +284,7 @@ pub(super) async fn mount_intelligent_response(
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "choices": [{"message": {"content": content}}]
         })))
-        .expect(1)
+        .expect(forecast_calls)
         .mount(server)
         .await;
 }
@@ -252,12 +295,16 @@ pub(super) async fn mount_auto_local_admission(server: &MockServer) {
 }
 
 pub(super) async fn mount_input_tokens(server: &MockServer, input_tokens: u32) {
+    mount_input_tokens_count(server, input_tokens, 1).await;
+}
+
+pub(super) async fn mount_input_tokens_count(server: &MockServer, input_tokens: u32, calls: u64) {
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions/input_tokens"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(json!({"input_tokens": input_tokens})),
         )
-        .expect(1)
+        .expect(calls)
         .mount(server)
         .await;
 }
@@ -379,6 +426,14 @@ async fn committed_response_preserves_safe_upstream_request_id() {
         .await;
 
     assert_eq!(response.headers()["x-request-id"], "upstream-request-123");
+    let gateway_request_id = response
+        .headers()
+        .get("x-octoroute-request-id")
+        .expect("gateway correlation header")
+        .to_str()
+        .expect("ASCII request ID");
+    assert_ne!(gateway_request_id, "upstream-request-123");
+    uuid::Uuid::parse_str(gateway_request_id).expect("gateway request ID is a UUID");
 }
 
 #[tokio::test]
@@ -475,77 +530,4 @@ async fn automatic_local_connect_failure_falls_back_but_explicit_local_does_not(
             }
         );
     }
-}
-
-#[tokio::test]
-async fn authentication_fails_before_parsing_routing_or_upstream_work() {
-    let local = MockServer::start().await;
-    let config = gateway_config(&local.uri(), "", "", "");
-    let transport = FakeTransport::default();
-    let gateway = service(config, transport.clone());
-
-    let response = gateway
-        .handle_chat(&HeaderMap::new(), Bytes::from_static(b"not-json"))
-        .await;
-
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(response.headers()["www-authenticate"], "Bearer");
-    assert_eq!(transport.local_calls(), 0);
-    assert_eq!(transport.cloud_calls(), 0);
-    assert!(
-        local
-            .received_requests()
-            .await
-            .expect("requests")
-            .is_empty()
-    );
-    assert_eq!(
-        response_json(response).await["error"]["code"],
-        "authentication_error"
-    );
-}
-
-#[tokio::test]
-async fn oversized_headers_are_rejected_before_upstream_work() {
-    let local = MockServer::start().await;
-    let config = gateway_config_with_server(&local.uri(), "max_header_bytes = 64", "", "", "");
-    let transport = FakeTransport::default();
-    let gateway = service(config, transport.clone());
-    let mut headers = authorized_headers();
-    headers.insert(
-        "x-oversized",
-        HeaderValue::from_str(&"x".repeat(100)).expect("large test header"),
-    );
-
-    let response = gateway.handle_chat(&headers, body("cloud")).await;
-
-    assert_eq!(
-        response.status(),
-        StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE
-    );
-    assert_eq!(transport.local_calls(), 0);
-    assert_eq!(transport.cloud_calls(), 0);
-}
-
-#[tokio::test]
-async fn fixed_window_rate_limit_applies_after_authentication() {
-    let local = MockServer::start().await;
-    let config = gateway_config_with_server(&local.uri(), "requests_per_minute = 1", "", "", "");
-    let transport = FakeTransport::default().with_cloud(FakeResult::Response(
-        StatusCode::OK,
-        r#"{"model":"openai/gpt-5.2","choices":[]}"#,
-    ));
-    let gateway = service(config, transport.clone());
-
-    let first = gateway
-        .handle_chat(&authorized_headers(), body("cloud"))
-        .await;
-    let second = gateway
-        .handle_chat(&authorized_headers(), body("cloud"))
-        .await;
-
-    assert_eq!(first.status(), StatusCode::OK);
-    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(second.headers()["retry-after"], "60");
-    assert_eq!(transport.cloud_calls(), 1);
 }

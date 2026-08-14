@@ -2,6 +2,7 @@
 
 use clap::Parser;
 use octoroute::{
+    calibration::{CalibrationError, MAX_ARTIFACT_BYTES, analyze_jsonl},
     cli::{Cli, Command, generate_config_template},
     gateway::{
         config::{GatewayConfig, ProcessEnvironment},
@@ -12,6 +13,7 @@ use octoroute::{
     telemetry,
 };
 use std::{
+    io::{Read, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
 };
@@ -19,10 +21,46 @@ use std::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    if let Some(Command::Config { output }) = cli.command {
-        return handle_config_command(output);
+    match cli.command {
+        Some(Command::Config { output }) => handle_config_command(output),
+        Some(Command::Calibrate {
+            input,
+            output,
+            grid_step,
+        }) => handle_calibrate_command(&input, output, grid_step),
+        None => run_server(Path::new(&cli.config)).await,
     }
-    run_server(Path::new(&cli.config)).await
+}
+
+fn handle_calibrate_command(
+    input: &str,
+    output: Option<String>,
+    grid_step: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let artifact = read_bounded_artifact(std::fs::File::open(input)?, MAX_ARTIFACT_BYTES)?;
+    let report = analyze_jsonl(&artifact, grid_step)?;
+    match output {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            write_new_artifact(&path, "calibration report", report.as_bytes())?;
+        }
+        None => println!("{report}"),
+    }
+    Ok(())
+}
+
+fn read_bounded_artifact(
+    reader: impl Read,
+    max_bytes: usize,
+) -> Result<String, Box<dyn std::error::Error>> {
+    // Read one extra byte so non-regular or concurrently growing inputs cannot bypass the cap.
+    let read_limit = u64::try_from(max_bytes)?.saturating_add(1);
+    let mut bytes = Vec::new();
+    reader.take(read_limit).read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(CalibrationError::ArtifactTooLarge.into());
+    }
+    String::from_utf8(bytes).map_err(|_| CalibrationError::InvalidEncoding.into())
 }
 
 fn handle_config_command(output: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
@@ -30,14 +68,7 @@ fn handle_config_command(output: Option<String>) -> Result<(), Box<dyn std::erro
     match output {
         Some(path) => {
             let path = PathBuf::from(path);
-            if path.exists() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    format!("configuration file `{}` already exists", path.display()),
-                )
-                .into());
-            }
-            std::fs::write(&path, template)?;
+            write_new_artifact(&path, "configuration file", template.as_bytes())?;
             eprintln!("Octoroute v2 configuration written to {}", path.display());
             eprintln!(
                 "Add OCTOROUTE_API_KEY and OPENROUTER_API_KEY to {} or the process environment.",
@@ -50,6 +81,24 @@ fn handle_config_command(output: Option<String>) -> Result<(), Box<dyn std::erro
         None => print!("{template}"),
     }
     Ok(())
+}
+
+fn write_new_artifact(path: &Path, label: &str, contents: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                std::io::Error::new(
+                    error.kind(),
+                    format!("{label} `{}` already exists", path.display()),
+                )
+            } else {
+                error
+            }
+        })?;
+    file.write_all(contents)
 }
 
 async fn run_server(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -101,5 +150,24 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => tracing::info!("received SIGINT"),
         _ = terminate => tracing::info!("received SIGTERM"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calibration_reader_enforces_limit_during_read() {
+        let accepted = read_bounded_artifact(std::io::Cursor::new(b"test"), 4)
+            .expect("artifact at the byte limit");
+        assert_eq!(accepted, "test");
+
+        let error = read_bounded_artifact(std::io::repeat(b'x'), 4)
+            .expect_err("an unbounded reader must stop at the byte limit");
+        assert!(matches!(
+            error.downcast_ref::<CalibrationError>(),
+            Some(CalibrationError::ArtifactTooLarge)
+        ));
     }
 }

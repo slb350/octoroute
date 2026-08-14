@@ -1,10 +1,12 @@
 use super::*;
 use crate::gateway::{
     config::SemanticRoutingMode,
-    intelligence::{IntelligentRoute, IntelligentRouterError},
+    intelligence::{IntelligentRoute, IntelligentRouterError, SemanticAssessment},
     local::AdmissionOutcome,
-    metrics::SemanticDecisionOutcome,
+    metrics::{SemanticDecisionOutcome, SemanticSamplingOutcome},
     routing::{LocalRoutePlan, RoutePlan, RoutePolicy},
+    sampling::DeterministicSampler,
+    trajectory::TrajectorySignals,
 };
 use tokio::sync::OwnedSemaphorePermit;
 
@@ -37,8 +39,24 @@ where
             }
             RoutePlan::Local(local_plan) => {
                 let reservation = if local_plan.is_automatic() {
+                    let session_key = self
+                        .session_latch
+                        .as_ref()
+                        .and_then(|_| request.session_id())
+                        .map(SessionKey::new);
+                    if self.session_is_latched(session_key) {
+                        self.record_routing_duration(routing_started);
+                        return self
+                            .dispatch_cloud(
+                                request,
+                                intent,
+                                RouteReason::SessionCloudLatch,
+                                request_id,
+                            )
+                            .await;
+                    }
                     match self
-                        .apply_semantic_mode(&request, local_plan, request_id)
+                        .apply_semantic_mode(&request, local_plan, session_key, request_id)
                         .await
                     {
                         SemanticRouteAction::Admit(reservation) => reservation,
@@ -69,18 +87,51 @@ where
         &self,
         request: &GatewayRequest,
         local_plan: LocalRoutePlan,
+        session_key: Option<SessionKey>,
         request_id: &str,
     ) -> SemanticRouteAction {
         let mode = self.config.routing().semantic_mode();
         if mode == SemanticRoutingMode::Disabled {
             return SemanticRouteAction::Admit(None);
         }
-        match self.intelligent_router.route(request).await {
+        let trajectory = if mode == SemanticRoutingMode::Shadow {
+            let sampled = DeterministicSampler::new(self.config.routing().shadow_sample_rate())
+                .includes(request_id);
+            let outcome = if sampled {
+                SemanticSamplingOutcome::Sampled
+            } else {
+                SemanticSamplingOutcome::Skipped
+            };
+            if let Err(error) = self.metrics.record_semantic_sampling(outcome) {
+                tracing::warn!(%error, "failed to record semantic sampling metric");
+            }
+            if !sampled {
+                return SemanticRouteAction::Admit(None);
+            }
+            TrajectorySignals::extract(request)
+        } else {
+            None
+        };
+        if let Some(signals) = trajectory.as_ref() {
+            record_trajectory_signals(request_id, signals);
+        }
+        let route = self
+            .intelligent_router
+            .route(request, trajectory.as_ref())
+            .await;
+        let hard_evidence = matches!(
+            &route,
+            IntelligentRoute::Observed { assessment, .. }
+                if assessment.is_hard_cloud_evidence()
+        );
+        self.update_session_latch(session_key, hard_evidence);
+        match route {
             IntelligentRoute::Observed {
-                destination,
+                assessment,
                 reservation,
             } => {
-                self.record_semantic_observation(mode, request_id, Ok(destination));
+                self.record_semantic_observation(mode, request_id, Ok(assessment));
+                let destination = assessment.destination();
                 if mode == SemanticRoutingMode::Enforced && destination == RouteDestination::Cloud {
                     SemanticRouteAction::Cloud(RouteReason::CloudQuality)
                 } else {
@@ -103,25 +154,60 @@ where
         }
     }
 
+    fn session_is_latched(&self, key: Option<SessionKey>) -> bool {
+        self.session_latch
+            .as_ref()
+            .zip(key)
+            .is_some_and(|(latch, key)| latch.is_latched(key))
+    }
+
+    fn update_session_latch(&self, key: Option<SessionKey>, hard_evidence: bool) {
+        let Some((latch, key)) = self.session_latch.as_ref().zip(key) else {
+            return;
+        };
+        if hard_evidence {
+            latch.record_hard_evidence(key);
+        } else {
+            latch.clear_pending(key);
+        }
+    }
+
     fn record_semantic_observation(
         &self,
         mode: SemanticRoutingMode,
         request_id: &str,
-        outcome: Result<RouteDestination, &IntelligentRouterError>,
+        outcome: Result<SemanticAssessment, &IntelligentRouterError>,
     ) {
         let metric_outcome = match outcome {
-            Ok(destination) => SemanticDecisionOutcome::from(destination),
+            Ok(assessment) => SemanticDecisionOutcome::from(assessment.destination()),
             Err(_) => SemanticDecisionOutcome::Failure,
         };
         if let Err(error) = self.metrics.record_semantic_decision(mode, metric_outcome) {
             tracing::warn!(%error, "failed to record semantic routing metric");
         }
+        if let Ok(assessment) = outcome
+            && let Err(error) = self.metrics.record_semantic_forecast(
+                mode,
+                assessment.boundary(),
+                assessment.local_success_probability(),
+            )
+        {
+            tracing::warn!(%error, "failed to record semantic forecast metric");
+        }
         if mode == SemanticRoutingMode::Shadow {
             match outcome {
-                Ok(destination) => tracing::debug!(
+                Ok(assessment) => tracing::debug!(
                     request_id,
-                    semantic_destination = destination.as_str(),
-                    "observed shadow semantic routing decision"
+                    semantic_destination = assessment.destination().as_str(),
+                    capability_boundary = assessment.boundary().as_str(),
+                    semantic_primary_rule = assessment.primary_rule(),
+                    local_success_probability = assessment.local_success_probability(),
+                    required_probability = assessment.required_probability(),
+                    model_revision = self.config.local().model_revision(),
+                    capability_card_version = self.intelligent_router.capability_card_version(),
+                    capability_card_fingerprint =
+                        self.intelligent_router.capability_card_fingerprint(),
+                    "observed shadow semantic routing forecast"
                 ),
                 Err(error) => tracing::warn!(
                     request_id,
@@ -182,6 +268,18 @@ where
             ),
         }
     }
+}
+
+fn record_trajectory_signals(request_id: &str, signals: &TrajectorySignals) {
+    tracing::debug!(
+        request_id,
+        trajectory_error_severity = signals.error_severity(),
+        trajectory_clean_streak = signals.clean_streak(),
+        trajectory_environment = signals.environment(),
+        trajectory_test_status = signals.test_status(),
+        trajectory_context_compacted = signals.context_compacted(),
+        "observed verified shadow trajectory signals"
+    );
 }
 
 fn semantic_failure_reason(

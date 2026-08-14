@@ -7,6 +7,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Replace binary local-model route selection with a strict local-success
+  forecast and deterministic, configurable threshold policy. Shadow remains
+  the default while the provisional thresholds await labeled calibration.
+- Add a versioned Strix capability card derived from configured local identity
+  and capabilities, including measured limitations and anti-framing guidance;
+  calibration binds rows to a SHA-256 fingerprint of the rendered card.
+- Expose bounded local-success probability histograms by semantic mode and
+  capability boundary without using generated text as metric labels.
+- Add an offline `calibrate` command for strict labeled JSONL artifacts,
+  calibration bins, Brier score, threshold sweeps, baseline comparison,
+  latency, cloud outcomes, and estimated cloud cost. Bin bounds are explicit,
+  and online/offline threshold equality shares one roundoff-safe comparator.
+- Add shadow-only deterministic trajectory evidence from strict, paired typed
+  tool results, with bounded error, recovery, environment, test, and context
+  signals and fail-closed abstention.
+- Add an opt-in enforced-mode cloud-only session latch using consecutive hard
+  forecast evidence, bounded SHA-256-hashed state, TTL expiry, deterministic
+  eviction, and forced-local overrides.
+- Add deterministic request-ID-based shadow sampling with a full-observation
+  default, bounded sampled/skipped metrics, and enforced-mode isolation.
+
+### Fixed
+
+- Bind capability cards and calibration artifacts to a required immutable local
+  model revision, so changing weights under a stable alias invalidates prior
+  calibration.
+- Keep calibration failures bounded for malformed UTF-8, reject cloud costs
+  that cannot produce finite reports, and align offline bins with Prometheus's
+  upper-inclusive deciles.
+- Sweep expired session state on every latch operation and preserve active
+  latches under capacity pressure by evicting pending entries only.
+- Expose a dedicated gateway correlation header without overwriting safe
+  upstream request IDs, and restore lowercase `RouteDestination`
+  deserialization for downstream callers.
+
 ## [2.1.2] - 2026-08-08
 
 ### Fixed
