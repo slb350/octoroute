@@ -84,7 +84,7 @@ The local judge returns a strict object equivalent to:
 {
   "p_local_success": 0.72,
   "capability_boundary": "uncertain",
-  "primary_rule": "bounded_verification",
+  "primary_rule": "ambiguous_requirements",
   "crux": "Requires a correct recursive query across an underspecified schema"
 }
 ```
