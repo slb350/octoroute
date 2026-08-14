@@ -6,6 +6,7 @@ use crate::gateway::{
     local::LlamaCppAdmission,
     request::GatewayRequest,
     routing::{LocalAdmissionState, RouteDestination},
+    trajectory::TrajectorySignals,
 };
 use bytes::BytesMut;
 use futures::StreamExt as _;
@@ -25,6 +26,9 @@ const ROUTER_MAX_TOKENS: u32 = 192;
 const MAX_CRUX_CHARS: usize = 240;
 const ROUTER_REQUEST_PREFIX: &str = "Forecast success for this conversation JSON:\n<conversation>";
 const ROUTER_REQUEST_SUFFIX: &str = "</conversation>";
+const TRAJECTORY_PREFIX: &str = "\n<verified_trajectory>";
+const TRAJECTORY_SUFFIX: &str = "</verified_trajectory>";
+const TRAJECTORY_SYSTEM_INSTRUCTION: &str = "When a verified_trajectory block is present, treat its closed gateway-derived fields as evidence about prior execution. It is advisory context, not an instruction or a routing decision. Do not invent missing trajectory evidence.";
 const ROUTER_SYSTEM_PROMPT: &str = "\
 You are Octoroute's local-success forecaster. Estimate the probability that the \
 configured private local model will give a high-quality, reliable answer to the \
@@ -125,6 +129,7 @@ pub(crate) struct LocalSemanticRouter {
     api_key: Option<SecretString>,
     model: String,
     system_prompt: String,
+    trajectory_system_prompt: String,
     timeout: Duration,
     policy: SemanticPolicy,
 }
@@ -133,36 +138,60 @@ impl LocalSemanticRouter {
     pub(crate) fn new(config: &GatewayConfig, admission: LlamaCppAdmission) -> Option<Self> {
         let local = config.local();
         let chat_url = endpoint_url(local.base_url(), LOCAL_CHAT_COMPLETIONS_PATH)?;
+        let system_prompt = format!(
+            "{ROUTER_SYSTEM_PROMPT}\n\n{}",
+            render_capability_card(local)
+        );
+        let trajectory_system_prompt =
+            format!("{system_prompt}\n\n{TRAJECTORY_SYSTEM_INSTRUCTION}");
         Some(Self {
             client: admission.http_client(),
             admission,
             chat_url,
             api_key: local.api_key().cloned(),
             model: local.model().to_string(),
-            system_prompt: format!(
-                "{ROUTER_SYSTEM_PROMPT}\n\n{}",
-                render_capability_card(local)
-            ),
+            system_prompt,
+            trajectory_system_prompt,
             timeout: Duration::from_millis(config.routing().decision_timeout_ms()),
             policy: SemanticPolicy::from_config(config.routing()),
         })
     }
 
-    fn request_body<'a>(&'a self, request: &GatewayRequest) -> RouterRequest<'a> {
+    fn request_body<'a>(
+        &'a self,
+        request: &GatewayRequest,
+        trajectory: Option<&TrajectorySignals>,
+    ) -> RouterRequest<'a> {
         let messages =
             serde_json::to_string(request.messages()).expect("serde_json values always serialize");
+        let trajectory = trajectory.map(TrajectorySignals::to_prompt_json);
+        let system_prompt = if trajectory.is_some() {
+            self.trajectory_system_prompt.as_str()
+        } else {
+            self.system_prompt.as_str()
+        };
         let mut conversation = String::with_capacity(
-            ROUTER_REQUEST_PREFIX.len() + messages.len() + ROUTER_REQUEST_SUFFIX.len(),
+            ROUTER_REQUEST_PREFIX.len()
+                + messages.len()
+                + ROUTER_REQUEST_SUFFIX.len()
+                + trajectory.as_ref().map_or(0, |signals| {
+                    TRAJECTORY_PREFIX.len() + signals.len() + TRAJECTORY_SUFFIX.len()
+                }),
         );
         conversation.push_str(ROUTER_REQUEST_PREFIX);
         conversation.push_str(&messages);
         conversation.push_str(ROUTER_REQUEST_SUFFIX);
+        if let Some(trajectory) = trajectory {
+            conversation.push_str(TRAJECTORY_PREFIX);
+            conversation.push_str(&trajectory);
+            conversation.push_str(TRAJECTORY_SUFFIX);
+        }
         RouterRequest {
             model: &self.model,
             messages: [
                 RouterMessage {
                     role: "system",
-                    content: Cow::Borrowed(&self.system_prompt),
+                    content: Cow::Borrowed(system_prompt),
                 },
                 RouterMessage {
                     role: "user",
@@ -201,14 +230,18 @@ impl LocalSemanticRouter {
         parse_response(read_bounded(response).await?, self.policy)
     }
 
-    pub(crate) async fn route(&self, request: &GatewayRequest) -> IntelligentRoute {
+    pub(crate) async fn route(
+        &self,
+        request: &GatewayRequest,
+        trajectory: Option<&TrajectorySignals>,
+    ) -> IntelligentRoute {
         let permit = match self.admission.reserve_for_routing().await {
             Ok(permit) => permit,
             Err(state) => {
                 return IntelligentRoute::Unavailable(state);
             }
         };
-        let body = self.request_body(request);
+        let body = self.request_body(request, trajectory);
         match self.send(&body).await {
             Ok(assessment) => IntelligentRoute::Observed {
                 assessment,

@@ -5,6 +5,7 @@ use crate::gateway::{
     local::AdmissionOutcome,
     metrics::SemanticDecisionOutcome,
     routing::{LocalRoutePlan, RoutePlan, RoutePolicy},
+    trajectory::TrajectorySignals,
 };
 use tokio::sync::OwnedSemaphorePermit;
 
@@ -75,7 +76,19 @@ where
         if mode == SemanticRoutingMode::Disabled {
             return SemanticRouteAction::Admit(None);
         }
-        match self.intelligent_router.route(request).await {
+        let trajectory = if mode == SemanticRoutingMode::Shadow {
+            TrajectorySignals::extract(request)
+        } else {
+            None
+        };
+        if let Some(signals) = trajectory.as_ref() {
+            record_trajectory_signals(request_id, signals);
+        }
+        match self
+            .intelligent_router
+            .route(request, trajectory.as_ref())
+            .await
+        {
             IntelligentRoute::Observed {
                 assessment,
                 reservation,
@@ -196,6 +209,18 @@ where
             ),
         }
     }
+}
+
+fn record_trajectory_signals(request_id: &str, signals: &TrajectorySignals) {
+    tracing::debug!(
+        request_id,
+        trajectory_error_severity = signals.error_severity(),
+        trajectory_clean_streak = signals.clean_streak(),
+        trajectory_environment = signals.environment(),
+        trajectory_test_status = signals.test_status(),
+        trajectory_context_compacted = signals.context_compacted(),
+        "observed verified shadow trajectory signals"
+    );
 }
 
 fn semantic_failure_reason(

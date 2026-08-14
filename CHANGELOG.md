@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add an offline `calibrate` command for strict labeled JSONL artifacts,
   calibration bins, Brier score, threshold sweeps, baseline comparison,
   latency, cloud outcomes, and estimated cloud cost.
+- Add shadow-only deterministic trajectory evidence from strict, paired typed
+  tool results, with bounded error, recovery, environment, test, and context
+  signals and fail-closed abstention.
 
 ## [2.1.2] - 2026-08-08
 

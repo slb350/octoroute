@@ -113,6 +113,9 @@ The forecast prompt includes the versioned
 `octoroute-strix-capability-card/v1`. It identifies the configured local alias,
 lists only capabilities enabled in configuration, and records measured local
 limitations without exposing URLs, credentials, prompts, or runtime state.
+In shadow mode only, explicitly typed and paired tool results can contribute
+closed trajectory evidence; malformed, ordinary, or unsupported tool history
+abstains, and the evidence never selects a route directly.
 
 This profile is for running Octoroute on Strix. The `config.laptop.toml`
 profile instead binds Octoroute to laptop loopback and uses
@@ -206,6 +209,7 @@ See:
 - [Deployment](docs/deployment.md)
 - [Observability](docs/observability.md)
 - [Forecast calibration](docs/calibration.md)
+- [Trajectory signals](docs/trajectory-signals.md)
 - [Development](docs/development.md)
 
 ## Development

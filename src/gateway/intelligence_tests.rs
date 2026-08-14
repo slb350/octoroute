@@ -4,11 +4,94 @@ use super::{
         mount_auto_local_admission, mount_input_tokens, mount_intelligent_forecast,
         mount_intelligent_response, mount_intelligent_route, mount_local_admission, service,
     },
-    test_support::gateway_config,
+    test_support::{
+        gateway_config, gateway_config_with_local_capabilities, trajectory_tool_call,
+        trajectory_tool_result,
+    },
 };
 use axum::http::StatusCode;
+use bytes::Bytes;
 use serde_json::json;
 use wiremock::MockServer;
+
+fn body_with_trajectory(model: &str) -> Bytes {
+    Bytes::from(
+        serde_json::to_vec(&json!({
+            "model": model,
+            "messages": [
+                trajectory_tool_call("call-1"),
+                trajectory_tool_result("call-1", json!({
+            "outcome": "failure",
+            "error_severity": "hard",
+            "environment": "production",
+            "test_status": "failed",
+            "context_compacted": true
+                })),
+                {"role": "user", "content": "Recover and continue."}
+            ]
+        }))
+        .expect("serialize trajectory request"),
+    )
+}
+
+async fn assert_trajectory_forecast_context(mode: &str, expects_trajectory: bool) {
+    let local = MockServer::start().await;
+    mount_intelligent_forecast(&local, 0.9, "supported", "bounded_verification", 1).await;
+    mount_input_tokens(&local, 10).await;
+    let config = gateway_config_with_local_capabilities(
+        &local.uri(),
+        r#"["chat", "stream", "tools"]"#,
+        "",
+        &format!("semantic_mode = \"{mode}\""),
+    );
+    let gateway = service(
+        config,
+        FakeTransport::default().with_local(FakeResult::Response(
+            StatusCode::OK,
+            r#"{"model":"puzzle-75b","choices":[]}"#,
+        )),
+    );
+
+    let response = gateway
+        .handle_chat(&authorized_headers(), body_with_trajectory("auto"))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = local.received_requests().await.expect("received requests");
+    let classifier: serde_json::Value = requests
+        .iter()
+        .find(|request| {
+            request.method.as_str() == "POST" && request.url.path() == "/v1/chat/completions"
+        })
+        .map(|request| serde_json::from_slice(&request.body).expect("classifier JSON"))
+        .expect("classifier request");
+    let prompt = classifier["messages"][1]["content"]
+        .as_str()
+        .expect("forecast prompt");
+    let system_prompt = classifier["messages"][0]["content"]
+        .as_str()
+        .expect("forecast system prompt");
+    assert_eq!(prompt.contains("<verified_trajectory>"), expects_trajectory);
+    assert_eq!(
+        system_prompt.contains("verified_trajectory block"),
+        expects_trajectory
+    );
+    if expects_trajectory {
+        assert!(prompt.contains(r#""error_severity":"hard""#));
+        assert!(prompt.contains(r#""environment":"production""#));
+        assert!(prompt.contains(r#""context_compacted":true"#));
+    }
+}
+
+#[tokio::test]
+async fn verified_trajectory_evidence_is_added_to_shadow_forecasts() {
+    assert_trajectory_forecast_context("shadow", true).await;
+}
+
+#[tokio::test]
+async fn enforced_forecasts_remain_free_of_trajectory_context() {
+    assert_trajectory_forecast_context("enforced", false).await;
+}
 
 #[tokio::test]
 async fn auto_routes_hard_work_to_openrouter_auto_even_when_local_is_idle() {

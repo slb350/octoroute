@@ -1,6 +1,6 @@
 # Calibrated semantic routing
 
-Status: implementation in progress; forecast-policy foundation complete
+Status: implementation in progress; milestones 1-4 implemented, evaluation pending
 
 Decision date: 2026-08-14
 
@@ -233,10 +233,10 @@ forecasts.
 
 ### 4. Deterministic trajectory signals
 
-- Extract signals only from verified typed tool-call/result history.
-- Begin with shadow-only error severity, clean streak, production, clean test,
+- [x] Extract signals only from verified typed tool-call/result history.
+- [x] Begin with shadow-only error severity, clean streak, production, clean test,
   and context-compaction evidence.
-- Abstain when history is absent, malformed, or unsupported locally.
+- [x] Abstain when history is absent, malformed, or unsupported locally.
 - Evaluate signal-only, forecast-only, and combined policies separately.
 
 ### 5. Optional operational refinements

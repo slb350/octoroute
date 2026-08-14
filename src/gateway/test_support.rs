@@ -2,7 +2,7 @@ use super::{
     config::{Environment, GatewayConfig},
     request::GatewayRequest,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 #[derive(Debug, Default)]
@@ -44,16 +44,58 @@ pub(super) fn gateway_request(body: Value) -> GatewayRequest {
         .expect("valid request fixture")
 }
 
+pub(super) fn trajectory_tool_call(id: &str) -> Value {
+    json!({
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [{
+            "id": id,
+            "type": "function",
+            "function": {"name": "run", "arguments": "{}"}
+        }]
+    })
+}
+
+pub(super) fn trajectory_tool_result(id: &str, trajectory: Value) -> Value {
+    json!({
+        "role": "tool",
+        "tool_call_id": id,
+        "content": serde_json::to_string(&json!({
+            "type": "octoroute.trajectory/v1",
+            "trajectory": trajectory,
+            "result": {"bounded": true}
+        }))
+        .expect("serialize typed tool result")
+    })
+}
+
 pub(super) fn gateway_config(
     local_base_url: &str,
     extra_local: &str,
     extra_openrouter: &str,
     extra_routing: &str,
 ) -> GatewayConfig {
-    gateway_config_with_server(
+    gateway_config_complete(
         local_base_url,
         "",
+        r#"["chat", "stream"]"#,
         extra_local,
+        extra_openrouter,
+        extra_routing,
+    )
+}
+
+pub(super) fn gateway_config_with_local_capabilities(
+    local_base_url: &str,
+    capabilities: &str,
+    extra_openrouter: &str,
+    extra_routing: &str,
+) -> GatewayConfig {
+    gateway_config_complete(
+        local_base_url,
+        "",
+        capabilities,
+        "",
         extra_openrouter,
         extra_routing,
     )
@@ -62,6 +104,24 @@ pub(super) fn gateway_config(
 pub(super) fn gateway_config_with_server(
     local_base_url: &str,
     extra_server: &str,
+    extra_local: &str,
+    extra_openrouter: &str,
+    extra_routing: &str,
+) -> GatewayConfig {
+    gateway_config_complete(
+        local_base_url,
+        extra_server,
+        r#"["chat", "stream"]"#,
+        extra_local,
+        extra_openrouter,
+        extra_routing,
+    )
+}
+
+fn gateway_config_complete(
+    local_base_url: &str,
+    extra_server: &str,
+    capabilities: &str,
     extra_local: &str,
     extra_openrouter: &str,
     extra_routing: &str,
@@ -85,7 +145,7 @@ context_window = 65536
 context_safety_tokens = 1024
 default_max_output_tokens = 4096
 max_in_flight = 1
-capabilities = ["chat", "stream"]
+capabilities = {capabilities}
 health_path = "/health"
 slots_path = "/slots?fail_on_no_slot=1"
 input_tokens_path = "/v1/chat/completions/input_tokens"

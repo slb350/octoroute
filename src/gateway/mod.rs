@@ -12,6 +12,7 @@ pub mod openrouter;
 pub mod request;
 pub mod routing;
 pub mod service;
+pub(crate) mod trajectory;
 pub mod transport;
 
 #[cfg(test)]
@@ -42,5 +43,7 @@ mod service_limits_tests;
 mod service_tests;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod trajectory_tests;
 #[cfg(test)]
 mod transport_tests;
