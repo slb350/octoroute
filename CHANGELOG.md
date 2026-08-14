@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace binary local-model route selection with a strict local-success
   forecast and deterministic, configurable threshold policy. Shadow remains
   the default while the provisional thresholds await labeled calibration.
+- Add a versioned Strix capability card derived from configured local identity
+  and capabilities, including measured limitations and anti-framing guidance.
 
 ## [2.1.2] - 2026-08-08
 

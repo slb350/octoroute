@@ -109,6 +109,11 @@ validated against representative labeled traffic. Shadow and enforced modes
 add one local forecasting inference—about 760–1500 ms in the measured Strix
 profile—to compatible `auto` requests.
 
+The forecast prompt includes the versioned
+`octoroute-strix-capability-card/v1`. It identifies the configured local alias,
+lists only capabilities enabled in configuration, and records measured local
+limitations without exposing URLs, credentials, prompts, or runtime state.
+
 This profile is for running Octoroute on Strix. The `config.laptop.toml`
 profile instead binds Octoroute to laptop loopback and uses
 `http://strix.local:8080` as the local upstream.

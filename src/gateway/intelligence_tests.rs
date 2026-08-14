@@ -54,6 +54,17 @@ async fn auto_routes_hard_work_to_openrouter_auto_even_when_local_is_idle() {
     assert_eq!(classifier["model"], "puzzle-75b");
     assert_eq!(classifier["stream"], false);
     assert_eq!(classifier["chat_template_kwargs"]["enable_thinking"], false);
+    let system_prompt = classifier["messages"][0]["content"]
+        .as_str()
+        .expect("semantic system prompt");
+    assert!(system_prompt.contains("octoroute-strix-capability-card/v1"));
+    assert!(system_prompt.contains(r#"upstream_name: "strix""#));
+    assert!(system_prompt.contains(r#"model_alias: "puzzle-75b""#));
+    assert!(system_prompt.contains(r#"enabled_capabilities: ["chat","stream"]"#));
+    assert!(system_prompt.contains(r#"disabled_capabilities: ["tools","structured_output""#));
+    assert!(system_prompt.contains("recursive SQL"));
+    assert!(system_prompt.contains("Never infer difficulty from terse wording"));
+    assert!(!system_prompt.contains(&local.uri()));
     let schema = &classifier["response_format"]["json_schema"]["schema"];
     assert_eq!(
         schema["required"],

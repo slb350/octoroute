@@ -2,7 +2,7 @@
 
 use reqwest::Url;
 use secrecy::SecretString;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, net::IpAddr};
 use thiserror::Error;
 
@@ -181,7 +181,7 @@ impl ServerConfig {
 }
 
 /// Capabilities which may be admitted to the local model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalCapability {
     /// OpenAI chat-completion messages.
@@ -200,6 +200,19 @@ pub enum LocalCapability {
     VideoInput,
     /// Reasoning controls or reasoning content.
     Reasoning,
+}
+
+impl LocalCapability {
+    pub(crate) const ALL: [Self; 8] = [
+        Self::Chat,
+        Self::Stream,
+        Self::Tools,
+        Self::StructuredOutput,
+        Self::ImageInput,
+        Self::AudioInput,
+        Self::VideoInput,
+        Self::Reasoning,
+    ];
 }
 
 /// llama.cpp upstream and admission settings.
