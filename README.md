@@ -94,13 +94,19 @@ cost_quality_tradeoff = 9
 [routing]
 semantic_mode = "shadow"
 decision_timeout_ms = 30000
+local_success_threshold = 0.50
+boundary_threshold_step = 0.10
 ```
 
 `semantic_mode` is `disabled`, `shadow`, or `enforced`. Shadow is the default:
-it records the classifier outcome without letting that outcome select the
-destination. Enforced mode should be enabled only after its judgment is
+it records the forecast-derived outcome without letting that outcome select
+the destination. The local model forecasts `p_local_success` and a closed
+capability boundary; Octoroute—not the model—applies the configured threshold.
+`boundary_threshold_step` raises that threshold for uncertain, unsupported,
+and unmatched forecasts, with two steps for unsupported forecasts. Enforced
+mode should be enabled only after its judgment is
 validated against representative labeled traffic. Shadow and enforced modes
-add one local classifier inference—about 760–1500 ms in the measured Strix
+add one local forecasting inference—about 760–1500 ms in the measured Strix
 profile—to compatible `auto` requests.
 
 This profile is for running Octoroute on Strix. The `config.laptop.toml`

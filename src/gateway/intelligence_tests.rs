@@ -1,8 +1,8 @@
 use super::{
     service_tests::{
         FakeResult, FakeTransport, authorized_headers, body_with_prompt,
-        mount_auto_local_admission, mount_input_tokens, mount_intelligent_response,
-        mount_intelligent_route, mount_local_admission, service,
+        mount_auto_local_admission, mount_input_tokens, mount_intelligent_forecast,
+        mount_intelligent_response, mount_intelligent_route, mount_local_admission, service,
     },
     test_support::gateway_config,
 };
@@ -54,10 +54,131 @@ async fn auto_routes_hard_work_to_openrouter_auto_even_when_local_is_idle() {
     assert_eq!(classifier["model"], "puzzle-75b");
     assert_eq!(classifier["stream"], false);
     assert_eq!(classifier["chat_template_kwargs"]["enable_thinking"], false);
+    let schema = &classifier["response_format"]["json_schema"]["schema"];
     assert_eq!(
-        classifier["response_format"]["json_schema"]["schema"]["properties"]["destination"]["enum"],
-        json!(["local", "cloud"])
+        schema["required"],
+        json!([
+            "p_local_success",
+            "capability_boundary",
+            "primary_rule",
+            "crux"
+        ])
     );
+    assert_eq!(schema["properties"]["p_local_success"]["minimum"], 0.0);
+    assert_eq!(schema["properties"]["p_local_success"]["maximum"], 1.0);
+    assert_eq!(
+        schema["properties"]["capability_boundary"]["enum"],
+        json!(["supported", "uncertain", "unsupported", "unmatched"])
+    );
+}
+
+#[tokio::test]
+async fn capability_boundary_adjusts_the_deterministic_local_threshold() {
+    for (probability, boundary, rule, routing, expected_destination) in [
+        (
+            0.55,
+            "supported",
+            "bounded_verification",
+            "semantic_mode = \"enforced\"",
+            "local",
+        ),
+        (
+            0.55,
+            "uncertain",
+            "ambiguous_requirements",
+            "semantic_mode = \"enforced\"",
+            "cloud",
+        ),
+        (
+            0.60,
+            "uncertain",
+            "ambiguous_requirements",
+            "semantic_mode = \"enforced\"",
+            "local",
+        ),
+        (
+            0.65,
+            "supported",
+            "bounded_verification",
+            "semantic_mode = \"enforced\"\nlocal_success_threshold = 0.70",
+            "cloud",
+        ),
+        (
+            0.65,
+            "unsupported",
+            "known_local_limit",
+            "semantic_mode = \"enforced\"",
+            "cloud",
+        ),
+        (
+            0.65,
+            "unmatched",
+            "no_matching_rule",
+            "semantic_mode = \"enforced\"",
+            "local",
+        ),
+    ] {
+        let local = MockServer::start().await;
+        mount_intelligent_forecast(&local, probability, boundary, rule, 1).await;
+        if expected_destination == "local" {
+            mount_input_tokens(&local, 10).await;
+        }
+        let config = gateway_config(&local.uri(), "", "", routing);
+        let transport = FakeTransport::default()
+            .with_local(FakeResult::Response(
+                StatusCode::OK,
+                r#"{"model":"puzzle-75b","choices":[]}"#,
+            ))
+            .with_cloud(FakeResult::Response(
+                StatusCode::OK,
+                r#"{"model":"openai/gpt-5.2","choices":[]}"#,
+            ));
+        let gateway = service(config, transport);
+
+        let response = gateway
+            .handle_chat(
+                &authorized_headers(),
+                body_with_prompt("auto", "Evaluate a boundary-sensitive task"),
+            )
+            .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()["x-octoroute-destination"],
+            expected_destination
+        );
+    }
+}
+
+#[tokio::test]
+async fn invalid_forecast_fails_safely_to_openrouter_auto() {
+    for content in [
+        r#"{"p_local_success":1.1,"capability_boundary":"supported","primary_rule":"bounded_verification","crux":"Impossible confidence."}"#,
+        r#"{"p_local_success":0.8,"capability_boundary":"unsupported","primary_rule":"bounded_verification","crux":"Rule and boundary disagree."}"#,
+        r#"{"p_local_success":0.8,"capability_boundary":"supported","primary_rule":"bounded_verification","crux":" "}"#,
+        r#"{"p_local_success":0.8,"capability_boundary":"supported","primary_rule":"invented_rule","crux":"Unknown rule."}"#,
+    ] {
+        let local = MockServer::start().await;
+        mount_intelligent_response(&local, content, 1).await;
+        let config = gateway_config(&local.uri(), "", "", "semantic_mode = \"enforced\"");
+        let transport = FakeTransport::default().with_cloud(FakeResult::Response(
+            StatusCode::OK,
+            r#"{"model":"openai/gpt-5.2","choices":[]}"#,
+        ));
+        let gateway = service(config, transport.clone());
+
+        let response = gateway
+            .handle_chat(
+                &authorized_headers(),
+                body_with_prompt("auto", "A task with an invalid forecast"),
+            )
+            .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["x-octoroute-destination"], "cloud");
+        assert_eq!(response.headers()["x-octoroute-reason"], "router_failure");
+        assert_eq!(transport.cloud_calls(), 1);
+    }
 }
 
 #[tokio::test]

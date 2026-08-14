@@ -1,7 +1,7 @@
 use super::*;
 use crate::gateway::{
     config::SemanticRoutingMode,
-    intelligence::{IntelligentRoute, IntelligentRouterError},
+    intelligence::{IntelligentRoute, IntelligentRouterError, SemanticAssessment},
     local::AdmissionOutcome,
     metrics::SemanticDecisionOutcome,
     routing::{LocalRoutePlan, RoutePlan, RoutePolicy},
@@ -77,10 +77,11 @@ where
         }
         match self.intelligent_router.route(request).await {
             IntelligentRoute::Observed {
-                destination,
+                assessment,
                 reservation,
             } => {
-                self.record_semantic_observation(mode, request_id, Ok(destination));
+                self.record_semantic_observation(mode, request_id, Ok(assessment));
+                let destination = assessment.destination();
                 if mode == SemanticRoutingMode::Enforced && destination == RouteDestination::Cloud {
                     SemanticRouteAction::Cloud(RouteReason::CloudQuality)
                 } else {
@@ -107,10 +108,10 @@ where
         &self,
         mode: SemanticRoutingMode,
         request_id: &str,
-        outcome: Result<RouteDestination, &IntelligentRouterError>,
+        outcome: Result<SemanticAssessment, &IntelligentRouterError>,
     ) {
         let metric_outcome = match outcome {
-            Ok(destination) => SemanticDecisionOutcome::from(destination),
+            Ok(assessment) => SemanticDecisionOutcome::from(assessment.destination()),
             Err(_) => SemanticDecisionOutcome::Failure,
         };
         if let Err(error) = self.metrics.record_semantic_decision(mode, metric_outcome) {
@@ -118,10 +119,12 @@ where
         }
         if mode == SemanticRoutingMode::Shadow {
             match outcome {
-                Ok(destination) => tracing::debug!(
+                Ok(assessment) => tracing::debug!(
                     request_id,
-                    semantic_destination = destination.as_str(),
-                    "observed shadow semantic routing decision"
+                    semantic_destination = assessment.destination().as_str(),
+                    capability_boundary = assessment.boundary(),
+                    local_success_probability = assessment.local_success_probability(),
+                    "observed shadow semantic routing forecast"
                 ),
                 Err(error) => tracing::warn!(
                     request_id,

@@ -9,6 +9,7 @@ use thiserror::Error;
 mod validation;
 
 const CONFIG_VERSION: u8 = 2;
+pub(crate) const MAX_SEMANTIC_BOUNDARY_STEPS: u8 = 2;
 
 /// Source used to resolve secret-bearing environment variables.
 pub trait Environment {
@@ -410,6 +411,8 @@ pub struct RoutingConfig {
     fallback_before_commit: bool,
     semantic_mode: SemanticRoutingMode,
     decision_timeout_ms: u64,
+    local_success_threshold: f64,
+    boundary_threshold_step: f64,
 }
 
 impl RoutingConfig {
@@ -431,6 +434,16 @@ impl RoutingConfig {
     /// Deadline for the local semantic routing decision.
     pub fn decision_timeout_ms(&self) -> u64 {
         self.decision_timeout_ms
+    }
+
+    /// Minimum forecast probability for a supported request to remain local.
+    pub fn local_success_threshold(&self) -> f64 {
+        self.local_success_threshold
+    }
+
+    /// Additional probability required for each capability-boundary step.
+    pub fn boundary_threshold_step(&self) -> f64 {
+        self.boundary_threshold_step
     }
 }
 

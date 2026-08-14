@@ -225,8 +225,31 @@ pub(super) async fn mount_intelligent_route(
     destination: &str,
     slot_calls: u64,
 ) {
-    let content =
-        serde_json::to_string(&json!({"destination": destination})).expect("route decision");
+    let probability = if destination == "local" { 0.8 } else { 0.2 };
+    mount_intelligent_forecast(
+        server,
+        probability,
+        "supported",
+        "bounded_verification",
+        slot_calls,
+    )
+    .await;
+}
+
+pub(super) async fn mount_intelligent_forecast(
+    server: &MockServer,
+    probability: f64,
+    boundary: &str,
+    rule: &str,
+    slot_calls: u64,
+) {
+    let content = serde_json::to_string(&json!({
+        "p_local_success": probability,
+        "capability_boundary": boundary,
+        "primary_rule": rule,
+        "crux": "The decisive capability boundary for this request."
+    }))
+    .expect("route forecast");
     mount_intelligent_response(server, &content, slot_calls).await;
 }
 

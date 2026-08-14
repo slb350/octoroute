@@ -60,6 +60,8 @@ default = "prefer_local"
 fallback_before_commit = true
 semantic_mode = "shadow"
 decision_timeout_ms = 30000
+local_success_threshold = 0.50
+boundary_threshold_step = 0.10
 
 [observability]
 log_level = "info"
@@ -134,14 +136,18 @@ OpenRouter-only plugins and non-text output always route cloud.
 
 `semantic_mode` is:
 
-- `disabled`: skip classification and proceed directly to local admission;
-- `shadow` (default): classify and record the bounded outcome, but never let
+- `disabled`: skip semantic forecasting and proceed directly to local admission;
+- `shadow` (default): forecast and record the bounded policy outcome, but never let
   that outcome select cloud; local availability and context admission remain
   authoritative;
-- `enforced`: honor `local` or `cloud` classifier decisions.
+- `enforced`: honor the destination selected by deterministic forecast policy.
 
 `decision_timeout_ms` bounds semantic decisions in shadow and enforced modes.
-In shadow mode, a classifier failure does not select cloud when local capacity
+`local_success_threshold` is the minimum forecast probability for a supported
+request to remain local. `boundary_threshold_step` adds one step for uncertain
+or unmatched forecasts and two steps for unsupported forecasts. Both values
+must be finite probabilities, and the strictest threshold must not exceed one.
+In shadow mode, a forecasting failure does not select cloud when local capacity
 was already reserved. In enforced mode, a timeout, invalid decision, or local
 routing-model failure sends automatic traffic safely to OpenRouter. Explicit
 local and local-only requests always bypass semantic routing.

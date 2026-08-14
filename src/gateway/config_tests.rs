@@ -66,6 +66,8 @@ fn valid_v2_config_resolves_secrets_without_exposing_them() {
         SemanticRoutingMode::Shadow
     );
     assert_eq!(config.routing().decision_timeout_ms(), 30_000);
+    assert_eq!(config.routing().local_success_threshold(), 0.50);
+    assert_eq!(config.routing().boundary_threshold_step(), 0.10);
 
     let debug = format!("{config:?}");
     assert!(!debug.contains("inbound-secret"));
@@ -118,6 +120,58 @@ fn semantic_routing_timeout_must_be_positive() {
         error,
         GatewayConfigError::Invalid { ref field, .. }
             if field == "routing.decision_timeout_ms"
+    ));
+}
+
+#[test]
+fn semantic_routing_probability_policy_is_configurable() {
+    let input = valid_config().replace(
+        "fallback_before_commit = true",
+        "fallback_before_commit = true\nlocal_success_threshold = 0.65\nboundary_threshold_step = 0.15",
+    );
+    let config = GatewayConfig::from_toml(&input, &TestEnvironment::gateway())
+        .expect("valid semantic probability policy");
+
+    assert_eq!(config.routing().local_success_threshold(), 0.65);
+    assert_eq!(config.routing().boundary_threshold_step(), 0.15);
+}
+
+#[test]
+fn semantic_routing_probability_policy_must_remain_bounded() {
+    for (field, value) in [
+        ("local_success_threshold", "-0.01"),
+        ("local_success_threshold", "1.01"),
+        ("local_success_threshold", "nan"),
+        ("boundary_threshold_step", "-0.01"),
+        ("boundary_threshold_step", "0.26"),
+        ("boundary_threshold_step", "inf"),
+    ] {
+        let input = valid_config().replace(
+            "fallback_before_commit = true",
+            &format!("fallback_before_commit = true\n{field} = {value}"),
+        );
+        let error = GatewayConfig::from_toml(&input, &TestEnvironment::gateway())
+            .expect_err("invalid semantic probability policy must fail startup");
+
+        assert!(matches!(
+            error,
+            GatewayConfigError::Invalid {
+                field: ref actual,
+                ..
+            } if actual == &format!("routing.{field}")
+        ));
+    }
+
+    let input = valid_config().replace(
+        "fallback_before_commit = true",
+        "fallback_before_commit = true\nlocal_success_threshold = 0.60\nboundary_threshold_step = 0.25",
+    );
+    let error = GatewayConfig::from_toml(&input, &TestEnvironment::gateway())
+        .expect_err("the strictest boundary threshold must not exceed one");
+    assert!(matches!(
+        error,
+        GatewayConfigError::Invalid { ref field, .. }
+            if field == "routing.boundary_threshold_step"
     ));
 }
 

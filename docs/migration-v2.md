@@ -72,6 +72,8 @@ default = "prefer_local"
 fallback_before_commit = true
 semantic_mode = "shadow"
 decision_timeout_ms = 30000
+local_success_threshold = 0.50
+boundary_threshold_step = 0.10
 ```
 
 Create an ignored `.env` beside the configuration:

@@ -32,12 +32,14 @@ minimal request facts (model, stream, capabilities, privacy)
                 `-- Strix chat completions
 ```
 
-When semantic routing is enabled, Octoroute uses Strix itself for that bounded
-decision, so a prompt selected for local work has not first been disclosed to
-a cloud classifier. `shadow` is the default mode and records the decision
-without acting on it; `disabled` skips classification; `enforced` lets the
-decision select local or cloud. OpenRouter Auto performs cloud model/provider
-selection only after Octoroute chooses cloud.
+When semantic routing is enabled, Octoroute uses Strix itself for a bounded
+success forecast, so a prompt selected for local work has not first been
+disclosed to a cloud classifier. Strix returns a probability, capability
+boundary, closed rule, and short crux; deterministic Octoroute policy selects
+the destination from that forecast. `shadow` is the default mode and records
+the policy outcome without acting on it; `disabled` skips forecasting;
+`enforced` lets the policy outcome select local or cloud. OpenRouter Auto
+performs cloud model/provider selection only after Octoroute chooses cloud.
 
 ## Request path
 
@@ -50,8 +52,8 @@ selection only after Octoroute chooses cloud.
 7. Skip semantic routing when cloud is explicit, local capabilities are
    incompatible, or configuration defaults automatic work to cloud.
 8. For shadow or enforced mode, reserve an idle Strix slot and request a
-   constrained `local` or `cloud` JSON decision with thinking disabled.
-   Disabled mode skips classification.
+   constrained success forecast with thinking disabled, then apply the
+   configured deterministic threshold policy. Disabled mode skips forecasting.
 9. In shadow mode, record the bounded outcome and continue local admission.
    In enforced mode, send a cloud decision or safe classifier failure to
    `openrouter/auto`.
