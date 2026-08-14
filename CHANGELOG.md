@@ -15,12 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   forecast and deterministic, configurable threshold policy. Shadow remains
   the default while the provisional thresholds await labeled calibration.
 - Add a versioned Strix capability card derived from configured local identity
-  and capabilities, including measured limitations and anti-framing guidance.
+  and capabilities, including measured limitations and anti-framing guidance;
+  calibration binds rows to a SHA-256 fingerprint of the rendered card.
 - Expose bounded local-success probability histograms by semantic mode and
   capability boundary without using generated text as metric labels.
 - Add an offline `calibrate` command for strict labeled JSONL artifacts,
   calibration bins, Brier score, threshold sweeps, baseline comparison,
-  latency, cloud outcomes, and estimated cloud cost.
+  latency, cloud outcomes, and estimated cloud cost. Bin bounds are explicit,
+  and online/offline threshold equality shares one roundoff-safe comparator.
 - Add shadow-only deterministic trajectory evidence from strict, paired typed
   tool results, with bounded error, recovery, environment, test, and context
   signals and fail-closed abstention.

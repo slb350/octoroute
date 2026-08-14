@@ -19,11 +19,12 @@ use thiserror::Error;
 use tokio::sync::OwnedSemaphorePermit;
 
 mod capability_card;
-use capability_card::render_capability_card;
+use capability_card::{CapabilityCard, render_capability_card};
 
 const MAX_ROUTER_RESPONSE_BYTES: usize = 16 * 1024;
 const ROUTER_MAX_TOKENS: u32 = 192;
 const MAX_CRUX_CHARS: usize = 240;
+const THRESHOLD_COMPARISON_ULPS: f64 = 4.0;
 const ROUTER_REQUEST_PREFIX: &str = "Forecast success for this conversation JSON:\n<conversation>";
 const ROUTER_REQUEST_SUFFIX: &str = "</conversation>";
 const TRAJECTORY_PREFIX: &str = "\n<verified_trajectory>";
@@ -128,6 +129,7 @@ pub(crate) struct LocalSemanticRouter {
     chat_url: Url,
     api_key: Option<SecretString>,
     model: String,
+    capability_card_fingerprint: String,
     system_prompt: String,
     trajectory_system_prompt: String,
     timeout: Duration,
@@ -138,10 +140,11 @@ impl LocalSemanticRouter {
     pub(crate) fn new(config: &GatewayConfig, admission: LlamaCppAdmission) -> Option<Self> {
         let local = config.local();
         let chat_url = endpoint_url(local.base_url(), LOCAL_CHAT_COMPLETIONS_PATH)?;
-        let system_prompt = format!(
-            "{ROUTER_SYSTEM_PROMPT}\n\n{}",
-            render_capability_card(local)
-        );
+        let CapabilityCard {
+            prompt,
+            fingerprint,
+        } = render_capability_card(local);
+        let system_prompt = format!("{ROUTER_SYSTEM_PROMPT}\n\n{prompt}");
         let trajectory_system_prompt =
             format!("{system_prompt}\n\n{TRAJECTORY_SYSTEM_INSTRUCTION}");
         Some(Self {
@@ -150,11 +153,20 @@ impl LocalSemanticRouter {
             chat_url,
             api_key: local.api_key().cloned(),
             model: local.model().to_string(),
+            capability_card_fingerprint: fingerprint,
             system_prompt,
             trajectory_system_prompt,
             timeout: Duration::from_millis(config.routing().decision_timeout_ms()),
             policy: SemanticPolicy::from_config(config.routing()),
         })
+    }
+
+    pub(crate) const fn capability_card_version(&self) -> &'static str {
+        capability_card::CARD_VERSION
+    }
+
+    pub(crate) fn capability_card_fingerprint(&self) -> &str {
+        &self.capability_card_fingerprint
     }
 
     fn request_body<'a>(
@@ -506,7 +518,7 @@ impl SemanticPolicy {
         let required_probability = forecast
             .capability_boundary
             .required_probability(self.local_success_threshold, self.boundary_threshold_step);
-        let destination = if probability >= required_probability {
+        let destination = if probability_meets_threshold(probability, required_probability) {
             RouteDestination::Local
         } else {
             RouteDestination::Cloud
@@ -519,6 +531,15 @@ impl SemanticPolicy {
             required_probability,
         })
     }
+}
+
+/// Compare a valid forecast probability with a derived threshold while
+/// tolerating only the few ULPs introduced by decimal-to-binary arithmetic.
+pub(crate) fn probability_meets_threshold(probability: f64, required_probability: f64) -> bool {
+    let tolerance = f64::EPSILON
+        * probability.abs().max(required_probability.abs())
+        * THRESHOLD_COMPARISON_ULPS;
+    probability >= required_probability || required_probability - probability <= tolerance
 }
 
 /// Safe semantic-router failures which contain no prompt or credential data.

@@ -118,8 +118,10 @@ unsupported.steps = 2
 ```
 
 The forecast selects local when `p_local_success >= required_probability` and
-cloud otherwise. Invalid, inconsistent, truncated, or out-of-range forecasts
-retain the existing mode-dependent failure behavior: shadow continues local
+cloud otherwise. The shared online/offline comparator treats only
+representation-level floating-point roundoff in derived decimal thresholds as
+equality. Invalid, inconsistent, truncated, or out-of-range forecasts retain
+the existing mode-dependent failure behavior: shadow continues local
 admission; enforced fails safely to cloud.
 
 Threshold values must be finite, within `[0, 1]`, and satisfy
@@ -140,8 +142,10 @@ The first capability-card revision will:
   is not evidence of task ease or difficulty;
 - prohibit invented tools, repository state, validators, success rates, and
   hidden context; and
-- be versioned so a model or capability change requires explicit review and a
-  new evaluation.
+- carry a SHA-256 fingerprint of the exact rendered card in calibration
+  artifacts so a model or capability change cannot be mixed silently; and
+- be versioned so a rule revision requires explicit review and a new
+  evaluation.
 
 The card remains local configuration/code, is sent only to Strix, and contains
 no prompt or credential data.

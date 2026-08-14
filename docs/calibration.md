@@ -23,6 +23,7 @@ Each JSONL line is one labeled challenge:
   "challenge_id": "cql-tier-1-004",
   "model_alias": "strixtea",
   "capability_card_version": "octoroute-strix-capability-card/v1",
+  "capability_card_fingerprint": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
   "p_local_success": 0.23,
   "capability_boundary": "unsupported",
   "primary_rule": "known_local_limit",
@@ -35,22 +36,26 @@ Each JSONL line is one labeled challenge:
 ```
 
 Required fields are `challenge_id`, `model_alias`, `capability_card_version`,
-`p_local_success`, `capability_boundary`, `primary_rule`, and `local_success`.
-The remaining fields are optional. Unknown fields, duplicate identifiers,
-non-finite or out-of-range numbers, oversized identifiers, inconsistent
-rule/boundary pairs, and mixed model/card populations fail the complete run.
+the lowercase SHA-256 `capability_card_fingerprint`, `p_local_success`,
+`capability_boundary`, `primary_rule`, and `local_success`. The remaining
+fields are optional. Unknown fields, duplicate identifiers, non-finite or
+out-of-range numbers, oversized identifiers, malformed fingerprints,
+inconsistent rule/boundary pairs, and mixed model/card/fingerprint populations
+fail the complete run.
 
 The benchmark harness obtains the forecast fields from the bounded shadow log
 event keyed by the response `X-Request-Id`, then joins the standalone local and
 cloud outcomes. The event contains probability, boundary, primary rule,
-derived threshold, and policy destination. It never contains the prompt,
-crux, response text, credentials, or provider errors.
+derived threshold, policy destination, card version, and the SHA-256
+fingerprint of the exact rendered capability card. It never contains the
+prompt, crux, response text, credentials, or provider errors.
 
 ## Report
 
 The report includes:
 
-- ten fixed calibration bins and Brier score;
+- ten fixed calibration bins and Brier score; bins are lower-inclusive and
+  upper-exclusive except for the final `[0.9, 1.0]` bin;
 - an always-local baseline and optional previous-binary-policy comparison;
 - every valid base-threshold/boundary-step pair on the requested grid;
 - the highest-accuracy candidate, with deterministic lower-spill tie-breaking;
@@ -61,7 +66,7 @@ The report includes:
 - observed average semantic-routing latency.
 
 `beats_always_local` is evidence about the supplied labeled artifact only. It
-does not enable enforced mode or change configuration. The report carries the
-single validated model/card identity for the complete artifact. The benchmark
-dataset and collection procedure still require human review before adopting a
-threshold.
+does not enable enforced mode or change configuration. Report schema version 2
+carries the single validated model, card revision, and rendered-card
+fingerprint for the complete artifact. The benchmark dataset and collection
+procedure still require human review before adopting a threshold.

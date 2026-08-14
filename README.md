@@ -129,7 +129,10 @@ bounded, and explicit local or `local-only` intent always bypasses the latch.
 The forecast prompt includes the versioned
 `octoroute-strix-capability-card/v1`. It identifies the configured local alias,
 lists only capabilities enabled in configuration, and records measured local
-limitations without exposing URLs, credentials, prompts, or runtime state.
+limitations without exposing URLs, credentials, prompts, or runtime state. A
+SHA-256 fingerprint of the exact rendered card is included in bounded shadow
+events and required by calibration artifacts, preventing rows from different
+capability configurations from being analyzed as one population.
 In shadow mode only, explicitly typed and paired tool results can contribute
 closed trajectory evidence; malformed, ordinary, or unsupported tool history
 abstains, and the evidence never selects a route directly.

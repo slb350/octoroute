@@ -277,6 +277,13 @@ async fn capability_boundary_adjusts_the_deterministic_local_threshold() {
             "cloud",
         ),
         (
+            0.30,
+            "unsupported",
+            "known_local_limit",
+            "semantic_mode = \"enforced\"\nlocal_success_threshold = 0.10\nboundary_threshold_step = 0.10",
+            "local",
+        ),
+        (
             0.65,
             "unmatched",
             "no_matching_rule",

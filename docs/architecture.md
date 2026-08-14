@@ -48,7 +48,9 @@ once at gateway construction from the configured upstream name, model alias,
 and closed enabled-capability set. Its qualitative rules include measured
 limitations and prohibit inferring task difficulty from phrasing. Dynamic
 identity values are JSON-escaped data; the card contains no origin, credential,
-prompt, health, slot, or other mutable runtime state.
+prompt, health, slot, or other mutable runtime state. Octoroute fingerprints
+the exact rendered card with SHA-256 and emits that bounded identity in shadow
+forecast events so offline calibration rejects mixed capability populations.
 
 ## Request path
 
@@ -66,9 +68,9 @@ prompt, health, slot, or other mutable runtime state.
 9. In shadow mode, deterministically sample the server-generated request ID at
    `shadow_sample_rate`; skipped requests continue directly to local admission.
    Benchmark and calibration traffic uses `1.0`. Enforced mode is never sampled.
-10. For sampled shadow or enforced mode, reserve an idle Strix slot and request a
-   constrained success forecast with thinking disabled, then apply the
-   configured deterministic threshold policy. Disabled mode skips forecasting.
+10. For sampled shadow or enforced mode, reserve an idle Strix slot and request
+    a constrained success forecast with thinking disabled, then apply the
+    configured deterministic threshold policy. Disabled mode skips forecasting.
 11. In shadow mode, record the bounded outcome and continue local admission.
    In enforced mode, send a cloud decision or safe classifier failure to
    `openrouter/auto`. An enabled latch records only consecutive hard

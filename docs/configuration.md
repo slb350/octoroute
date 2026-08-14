@@ -142,9 +142,9 @@ OpenRouter-only plugins and non-text output always route cloud.
 `semantic_mode` is:
 
 - `disabled`: skip semantic forecasting and proceed directly to local admission;
-- `shadow` (default): forecast and record the bounded policy outcome, but never let
-  that outcome select cloud; local availability and context admission remain
-  authoritative;
+- `shadow` (default): forecast and record the bounded policy outcome, but never
+  let that outcome select cloud; local availability and context admission
+  remain authoritative;
 - `enforced`: honor the destination selected by deterministic forecast policy.
 
 `decision_timeout_ms` bounds semantic decisions in shadow and enforced modes.

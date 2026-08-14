@@ -2,7 +2,7 @@
 
 use crate::gateway::{
     config::{MAX_SEMANTIC_BOUNDARY_STEPS, is_probability},
-    intelligence::{SemanticBoundary, SemanticRule},
+    intelligence::{SemanticBoundary, SemanticRule, probability_meets_threshold},
 };
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, cmp::Ordering, collections::HashSet};
@@ -23,6 +23,8 @@ struct RawCalibrationRecord<'a> {
     model_alias: Cow<'a, str>,
     #[serde(borrow)]
     capability_card_version: Cow<'a, str>,
+    #[serde(borrow)]
+    capability_card_fingerprint: Cow<'a, str>,
     p_local_success: f64,
     capability_boundary: SemanticBoundary,
     primary_rule: SemanticRule,
@@ -53,6 +55,7 @@ struct CalibrationDataset {
 struct DatasetIdentity {
     model_alias: String,
     capability_card_version: String,
+    capability_card_fingerprint: String,
 }
 
 #[derive(Serialize)]
@@ -78,7 +81,10 @@ struct CalibrationQuality {
 #[derive(Serialize)]
 struct CalibrationBin {
     lower_inclusive: f64,
-    upper_inclusive: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upper_exclusive: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upper_inclusive: Option<f64>,
     count: usize,
     average_probability: Option<f64>,
     local_success_rate: Option<f64>,
@@ -137,7 +143,7 @@ pub fn analyze_jsonl(input: &str, grid_step: f64) -> Result<String, CalibrationE
         .cloned()
         .ok_or(CalibrationError::NoRecords)?;
     let report = CalibrationReport {
-        schema_version: 1,
+        schema_version: 2,
         dataset: dataset.identity,
         record_count,
         calibration,
@@ -198,6 +204,7 @@ fn parse_records(input: &str) -> Result<CalibrationDataset, CalibrationError> {
             challenge_id,
             model_alias,
             capability_card_version,
+            capability_card_fingerprint,
             p_local_success,
             capability_boundary,
             primary_rule: _,
@@ -213,7 +220,9 @@ fn parse_records(input: &str) -> Result<CalibrationDataset, CalibrationError> {
         match &identity {
             Some(expected)
                 if expected.model_alias != model_alias.as_ref()
-                    || expected.capability_card_version != capability_card_version.as_ref() =>
+                    || expected.capability_card_version != capability_card_version.as_ref()
+                    || expected.capability_card_fingerprint
+                        != capability_card_fingerprint.as_ref() =>
             {
                 return Err(CalibrationError::MixedDataset { line: line_number });
             }
@@ -222,6 +231,7 @@ fn parse_records(input: &str) -> Result<CalibrationDataset, CalibrationError> {
                 identity = Some(DatasetIdentity {
                     model_alias: model_alias.into_owned(),
                     capability_card_version: capability_card_version.into_owned(),
+                    capability_card_fingerprint: capability_card_fingerprint.into_owned(),
                 });
             }
         }
@@ -246,6 +256,7 @@ fn validate_record(record: &RawCalibrationRecord<'_>, line: usize) -> Result<(),
     if valid_label(&record.challenge_id)
         && valid_label(&record.model_alias)
         && valid_label(&record.capability_card_version)
+        && valid_sha256_fingerprint(&record.capability_card_fingerprint)
         && is_probability(record.p_local_success)
         && valid_cost
         && record.primary_rule.boundary() == record.capability_boundary
@@ -258,6 +269,13 @@ fn validate_record(record: &RawCalibrationRecord<'_>, line: usize) -> Result<(),
 
 fn valid_label(value: &str) -> bool {
     !value.is_empty() && value.len() <= MAX_LABEL_BYTES && !value.chars().any(char::is_control)
+}
+
+fn valid_sha256_fingerprint(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[derive(Clone, Copy, Default)]
@@ -286,12 +304,17 @@ fn calibration_quality(records: &[CalibrationRecord]) -> CalibrationQuality {
     let bins = accumulators
         .into_iter()
         .enumerate()
-        .map(|(index, bin)| CalibrationBin {
-            lower_inclusive: round6(index as f64 / CALIBRATION_BIN_COUNT as f64),
-            upper_inclusive: round6((index + 1) as f64 / CALIBRATION_BIN_COUNT as f64),
-            count: bin.count,
-            average_probability: ratio_float(bin.probability_sum, bin.count),
-            local_success_rate: ratio(bin.success_count, bin.count),
+        .map(|(index, bin)| {
+            let upper = round6((index + 1) as f64 / CALIBRATION_BIN_COUNT as f64);
+            let final_bin = index == CALIBRATION_BIN_COUNT - 1;
+            CalibrationBin {
+                lower_inclusive: round6(index as f64 / CALIBRATION_BIN_COUNT as f64),
+                upper_exclusive: (!final_bin).then_some(upper),
+                upper_inclusive: final_bin.then_some(upper),
+                count: bin.count,
+                average_probability: ratio_float(bin.probability_sum, bin.count),
+                local_success_rate: ratio(bin.success_count, bin.count),
+            }
         })
         .collect();
     CalibrationQuality {
@@ -396,7 +419,7 @@ impl BoundaryDistribution {
             .required_probability(base_threshold, boundary_step);
         let index = self
             .probabilities
-            .partition_point(|probability| *probability < threshold);
+            .partition_point(|probability| !probability_meets_threshold(*probability, threshold));
         self.prefixes[index]
     }
 }
@@ -517,7 +540,9 @@ pub enum CalibrationError {
     InvalidRecord { line: usize },
     #[error("duplicate challenge identifier at line {line}")]
     DuplicateChallenge { line: usize },
-    #[error("forecast artifact mixes model aliases or capability-card versions at line {line}")]
+    #[error(
+        "forecast artifact mixes model aliases, capability-card versions, or card fingerprints at line {line}"
+    )]
     MixedDataset { line: usize },
     #[error("grid step must evenly divide one and be from 0.01 through 0.25")]
     InvalidGridStep,
