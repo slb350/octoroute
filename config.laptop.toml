@@ -46,6 +46,10 @@ semantic_mode = "shadow"
 decision_timeout_ms = 30000
 local_success_threshold = 0.50
 boundary_threshold_step = 0.10
+session_latch_enabled = false
+session_latch_ttl_ms = 900000
+session_latch_max_entries = 1024
+session_latch_evidence_threshold = 2
 
 [observability]
 log_level = "info"

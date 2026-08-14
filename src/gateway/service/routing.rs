@@ -38,8 +38,24 @@ where
             }
             RoutePlan::Local(local_plan) => {
                 let reservation = if local_plan.is_automatic() {
+                    let session_key = self
+                        .session_latch
+                        .as_ref()
+                        .and_then(|_| request.session_id())
+                        .map(SessionKey::new);
+                    if self.session_is_latched(session_key) {
+                        self.record_routing_duration(routing_started);
+                        return self
+                            .dispatch_cloud(
+                                request,
+                                intent,
+                                RouteReason::SessionCloudLatch,
+                                request_id,
+                            )
+                            .await;
+                    }
                     match self
-                        .apply_semantic_mode(&request, local_plan, request_id)
+                        .apply_semantic_mode(&request, local_plan, session_key, request_id)
                         .await
                     {
                         SemanticRouteAction::Admit(reservation) => reservation,
@@ -70,6 +86,7 @@ where
         &self,
         request: &GatewayRequest,
         local_plan: LocalRoutePlan,
+        session_key: Option<SessionKey>,
         request_id: &str,
     ) -> SemanticRouteAction {
         let mode = self.config.routing().semantic_mode();
@@ -84,11 +101,17 @@ where
         if let Some(signals) = trajectory.as_ref() {
             record_trajectory_signals(request_id, signals);
         }
-        match self
+        let route = self
             .intelligent_router
             .route(request, trajectory.as_ref())
-            .await
-        {
+            .await;
+        let hard_evidence = matches!(
+            &route,
+            IntelligentRoute::Observed { assessment, .. }
+                if assessment.is_hard_cloud_evidence()
+        );
+        self.update_session_latch(session_key, hard_evidence);
+        match route {
             IntelligentRoute::Observed {
                 assessment,
                 reservation,
@@ -114,6 +137,24 @@ where
                 self.record_semantic_observation(mode, request_id, Err(&error));
                 SemanticRouteAction::Cloud(semantic_failure_reason(local_plan, &error))
             }
+        }
+    }
+
+    fn session_is_latched(&self, key: Option<SessionKey>) -> bool {
+        self.session_latch
+            .as_ref()
+            .zip(key)
+            .is_some_and(|(latch, key)| latch.is_latched(key))
+    }
+
+    fn update_session_latch(&self, key: Option<SessionKey>, hard_evidence: bool) {
+        let Some((latch, key)) = self.session_latch.as_ref().zip(key) else {
+            return;
+        };
+        if hard_evidence {
+            latch.record_hard_evidence(key);
+        } else {
+            latch.clear_pending(key);
         }
     }
 

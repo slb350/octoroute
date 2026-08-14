@@ -12,6 +12,7 @@ use crate::gateway::{
         LocalAdmissionState, ModelIntent, PrivacyDirective, RouteDecision, RouteDestination,
         RouteReason,
     },
+    session_latch::{SessionKey, SessionLatch},
     transport::{
         GatewayTransport, GatewayTransportError, PreparedUpstreamResponse, UpstreamTransport,
     },
@@ -45,6 +46,7 @@ pub struct GatewayService<T> {
     authenticator: BearerAuthenticator,
     admission: LlamaCppAdmission,
     intelligent_router: LocalSemanticRouter,
+    session_latch: Option<SessionLatch>,
     transport: T,
     inbound_permits: Arc<Semaphore>,
     cloud_permits: Arc<Semaphore>,
@@ -103,6 +105,7 @@ where
     ) -> Result<Self, GatewayServiceBuildError> {
         let intelligent_router = LocalSemanticRouter::new(&config, admission.clone())
             .ok_or(GatewayServiceBuildError::Intelligence)?;
+        let session_latch = SessionLatch::from_config(config.routing());
         let authenticator = BearerAuthenticator::new(config.server().api_key().clone());
         let inbound_permits = Arc::new(Semaphore::new(config.server().max_in_flight()));
         let cloud_permits = Arc::new(Semaphore::new(config.openrouter().max_in_flight()));
@@ -113,6 +116,7 @@ where
             authenticator,
             admission,
             intelligent_router,
+            session_latch,
             transport,
             inbound_permits,
             cloud_permits,

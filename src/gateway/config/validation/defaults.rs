@@ -72,6 +72,18 @@ pub(super) const fn default_boundary_threshold_step() -> f64 {
     0.10
 }
 
+pub(super) const fn default_session_latch_ttl_ms() -> u64 {
+    15 * 60 * 1000
+}
+
+pub(super) const fn default_session_latch_max_entries() -> usize {
+    1024
+}
+
+pub(super) const fn default_session_latch_evidence_threshold() -> u8 {
+    2
+}
+
 pub(super) const fn default_semantic_routing_mode() -> SemanticRoutingMode {
     SemanticRoutingMode::Shadow
 }

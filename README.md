@@ -96,6 +96,10 @@ semantic_mode = "shadow"
 decision_timeout_ms = 30000
 local_success_threshold = 0.50
 boundary_threshold_step = 0.10
+session_latch_enabled = false
+session_latch_ttl_ms = 900000
+session_latch_max_entries = 1024
+session_latch_evidence_threshold = 2
 ```
 
 `semantic_mode` is `disabled`, `shadow`, or `enforced`. Shadow is the default:
@@ -108,6 +112,12 @@ mode should be enabled only after its judgment is
 validated against representative labeled traffic. Shadow and enforced modes
 add one local forecasting inference—about 760–1500 ms in the measured Strix
 profile—to compatible `auto` requests.
+
+The optional session latch is disabled by default and can be enabled only with
+`semantic_mode = "enforced"`. Two consecutive hard
+`unsupported`/`known_local_limit` forecasts latch a valid `session_id` to
+cloud for 15 minutes by default. IDs are SHA-256 hashed in memory, storage is
+bounded, and explicit local or `local-only` intent always bypasses the latch.
 
 The forecast prompt includes the versioned
 `octoroute-strix-capability-card/v1`. It identifies the configured local alias,

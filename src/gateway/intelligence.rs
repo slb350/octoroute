@@ -470,6 +470,12 @@ impl SemanticAssessment {
     pub(crate) const fn required_probability(self) -> f64 {
         self.required_probability
     }
+
+    pub(crate) const fn is_hard_cloud_evidence(self) -> bool {
+        matches!(self.destination, RouteDestination::Cloud)
+            && matches!(self.boundary, SemanticBoundary::Unsupported)
+            && matches!(self.primary_rule, SemanticRule::KnownLocalLimit)
+    }
 }
 
 #[derive(Clone, Copy)]

@@ -176,6 +176,59 @@ fn semantic_routing_probability_policy_must_remain_bounded() {
 }
 
 #[test]
+fn session_latch_is_opt_in_bounded_and_enforced_only() {
+    let default = GatewayConfig::from_toml(valid_config(), &TestEnvironment::gateway())
+        .expect("default configuration");
+    assert!(default.routing().session_latch().is_none());
+
+    let configured = valid_config().replace(
+        "fallback_before_commit = true",
+        "fallback_before_commit = true\nsemantic_mode = \"enforced\"\nsession_latch_enabled = true\nsession_latch_ttl_ms = 60000\nsession_latch_max_entries = 64\nsession_latch_evidence_threshold = 3",
+    );
+    let config = GatewayConfig::from_toml(&configured, &TestEnvironment::gateway())
+        .expect("bounded enforced session latch");
+    let latch = config.routing().session_latch().expect("enabled latch");
+    assert_eq!(latch.ttl_ms(), 60_000);
+    assert_eq!(latch.max_entries(), 64);
+    assert_eq!(latch.evidence_threshold(), 3);
+
+    for (field, value) in [
+        ("session_latch_ttl_ms", "999"),
+        ("session_latch_ttl_ms", "86400001"),
+        ("session_latch_max_entries", "0"),
+        ("session_latch_max_entries", "10001"),
+        ("session_latch_evidence_threshold", "1"),
+        ("session_latch_evidence_threshold", "11"),
+    ] {
+        let input = valid_config().replace(
+            "fallback_before_commit = true",
+            &format!(
+                "fallback_before_commit = true\nsemantic_mode = \"enforced\"\nsession_latch_enabled = true\n{field} = {value}"
+            ),
+        );
+        let error = GatewayConfig::from_toml(&input, &TestEnvironment::gateway())
+            .expect_err("invalid latch bound must fail startup");
+        assert!(matches!(
+            error,
+            GatewayConfigError::Invalid { field: ref actual, .. }
+                if actual == &format!("routing.{field}")
+        ));
+    }
+
+    let shadow = valid_config().replace(
+        "fallback_before_commit = true",
+        "fallback_before_commit = true\nsession_latch_enabled = true",
+    );
+    let error = GatewayConfig::from_toml(&shadow, &TestEnvironment::gateway())
+        .expect_err("an active latch must require enforced semantic mode");
+    assert!(matches!(
+        error,
+        GatewayConfigError::Invalid { ref field, .. }
+            if field == "routing.session_latch_enabled"
+    ));
+}
+
+#[test]
 fn gateway_and_cloud_limits_must_be_positive() {
     for (needle, replacement, expected_field) in [
         (

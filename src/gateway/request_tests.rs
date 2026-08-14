@@ -30,6 +30,30 @@ fn preserves_unknown_fields_when_patching_only_the_model() {
 }
 
 #[test]
+fn session_policy_uses_only_bounded_non_control_identifiers() {
+    let valid = gateway_request(json!({
+        "model": "auto",
+        "messages": [{"role": "user", "content": "hello"}],
+        "session_id": "session-123"
+    }));
+    assert_eq!(valid.session_id(), Some("session-123"));
+
+    for session_id in [
+        json!(""),
+        json!("bad\nsession"),
+        json!("x".repeat(129)),
+        json!(42),
+    ] {
+        let request = gateway_request(json!({
+            "model": "auto",
+            "messages": [{"role": "user", "content": "hello"}],
+            "session_id": session_id
+        }));
+        assert_eq!(request.session_id(), None);
+    }
+}
+
+#[test]
 fn detects_all_features_without_flattening_messages() {
     let request = gateway_request(json!({
         "model": "auto",

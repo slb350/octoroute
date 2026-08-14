@@ -1,15 +1,16 @@
 use super::{
     service_tests::{
         FakeResult, FakeTransport, authorized_headers, body_with_prompt,
-        mount_auto_local_admission, mount_input_tokens, mount_intelligent_forecast,
-        mount_intelligent_response, mount_intelligent_route, mount_local_admission, service,
+        mount_auto_local_admission, mount_input_tokens, mount_input_tokens_count,
+        mount_intelligent_forecast, mount_intelligent_forecast_count, mount_intelligent_response,
+        mount_intelligent_route, mount_local_admission, service,
     },
     test_support::{
         gateway_config, gateway_config_with_local_capabilities, trajectory_tool_call,
         trajectory_tool_result,
     },
 };
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode};
 use bytes::Bytes;
 use serde_json::json;
 use wiremock::MockServer;
@@ -32,6 +33,77 @@ fn body_with_trajectory(model: &str) -> Bytes {
         }))
         .expect("serialize trajectory request"),
     )
+}
+
+fn body_with_session(model: &str, session_id: &str) -> Bytes {
+    Bytes::from(
+        serde_json::to_vec(&json!({
+            "model": model,
+            "session_id": session_id,
+            "messages": [{"role": "user", "content": "Continue this session."}]
+        }))
+        .expect("serialize session request"),
+    )
+}
+
+#[tokio::test]
+async fn repeated_hard_forecasts_latch_only_automatic_session_traffic() {
+    let local = MockServer::start().await;
+    mount_intelligent_forecast_count(&local, 0.1, "unsupported", "known_local_limit", 2, 4).await;
+    mount_input_tokens_count(&local, 10, 2).await;
+    let config = gateway_config(
+        &local.uri(),
+        "",
+        "",
+        "semantic_mode = \"enforced\"\nsession_latch_enabled = true\nsession_latch_evidence_threshold = 2",
+    );
+    let transport = FakeTransport::default()
+        .with_cloud(FakeResult::Response(StatusCode::OK, r#"{"choices":[]}"#))
+        .with_cloud(FakeResult::Response(StatusCode::OK, r#"{"choices":[]}"#))
+        .with_cloud(FakeResult::Response(StatusCode::OK, r#"{"choices":[]}"#))
+        .with_local(FakeResult::Response(StatusCode::OK, r#"{"choices":[]}"#))
+        .with_local(FakeResult::Response(StatusCode::OK, r#"{"choices":[]}"#));
+    let gateway = service(config, transport.clone());
+
+    for expected_reason in ["cloud_quality", "cloud_quality", "session_cloud_latch"] {
+        let response = gateway
+            .handle_chat(
+                &authorized_headers(),
+                body_with_session("auto", "private-session"),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["x-octoroute-destination"], "cloud");
+        assert_eq!(response.headers()["x-octoroute-reason"], expected_reason);
+    }
+
+    let explicit = gateway
+        .handle_chat(
+            &authorized_headers(),
+            body_with_session("local", "private-session"),
+        )
+        .await;
+    assert_eq!(explicit.status(), StatusCode::OK);
+    assert_eq!(explicit.headers()["x-octoroute-destination"], "local");
+    assert_eq!(explicit.headers()["x-octoroute-reason"], "explicit_local");
+
+    let mut local_only_headers = authorized_headers();
+    local_only_headers.insert(
+        "x-octoroute-privacy",
+        HeaderValue::from_static("local-only"),
+    );
+    let local_only = gateway
+        .handle_chat(
+            &local_only_headers,
+            body_with_session("auto", "private-session"),
+        )
+        .await;
+    assert_eq!(local_only.status(), StatusCode::OK);
+    assert_eq!(local_only.headers()["x-octoroute-destination"], "local");
+    assert_eq!(local_only.headers()["x-octoroute-reason"], "local_only");
+
+    assert_eq!(transport.cloud_calls(), 3);
+    assert_eq!(transport.local_calls(), 2);
 }
 
 async fn assert_trajectory_forecast_context(mode: &str, expects_trajectory: bool) {

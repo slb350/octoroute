@@ -134,6 +134,14 @@ struct RawRoutingConfig {
     local_success_threshold: f64,
     #[serde(default = "default_boundary_threshold_step")]
     boundary_threshold_step: f64,
+    #[serde(default)]
+    session_latch_enabled: bool,
+    #[serde(default = "default_session_latch_ttl_ms")]
+    session_latch_ttl_ms: u64,
+    #[serde(default = "default_session_latch_max_entries")]
+    session_latch_max_entries: usize,
+    #[serde(default = "default_session_latch_evidence_threshold")]
+    session_latch_evidence_threshold: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -179,6 +187,31 @@ impl RawGatewayConfig {
                 "must keep the strictest semantic threshold at or below one",
             ));
         }
+        if !(1_000..=86_400_000).contains(&self.routing.session_latch_ttl_ms) {
+            return Err(invalid(
+                "routing.session_latch_ttl_ms",
+                "must be from 1000 through 86400000",
+            ));
+        }
+        validate_usize_range(
+            "routing.session_latch_max_entries",
+            self.routing.session_latch_max_entries,
+            10_000,
+        )?;
+        if !(2..=10).contains(&self.routing.session_latch_evidence_threshold) {
+            return Err(invalid(
+                "routing.session_latch_evidence_threshold",
+                "must be from 2 through 10",
+            ));
+        }
+        if self.routing.session_latch_enabled
+            && self.routing.semantic_mode != SemanticRoutingMode::Enforced
+        {
+            return Err(invalid(
+                "routing.session_latch_enabled",
+                "requires routing.semantic_mode = \"enforced\"",
+            ));
+        }
 
         Ok(GatewayConfig {
             server,
@@ -191,6 +224,14 @@ impl RawGatewayConfig {
                 decision_timeout_ms: self.routing.decision_timeout_ms,
                 local_success_threshold: self.routing.local_success_threshold,
                 boundary_threshold_step: self.routing.boundary_threshold_step,
+                session_latch: self
+                    .routing
+                    .session_latch_enabled
+                    .then_some(SessionLatchConfig {
+                        ttl_ms: self.routing.session_latch_ttl_ms,
+                        max_entries: self.routing.session_latch_max_entries,
+                        evidence_threshold: self.routing.session_latch_evidence_threshold,
+                    }),
             },
             observability: ObservabilityConfig {
                 log_level: self.observability.log_level,

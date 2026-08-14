@@ -430,6 +430,15 @@ pub struct RoutingConfig {
     decision_timeout_ms: u64,
     local_success_threshold: f64,
     boundary_threshold_step: f64,
+    session_latch: Option<SessionLatchConfig>,
+}
+
+/// Bounded in-memory policy for repeated hard cloud evidence within one session.
+#[derive(Debug, Clone)]
+pub struct SessionLatchConfig {
+    ttl_ms: u64,
+    max_entries: usize,
+    evidence_threshold: u8,
 }
 
 impl RoutingConfig {
@@ -461,6 +470,28 @@ impl RoutingConfig {
     /// Additional probability required for each capability-boundary step.
     pub fn boundary_threshold_step(&self) -> f64 {
         self.boundary_threshold_step
+    }
+
+    /// Optional repeated-evidence session latch policy.
+    pub fn session_latch(&self) -> Option<&SessionLatchConfig> {
+        self.session_latch.as_ref()
+    }
+}
+
+impl SessionLatchConfig {
+    /// Time-to-live for pending evidence and active session latches.
+    pub fn ttl_ms(&self) -> u64 {
+        self.ttl_ms
+    }
+
+    /// Maximum number of hashed session entries retained in memory.
+    pub fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
+    /// Consecutive hard forecasts required before a session is latched.
+    pub fn evidence_threshold(&self) -> u8 {
+        self.evidence_threshold
     }
 }
 

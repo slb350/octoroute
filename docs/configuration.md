@@ -62,6 +62,10 @@ semantic_mode = "shadow"
 decision_timeout_ms = 30000
 local_success_threshold = 0.50
 boundary_threshold_step = 0.10
+session_latch_enabled = false
+session_latch_ttl_ms = 900000
+session_latch_max_entries = 1024
+session_latch_evidence_threshold = 2
 
 [observability]
 log_level = "info"
@@ -151,6 +155,17 @@ In shadow mode, a forecasting failure does not select cloud when local capacity
 was already reserved. In enforced mode, a timeout, invalid decision, or local
 routing-model failure sends automatic traffic safely to OpenRouter. Explicit
 local and local-only requests always bypass semantic routing.
+
+`session_latch_enabled` is an optional enforced-mode refinement and is false by
+default. When enabled, `session_latch_evidence_threshold` consecutive cloud
+forecasts with the closed `unsupported`/`known_local_limit` evidence pair
+latch compatible automatic requests carrying the same valid `session_id` to
+cloud. `session_latch_ttl_ms` bounds both pending evidence and active latches;
+`session_latch_max_entries` bounds the in-memory table. Session IDs are limited
+to 128 non-control bytes for policy use and stored only as SHA-256 hashes. A
+non-hard forecast clears pending evidence. Explicit local and `local-only`
+requests always bypass the latch. Valid ranges are 1000-86400000 ms, 1-10000
+entries, and an evidence threshold of 2-10.
 
 `fallback_before_commit` only applies to automatic requests initially
 admitted locally. Forced-local privacy is never weakened.

@@ -17,6 +17,8 @@ minimal request facts (model, stream, capabilities, privacy)
   |
   `-- automatic local candidate
         |
+        +-- active hashed session latch ------> OpenRouter `openrouter/auto`
+        |
         `-- semantic mode
               |
               +-- disabled --------------------> local admission
@@ -58,20 +60,24 @@ prompt, health, slot, or other mutable runtime state.
 6. Resolve model intent and `X-Octoroute-Privacy`.
 7. Skip semantic routing when cloud is explicit, local capabilities are
    incompatible, or configuration defaults automatic work to cloud.
-8. For shadow or enforced mode, reserve an idle Strix slot and request a
+8. For an opt-in enforced-mode session latch, hash a bounded `session_id` and
+   send an active latch directly to `openrouter/auto`. Forced-local intent
+   bypasses this lookup.
+9. For shadow or enforced mode, reserve an idle Strix slot and request a
    constrained success forecast with thinking disabled, then apply the
    configured deterministic threshold policy. Disabled mode skips forecasting.
-9. In shadow mode, record the bounded outcome and continue local admission.
+10. In shadow mode, record the bounded outcome and continue local admission.
    In enforced mode, send a cloud decision or safe classifier failure to
-   `openrouter/auto`.
-10. For a local path or forced-local request, acquire a non-blocking local
+   `openrouter/auto`. An enabled latch records only consecutive hard
+   `unsupported`/`known_local_limit` cloud evidence.
+11. For a local path or forced-local request, acquire a non-blocking local
     permit, verify health and a free slot, obtain exact input tokens, and
     include the requested or default output reservation in the safe context
     calculation.
-11. Dispatch to one upstream with its own credential.
-12. Buffer the first upstream body chunk. Before this commit point, eligible
+12. Dispatch to one upstream with its own credential.
+13. Buffer the first upstream body chunk. Before this commit point, eligible
     automatic local failures may spill to cloud.
-13. Stream all remaining bytes with backpressure. The upstream and concurrency
+14. Stream all remaining bytes with backpressure. The upstream and concurrency
     permits live until the body completes or is dropped.
 
 ## Schema fidelity

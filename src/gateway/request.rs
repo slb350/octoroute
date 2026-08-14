@@ -7,6 +7,8 @@ use serde_json::{Map, Value};
 use std::{collections::BTreeSet, sync::OnceLock};
 use thiserror::Error;
 
+const MAX_SESSION_ID_BYTES: usize = 128;
+
 /// A feature inferred from the request envelope without rewriting messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RequestFeature {
@@ -80,6 +82,18 @@ impl GatewayRequest {
             .get("messages")
             .and_then(Value::as_array)
             .expect("validated gateway requests always contain messages")
+    }
+
+    /// Bounded client session identifier eligible for hashed in-memory policy state.
+    pub(crate) fn session_id(&self) -> Option<&str> {
+        self.body
+            .get("session_id")
+            .and_then(Value::as_str)
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= MAX_SESSION_ID_BYTES
+                    && !value.chars().any(char::is_control)
+            })
     }
 
     /// Resolve the output-token reservation used for local context admission.

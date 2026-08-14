@@ -243,7 +243,7 @@ forecasts.
 
 - Consider a bounded shadow sample rate after enough representative evidence
   exists, while benchmark runs remain at full sampling.
-- Consider a bounded, hashed, TTL-based cloud-only session latch after repeated
+- [x] Add a bounded, hashed, TTL-based cloud-only session latch after repeated
   hard evidence. Explicit local and local-only intent always override it, and
   local decisions are never latched.
 
