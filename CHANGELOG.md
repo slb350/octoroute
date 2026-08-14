@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-08-14
+
 ### Changed
 
 - Replace binary local-model route selection with a strict local-success
@@ -318,6 +320,10 @@ See [the v1-to-v2 migration guide](docs/migration-v2.md).
 
 ---
 
+[Unreleased]: https://github.com/slb350/octoroute/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/slb350/octoroute/releases/tag/v2.2.0
+[2.1.2]: https://github.com/slb350/octoroute/releases/tag/v2.1.2
+[2.1.1]: https://github.com/slb350/octoroute/releases/tag/v2.1.1
 [2.1.0]: https://github.com/slb350/octoroute/releases/tag/v2.1.0
 [2.0.1]: https://github.com/slb350/octoroute/releases/tag/v2.0.1
 [2.0.0]: https://github.com/slb350/octoroute/releases/tag/v2.0.0

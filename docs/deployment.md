@@ -182,9 +182,10 @@ client stream releases its Octoroute and upstream permits.
 ## Release
 
 The initial `2.0.0` release introduced the breaking v2 configuration/API
-change. Patch release `2.0.1` restores task-aware automatic routing while
-preserving that v2 contract. Do not publish or tag while the tree is dirty or
-verification is incomplete.
+change. Minor release `2.2.0` adds calibrated local-success forecasting,
+offline threshold evaluation, bounded shadow trajectory signals, and an
+opt-in enforced-mode session latch while retaining shadow mode as the default.
+Do not publish or tag while the tree is dirty or verification is incomplete.
 
 See [Migrating from Octoroute v1 to v2](migration-v2.md) for staged rollout
 and rollback instructions.
