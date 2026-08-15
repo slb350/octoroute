@@ -55,6 +55,7 @@ prompt or real key.
 
 ```text
 src/
+  calibration.rs
   main.rs
   cli.rs
   telemetry.rs
@@ -69,7 +70,10 @@ src/
     openrouter.rs
     request.rs
     routing.rs
+    sampling.rs
+    session_latch.rs
     service/
+    trajectory.rs
     transport.rs
 ```
 
@@ -112,4 +116,6 @@ provider directly. Keep output limits small and inspect:
 ## Design record
 
 See [plans/intelligent-auto-routing.md](plans/intelligent-auto-routing.md) for
-the active decision table, failure semantics, and completion criteria.
+the v2 decision table and failure semantics. See
+[plans/calibrated-semantic-routing.md](plans/calibrated-semantic-routing.md) for
+the shipped forecast policy and its still-pending labeled evaluation gate.

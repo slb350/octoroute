@@ -248,8 +248,11 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
 
-The active routing decision record is
+The v2 routing boundary is recorded in
 [docs/plans/intelligent-auto-routing.md](docs/plans/intelligent-auto-routing.md).
+The calibrated forecast policy and its still-pending labeled evaluation gate
+are recorded in
+[docs/plans/calibrated-semantic-routing.md](docs/plans/calibrated-semantic-routing.md).
 
 ## Scope
 

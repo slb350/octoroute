@@ -116,12 +116,16 @@ After one body byte is client-visible, upstream switching is impossible.
 
 | Module | Responsibility |
 | --- | --- |
+| `calibration` | Offline forecast validation, threshold sweeps, and reports |
 | `gateway/config` | Versioned parsing, validation, secret resolution |
 | `gateway/env` | Process-over-dotenv secret layering without global mutation |
 | `gateway/auth` | Fixed-length hashed constant-time bearer verification |
 | `gateway/request` | Minimal facts and schema-preserving model mutation |
 | `gateway/routing` | Typed intent, privacy, decision, and bounded reasons |
-| `gateway/intelligence` | Local semantic task-suitability decision |
+| `gateway/intelligence` | Local forecast, card, and threshold policy |
+| `gateway/sampling` | Stateless request-ID-based shadow sampling |
+| `gateway/session_latch` | Bounded hashed enforced-mode session state |
+| `gateway/trajectory` | Strict shadow-only tool-trajectory aggregation |
 | `gateway/local` | llama.cpp health/slot/token admission and permit lifecycle |
 | `gateway/openrouter` | Auto Router plugin and model policy mutation |
 | `gateway/transport` | Credential isolation and pre-commit streaming state |

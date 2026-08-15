@@ -1,6 +1,6 @@
 # Calibrated semantic routing
 
-Status: implementation in progress; milestones 1-4 implemented, evaluation pending
+Status: implementation complete in v2.2.0; labeled evaluation pending
 
 Decision date: 2026-08-14
 
