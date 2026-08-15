@@ -3,17 +3,18 @@
 ## Toolchain
 
 - Rust edition 2024
+- Development toolchain Rust 1.97.1
 - MSRV 1.90
 - Axum/Tokio
 - reqwest with rustls and streaming
 
-The tracked toolchain file selects the supported compiler automatically:
+The tracked toolchain file selects the development compiler automatically:
 
 ```bash
 cargo test --locked --all-targets --all-features
 ```
 
-CI remains authoritative for the pinned Rust 1.90 build.
+CI validates both the current stable toolchain and the Rust 1.90.0 MSRV.
 
 ## Workflow
 

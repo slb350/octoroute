@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Pin the development toolchain to Rust 1.97.1 while retaining Rust 1.90 as
+  the minimum supported version and explicit CI compatibility target.
+
 ## [2.2.0] - 2026-08-14
 
 ### Changed
