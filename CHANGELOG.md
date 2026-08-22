@@ -9,10 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-08-22
+
+### Security
+
+- Constrain the HTTP/2 transport graph to `h2` 0.4.16 or newer and lock
+  0.4.18, preventing unbounded processing of empty DATA frames described by
+  RUSTSEC-2026-0258. The manifest floor also protects downstream builds that
+  do not consume Octoroute's tracked lockfile.
+
 ### Changed
 
 - Pin the development toolchain to Rust 1.97.1 while retaining Rust 1.90 as
   the minimum supported version and explicit CI compatibility target.
+- Refresh Rust 1.90-compatible locked dependencies, including Futures 0.3.34,
+  rustls-webpki 0.103.14, ICU4X 2.3.0, and their companion packages.
 
 ## [2.2.0] - 2026-08-14
 
@@ -325,7 +336,8 @@ See [the v1-to-v2 migration guide](docs/migration-v2.md).
 
 ---
 
-[Unreleased]: https://github.com/slb350/octoroute/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/slb350/octoroute/compare/v2.2.1...HEAD
+[2.2.1]: https://github.com/slb350/octoroute/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/slb350/octoroute/releases/tag/v2.2.0
 [2.1.2]: https://github.com/slb350/octoroute/releases/tag/v2.1.2
 [2.1.1]: https://github.com/slb350/octoroute/releases/tag/v2.1.1
