@@ -1,6 +1,6 @@
 [package]
 name = "octoroute"
-version = "2.2.1"
+version = "2.2.2"
 edition = "2024"
 rust-version = "1.90"
 authors = ["Steve Brandon"]
@@ -25,6 +25,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures = "0.3"
 async-trait = "0.1"
+# Keep the URL/IDNA graph above GHSA-7fx9-626j-vqph's vulnerable validators.
+zerovec = "0.11.8"
+zerovec-derive = "0.11.5"
 # Keep downstream resolution above RUSTSEC-2026-0258's vulnerable h2 range.
 h2 = "0.4.16"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-08-23
+
+### Security
+
+- Update `zerovec-derive` from 0.11.4 to 0.11.6 and `zerovec` from 0.11.7
+  to 0.11.8, fixing the high-severity invalid multi-element ULE validation
+  described by GHSA-7fx9-626j-vqph. The vulnerable validator could accept
+  invalid bit patterns and permit undefined behavior. Manifest floors also
+  protect builds that do not consume Octoroute's tracked lockfile.
+
+### Changed
+
+- Refresh other Rust 1.90-compatible locked dependencies, including
+  `quinn-proto` 0.11.17, `icu_provider` 2.3.1, `uuid` 1.25.0, and their
+  companion maintenance releases.
+
 ## [2.2.1] - 2026-08-22
 
 ### Security
@@ -336,7 +352,8 @@ See [the v1-to-v2 migration guide](docs/migration-v2.md).
 
 ---
 
-[Unreleased]: https://github.com/slb350/octoroute/compare/v2.2.1...HEAD
+[Unreleased]: https://github.com/slb350/octoroute/compare/v2.2.2...HEAD
+[2.2.2]: https://github.com/slb350/octoroute/compare/v2.2.1...v2.2.2
 [2.2.1]: https://github.com/slb350/octoroute/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/slb350/octoroute/releases/tag/v2.2.0
 [2.1.2]: https://github.com/slb350/octoroute/releases/tag/v2.1.2
