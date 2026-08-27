@@ -1,7 +1,7 @@
 # Octoroute
 
-Octoroute is a local-first, OpenAI-compatible LLM gateway for local
-model endpoints and configurable cloud providers.
+Octoroute is a local-first, OpenAI-compatible LLM gateway for local model
+endpoints and configurable cloud providers.
 
 ```text
 OpenAI client
@@ -29,10 +29,9 @@ and provider selection. The routing decision stays on the local network.
   semantic decisions on the local model endpoint in shadow mode.
 - Can disable semantic routing entirely or explicitly enforce it so work that
   needs stronger intelligence routes to OpenRouter `openrouter/auto`.
-- Also uses OpenRouter when the local model lacks a requested capability, is busy or
-  unhealthy, or cannot fit the exact prompt plus output budget.
-- Accepts exact OpenRouter slugs such as
-  `provider/model`.
+- Also uses OpenRouter when the local model lacks a requested capability, is
+  busy or unhealthy, or cannot fit the exact prompt plus output budget.
+- Accepts exact OpenRouter slugs such as `provider/model`.
 - Guarantees that `model: local`, the exact local alias, and
   `X-Octoroute-Privacy: local-only` never fall back to cloud.
 - Falls back from an automatic local attempt only before the first response
@@ -107,13 +106,13 @@ session_latch_evidence_threshold = 2
 `semantic_mode` is `disabled`, `shadow`, or `enforced`. Shadow is the default:
 it records the forecast-derived outcome without letting that outcome select
 the destination. The local model forecasts `p_local_success` and a closed
-capability boundary; Octoroute—not the model—applies the configured threshold.
+capability boundary; Octoroute, not the model, applies the configured threshold.
 `boundary_threshold_step` raises that threshold for uncertain, unsupported,
 and unmatched forecasts, with two steps for unsupported forecasts. Enforced
-mode should be enabled only after its judgment is
-validated against representative labeled traffic. Shadow and enforced modes
-add one local forecasting inference—about 760–1500 ms in the measured local model
-profile—to compatible `auto` requests.
+mode should be enabled only after its judgment is validated against
+representative labeled traffic. Shadow and enforced modes add one local
+forecasting inference, about 760 to 1,500 ms in the measured local-model
+profile, to compatible `auto` requests.
 
 `shadow_sample_rate` can deterministically sample compatible shadow requests
 from `0.0` through `1.0` using the server-generated request ID. The default is
@@ -140,8 +139,8 @@ In shadow mode only, explicitly typed and paired tool results can contribute
 closed trajectory evidence; malformed, ordinary, or unsupported tool history
 abstains, and the evidence never selects a route directly.
 
-This profile is for running Octoroute beside a local model endpoint. The `config.laptop.toml`
-profile instead binds Octoroute to laptop loopback and uses
+This profile runs Octoroute beside a local model endpoint. The
+`config.laptop.toml` profile instead binds Octoroute to laptop loopback and uses
 `http://local-model.local:8080` as the local upstream.
 
 Start the gateway beside the local model endpoint:
@@ -156,8 +155,8 @@ Start the gateway on the laptop:
 cargo run --release -- --config config.laptop.toml
 ```
 
-Point an OpenAI-compatible client at `http://local-model.local:8081/v1` for the
-local model deployment or `http://127.0.0.1:8081/v1` for the laptop deployment.
+Point an OpenAI-compatible client at `http://local-model.local:8081/v1` for a
+network deployment or `http://127.0.0.1:8081/v1` for a loopback deployment.
 Use `OCTOROUTE_API_KEY` as the client API key.
 
 ## Model intent
@@ -213,7 +212,7 @@ cloud service.
 `X-Octoroute-Request-Id` always identifies the gateway request and is the join
 key for shadow forecast events.
 
-Octoroute never rewrites OpenRouter’s returned `model`; callers see the model
+Octoroute never rewrites OpenRouter's returned `model`; callers see the model
 that actually answered.
 
 ## Operations
