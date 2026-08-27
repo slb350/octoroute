@@ -29,14 +29,15 @@ OPENROUTER_API_KEY=<OpenRouter API credential>
 Never include secrets in `config.toml`, command arguments, unit files, logs,
 or source control.
 
-If Octoroute runs on the local model endpoint itself, keep the repository local base URL,
-`http://127.0.0.1:8080`. If it runs elsewhere on the LAN, use
-`http://local-model.local:8080`.
+When Octoroute runs beside the local model endpoint, a loopback base URL such
+as `http://127.0.0.1:8080` minimizes exposure. When the gateway and model run on
+separate hosts, use the model endpoint's trusted LAN or VPN address instead.
+Keep both services behind firewall rules appropriate for the deployment.
 
-The repository profile already uses loopback and binds Octoroute to port
-8081. Port 3000 is occupied by Gitea on the local model endpoint.
+The repository profile binds Octoroute to port 8081 as an example. Operators
+may choose another non-conflicting port in `config.toml`.
 
-## systemd system service
+## systemd gateway service
 
 ```ini
 [Unit]
@@ -84,9 +85,8 @@ sudo install -o root -g octoroute -m 0640 .env /opt/octoroute/.env
 sudo install -o root -g root -m 0644 deploy/octoroute.service /etc/systemd/system/octoroute.service
 ```
 
-The production `.env` should contain only the inbound Octoroute credential
-and OpenRouter credential, even if the development `.env` contains other
-provider keys. Do not print secret values while creating the deployment file.
+A production `.env` should contain only credentials referenced by the active
+configuration. Do not print secret values while creating the deployment file.
 
 Then:
 
@@ -96,52 +96,63 @@ sudo systemctl enable --now octoroute.service
 sudo systemctl status octoroute.service
 ```
 
-## Existing local model llama.cpp process
+## Optional managed llama.cpp service
 
-The inspected local model server was launched manually from an SSH session. The
-tracked `deploy/local-llama-server.service` preserves its tested model and
-generation arguments while changing only these ingress/observability
-arguments:
+The tracked `deploy/local-llama-server.service` is a generic template for a
+local llama.cpp endpoint. Its defaults are intentionally placeholders. Override
+model path, alias, context size, compute offload, thread count, batch size, and
+parallelism in `/etc/octoroute/local-llm.env` for the target machine.
 
-```text
---host 127.0.0.1
---port 8080
---metrics
+Example overrides:
+
+```dotenv
+LOCAL_MODEL_PATH=/var/lib/octoroute/models/local-model.gguf
+LOCAL_MODEL_ALIAS=local-model
+LOCAL_CONTEXT_SIZE=65536
+LOCAL_GPU_LAYERS=999
+LOCAL_THREADS=8
+LOCAL_BATCH_SIZE=2048
+LOCAL_PARALLEL=1
 ```
 
-Do not run the manual and managed llama.cpp processes on port 8080
-simultaneously. After the managed process is healthy, verify the endpoint is
-reachable from the local model endpoint loopback and no longer reachable directly from another
-LAN host.
-
-Install the unit before the controlled cutover:
+Install the unit:
 
 ```bash
 sudo install -o root -g root -m 0644 deploy/local-llama-server.service \
   /etc/systemd/system/local-llama-server.service
 sudo systemctl daemon-reload
+sudo systemctl enable --now local-llama-server.service
 ```
 
-At cutover, terminate the current manual process gracefully, start the unit,
-and validate `/health`, `/slots?fail_on_no_slot=1`, and
-`/v1/chat/completions/input_tokens` from the local model endpoint loopback before starting
-Octoroute. Roll back by stopping the unit and restoring the previous manual
-command with `--host 0.0.0.0` only while clients are still configured for the
-legacy direct endpoint.
+Do not run another process on the same address and port. Before starting
+Octoroute, validate the configured llama.cpp contract from the gateway host:
+
+```bash
+curl --fail http://127.0.0.1:8080/health
+curl --fail 'http://127.0.0.1:8080/slots?fail_on_no_slot=1'
+curl --fail -H 'Content-Type: application/json' \
+  -d '{"model":"local-model","messages":[{"role":"user","content":"probe"}]}' \
+  http://127.0.0.1:8080/v1/chat/completions/input_tokens
+```
+
+Use the actual configured endpoint instead of loopback when the model runs on
+a separate trusted host.
 
 ## Network
 
-The gateway itself always requires bearer auth, but it should still be
-limited to trusted LAN/VPN clients with a firewall or reverse proxy.
-See [Security](security.md) for browser, rotation, reverse-proxy, and
+The gateway always requires bearer authentication, but it should still be
+limited to trusted LAN or VPN clients with a firewall or reverse proxy. See
+[Security](security.md) for browser, rotation, reverse-proxy, and
 incident-response requirements.
 
-Allow outbound:
+Allow outbound access only to:
 
-- local model llama.cpp;
-- `https://openrouter.ai`.
+- configured local model endpoints;
+- configured cloud providers.
 
-Do not expose llama.cpp directly to untrusted clients if Octoroute is meant
+For the v2 example, the cloud provider is `https://openrouter.ai`.
+
+Do not expose llama.cpp directly to untrusted clients when Octoroute is meant
 to enforce privacy, admission, and spend controls.
 
 ## Readiness
@@ -165,12 +176,13 @@ curl --fail http://127.0.0.1:8081/v1/models \
 ## Rollout validation
 
 1. Verify `/health/live`.
-2. Verify `/health/ready` reports both component states.
+2. Verify `/health/ready` reports the expected upstream states.
 3. Send `model: local` with `X-Octoroute-Privacy: local-only`.
-4. Occupy the single local model slot and verify `model: auto` reports
-   `X-Octoroute-Reason: local_busy` and a cloud destination.
-5. Verify the same busy condition with local-only returns 503.
-6. Verify OpenRouter non-streaming and SSE responses expose the actual model.
+4. Occupy all configured local capacity and verify `model: auto` reports
+   `X-Octoroute-Reason: local_busy` and follows the configured fallback policy.
+5. Verify the same capacity condition with local-only returns an error rather
+   than contacting cloud.
+6. Verify cloud non-streaming and SSE responses expose the actual model.
 7. Scrape `/metrics` with authentication.
 
 ## Shutdown
