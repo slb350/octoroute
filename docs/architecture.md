@@ -64,21 +64,38 @@ released only when the body completes or is dropped.
 `ProviderRegistry` is keyed only by validated provider names. Construction does
 not read provider credentials or run commands.
 
-An OpenAI-compatible provider owns:
+An HTTP provider owns:
 
-- normalized chat-completions URL;
+- normalized protocol-specific request and models URLs;
 - isolated lazy credential source;
-- request-shaping configuration;
+- an OpenAI-preserving or Anthropic-translating adapter;
 - timeout;
+- bounded cached readiness state;
 - concurrency semaphore.
 
 Credential resolution occurs after the executor selects the provider and
-acquires its permit. Unsupported protocols and provider kinds return
-`incompatible` without resolving credentials.
+acquires its permit. The only other resolution path is an explicit readiness
+request after that provider's probe cache expires. Readiness is body-free,
+bounded, and coalesced per provider.
 
 The OpenAI adapter clones the schema-preserving body, patches the model, and
 applies configured defaults only when the caller omitted them. OpenRouter Auto
 is an explicit profile rather than behavior embedded in every provider.
+
+The Anthropic adapter explicitly maps system/developer messages, alternating
+user/assistant text, tool definitions and history, sampling controls, output
+budget, and reasoning effort into Messages. It translates bounded non-streaming
+responses and incremental SSE back into OpenAI response, tool-call, reasoning,
+usage, finish-reason, and error shapes. Features without a verified mapping
+fail as `incompatible` before credential resolution or prompt disclosure.
+
+The Codex provider is a separate command runtime. Admission serializes the
+OpenAI request as data for a stateless backend contract. Execution uses the
+official CLI with ChatGPT-managed login, a filtered environment, an empty
+temporary working directory, read-only sandboxing, ephemeral state, ignored
+user config/rules, and tools, apps, web, hooks, memories, and subagents
+disabled. A strict bounded JSONL lifecycle and output schema must validate
+before the response can commit.
 
 ## Disclosure and fallback
 
@@ -96,10 +113,12 @@ server failures map only to `precommit_failure`.
 
 ## Commitment point
 
-The production transport obtains response headers and buffers the first body
-chunk before returning a prepared response. Until then, the executor may drop
-the response and select another target when policy allows. After decoration and
-return to Axum, the target is committed and the remainder streams opaquely.
+The production transport obtains response headers and buffers the first usable
+body chunk before returning a prepared response. Anthropic streaming buffers
+the first translated event; Anthropic non-streaming and Codex CLI execution
+validate their complete bounded result before commitment. Until then, the
+executor may drop the response and select another target when policy allows.
+After decoration and return to Axum, the target is committed.
 
 Safe upstream response headers are allowlisted. Request IDs, route identity,
 pool/member/provider names, and model revisions come from generated or validated
@@ -118,9 +137,10 @@ Inbound processing applies these controls before route execution:
 
 The inbound permit is also held by the response body stream.
 
-## Remaining adapters
+## Adapter isolation
 
-Anthropic-compatible HTTP and Codex CLI are explicit schema/runtime variants,
-not special cases hidden inside the OpenAI adapter. Until their translation and
-security contracts are implemented, registry entries remain incompatible and
-receive no prompt data.
+OpenAI-compatible HTTP, Anthropic-compatible HTTP, and Codex CLI remain
+explicit runtime variants rather than behavior inferred from endpoints or
+prompts. Each adapter advertises only verified request features, uses its own
+authentication mechanism, and fails closed before disclosure when a request
+cannot be translated safely.

@@ -14,13 +14,19 @@ Create a `.env` beside the selected config file:
 OCTOROUTE_API_KEY=<long random inbound secret>
 OPENROUTER_API_KEY=<provider credential when used>
 ZAI_API_KEY=<provider credential when used>
+KIMI_API_KEY=<Anthropic-compatible provider credential when used>
 ```
 
-The process environment overrides `.env`. Provider variables can be omitted
-until their route steps are used, but the inbound key and credentials for
-enabled authenticated local members must exist at startup.
+The process environment overrides `.env`. Provider variables can be omitted at
+startup, but the provider will remain unavailable when selected or probed.
+The inbound key and credentials for enabled authenticated local members must
+exist at startup.
 
 Restrict both files to the service account.
+
+For an enabled `codex_cli` provider, install the official `codex` executable
+for the service account and complete ChatGPT login under its `HOME` or
+`CODEX_HOME`. Verify `codex doctor --json` as that account before startup.
 
 ## Build and run
 
@@ -41,16 +47,19 @@ deployment.
 - Keep llama.cpp members on trusted private networks.
 - Restrict outbound traffic to configured HTTPS provider endpoints.
 - Do not expose local health, slot, or token-count endpoints publicly.
+- Restrict Octoroute's unauthenticated readiness endpoint to operator networks:
+  a cache refresh resolves provider credentials and can execute the bounded
+  Codex diagnostic, though it sends no prompt body.
 
 ## Startup sequence
 
 Startup performs static config validation, loads the optional `.env`, resolves
 the inbound secret and enabled local-member secrets, constructs local pools,
-and constructs provider adapters without reading provider credentials.
+and constructs OpenAI, Anthropic, and Codex provider adapters without reading
+provider credentials or launching the CLI.
 
-The listener binds only after those steps succeed. Unsupported Anthropic and
-Codex adapters do not block startup; they report incompatible when selected or
-in readiness.
+The listener binds only after those steps succeed. Provider credentials and
+Codex availability remain lazy until selection or an expired readiness probe.
 
 ## Verification
 
@@ -63,11 +72,27 @@ After startup:
 5. send a streaming `worker` request and verify opaque SSE completion;
 6. send `auto` with `X-Octoroute-Privacy: local-only` while local admission is
    unavailable and verify that no provider credential or endpoint is touched;
-7. canary each enabled OpenAI-compatible provider route separately;
+7. canary each enabled HTTP or Codex provider route separately;
 8. scrape authenticated `/metrics` and retain request IDs in proxy logs.
 
-Readiness currently does not authenticate/probe providers, so a successful
-provider canary is required before directing production traffic.
+Run the repository canary against the deployed listener:
+
+```bash
+OCTOROUTE_URL=https://octoroute.internal \
+OCTOROUTE_API_KEY="$OCTOROUTE_API_KEY" \
+OCTOROUTE_LOCAL_MODEL=worker \
+OCTOROUTE_PROVIDER_MODEL=cloud-sota \
+scripts/v3-canary.sh
+```
+
+Omit `OCTOROUTE_PROVIDER_MODEL` to test only the local-only boundary. The
+script checks liveness, active readiness, model listing, local-only completion,
+local-only SSE, and the optional explicit provider route without printing
+response bodies or placing the bearer secret in curl's argument list.
+
+Readiness verifies bounded authentication/reachability, but it is not a model
+generation test. A successful explicit-route canary is still required before
+directing production traffic.
 
 ## Rolling changes
 

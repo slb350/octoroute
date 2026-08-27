@@ -85,6 +85,8 @@ model = "openrouter/auto"
 api_key_env = "OPENROUTER_API_KEY"
 max_in_flight = 4
 timeout_ms = 1800000
+readiness_ttl_ms = 30000
+readiness_timeout_ms = 30000
 priority = 30
 temperature = 0.2
 profile = "open_router_auto"
@@ -110,8 +112,39 @@ Optional request defaults are `reasoning_effort`, `temperature`, and
 "open_router_auto"` installs Octoroute's `auto-router` plugin policy and removes
 client-supplied `allowed_models` from that plugin.
 
-`protocol = "anthropic"` is schema-valid but currently incompatible until the
-translation adapter lands.
+### Anthropic-compatible HTTP
+
+```toml
+[[fabric.providers]]
+name = "kimi"
+kind = "http"
+endpoint = "https://api.kimi.com/coding/v1"
+protocol = "anthropic"
+model = "k3"
+api_key_env = "KIMI_API_KEY"
+max_tokens = 200000
+max_in_flight = 2
+timeout_ms = 1800000
+```
+
+The adapter derives `messages`, authenticates with `x-api-key` plus
+`anthropic-version: 2023-06-01`, and requires a configured `max_tokens` default.
+A valid client `max_completion_tokens` or `max_tokens` overrides that default.
+Text messages, system/developer instructions, function tools and tool history,
+reasoning effort, sampling controls, stop sequences, non-streaming responses,
+and incremental SSE are translated explicitly.
+
+Requests for multimodal output, images/audio/video, log probabilities, multiple
+choices, or JSON-schema/object response formats are incompatible and may fall
+forward only when the route allows `incompatible`.
+
+### Provider readiness
+
+Every provider accepts `readiness_ttl_ms` and `readiness_timeout_ms`. Defaults
+are 30 seconds; the maximum TTL is one hour and the maximum probe timeout is
+five minutes. HTTP probes resolve the lazy credential and issue a body-free
+authenticated `GET` to the derived `models` URL. Codex probes run
+`doctor --json`. Probe state is cached and concurrent refreshes coalesce.
 
 ### Codex CLI
 
@@ -120,14 +153,21 @@ translation adapter lands.
 name = "codex"
 kind = "codex_cli"
 model = "gpt-5.6-sol"
+executable = "codex"
 max_in_flight = 1
 timeout_ms = 1800000
 reasoning_effort = "xhigh"
 ```
 
 Codex CLI entries do not accept endpoint, protocol, credential, sampling,
-token, or profile fields. The schema reserves this provider kind, but the
-runtime currently reports it as incompatible.
+token, or profile fields. `executable` is accepted only for this kind and
+defaults to `codex`; it is a direct executable path, not a shell command.
+
+The runtime requires the official CLI to be logged in through ChatGPT. Each
+request runs ephemerally in an empty read-only workspace with user config,
+rules, tools, web, apps, hooks, memories, and subagents disabled. Output must
+match the bounded structured adapter contract. A streaming OpenAI request is
+returned as one complete SSE chunk plus `[DONE]`, not token-by-token output.
 
 ## Virtual routes
 

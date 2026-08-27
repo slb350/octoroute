@@ -150,8 +150,8 @@ already exercised by Drep:
 - direct OpenAI API at `https://api.openai.com/v1`.
 
 Kimi's preset carries the endpoint-specific requirements observed in Drep:
-`max_tokens` is required, a 200,000-token fallback is accepted, and no
-temperature is sent. OpenRouter has a distinct request profile so Octoroute can
+`max_tokens` is required, a 200,000-token fallback is accepted, and no default
+temperature is injected. OpenRouter has a distinct request profile so Octoroute can
 continue owning Auto Router policy fields instead of trusting conflicting
 client values.
 
@@ -165,9 +165,9 @@ Codex is not an HTTP API-key provider in this design. It is a separate backend
 that invokes the installed official Codex CLI using ChatGPT-managed
 credentials.
 
-The implementation should reuse Drep's security posture:
+The implementation reuses Drep's security posture:
 
-- probe the CLI and ChatGPT login once per process;
+- probe the CLI and ChatGPT login through a bounded cached readiness check;
 - never read, persist, or log the account token;
 - clear the child environment and pass only an allowlist;
 - force the ChatGPT login method;
@@ -178,11 +178,12 @@ The implementation should reuse Drep's security posture:
 - enforce a bounded timeout and output contract;
 - parse structured JSONL events rather than scraping terminal prose.
 
-The gateway adapter still has to translate an OpenAI chat request into the Codex
-execution contract and translate the final event back into an OpenAI response.
-Streaming and tool-call compatibility must be advertised only after they are
-verified. Until then, incompatible requests skip the Codex target instead of
-silently losing semantics.
+The gateway adapter serializes the OpenAI chat request as data under a stateless
+execution contract and translates the validated final event back into an OpenAI
+response. Tool calls are preserved. Streaming requests receive one complete SSE
+chunk plus `[DONE]`; the adapter does not claim token-by-token streaming.
+Unsupported media and provider-specific plugin features skip the Codex target
+as incompatible instead of silently losing semantics.
 
 ## Route chains and fallback
 
@@ -278,7 +279,7 @@ Implemented in the first branch commit:
 
 ### Phase 2: local pool leases
 
-Refactor the existing single-upstream admission path into:
+Implemented by refactoring the existing single-upstream admission path into:
 
 ```text
 LlamaCppMember
@@ -298,8 +299,7 @@ lease. The permit remains held until the streamed body is dropped.
 
 ### Phase 3: HTTP provider registry
 
-Replace the OpenRouter-only transport fields with a registry keyed by provider
-name. Each provider owns:
+Implemented as a registry keyed by provider name. Each provider owns:
 
 - isolated credentials;
 - protocol adapter;
@@ -312,21 +312,25 @@ name. Each provider owns:
 OpenRouter-specific Auto Router mutation remains an explicit profile rather
 than contaminating generic providers.
 
+OpenAI-compatible providers preserve the request schema. Anthropic-compatible
+providers explicitly translate messages, tools, reasoning, responses, errors,
+and fragmented SSE. Cached body-free readiness probes resolve credentials only
+on refresh and publish bounded outcomes.
+
 ### Phase 4: subscription command providers
 
-Build a provider trait that can prepare a response before commitment. Add a
-Codex CLI implementation using the Drep pattern. Command providers must be
+Implemented with a provider lease that prepares a response before commitment
+and a Codex CLI adapter using the Drep pattern. Command providers are
 single-purpose adapters, never arbitrary shell strings. Configuration may name
 an argv credential command for HTTP keys, but execution backends themselves
 must be compiled/known kinds.
 
 ### Phase 5: route executor
 
-Execute validated route steps in order, mapping closed failure classes to each
-route's `fallback_on` set. Add headers such as:
+Implemented by executing validated route steps in order and mapping closed
+failure classes to each route's `fallback_on` set. Response headers include:
 
 - `X-Octoroute-Route`;
-- `X-Octoroute-Tier: worker|supervisor|cloud`;
 - `X-Octoroute-Target`;
 - `X-Octoroute-Provider`;
 - `X-Octoroute-Model-Revision` for local targets;
@@ -338,11 +342,11 @@ provider error strings are never labels.
 
 ### Phase 6: OpenCode integration
 
-Expose one OpenAI-compatible base URL and these model IDs. OpenCode subagents use
+Implemented as one OpenAI-compatible base URL and stable model IDs. OpenCode subagents use
 `worker`; the primary agent uses `supervisor`. OpenCode remains responsible for
 worktree isolation and review.
 
-Validate with a representative suite:
+The representative suite validates:
 
 - simultaneous independent worker requests occupy distinct local endpoints;
 - an additional worker request returns or queues according to configured policy
@@ -353,6 +357,10 @@ Validate with a representative suite:
   unhealthy;
 - enabling a local supervisor makes it the first supervisor target;
 - provider-specific request quirks are applied only to their providers;
+- OpenCode-style function tools and fragmented Anthropic SSE round-trip through
+  the public OpenAI contract;
+- Codex diagnostic, filtered environment, ephemeral invocation, lifecycle, and
+  OpenAI response translation round-trip through the provider executor;
 - local-only never launches a subscription command or contacts cloud;
 - pre-commit failures may continue; post-commit failures may not switch target;
 - provider rate limits can continue only when the route explicitly allows it;

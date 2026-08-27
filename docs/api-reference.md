@@ -59,8 +59,12 @@ Every routed response includes bounded route identity:
 | `X-Octoroute-Request-Id` | Gateway-generated UUID |
 | `X-Request-Id` | Safe upstream ID when supplied, otherwise gateway UUID |
 
-The response body and SSE stream are forwarded opaquely. Octoroute buffers only
-the first upstream body chunk so fallback remains possible before commitment.
+Local and OpenAI-compatible HTTP response bytes are forwarded opaquely after
+the first upstream body chunk is buffered. Anthropic Messages responses and
+SSE events are translated into OpenAI Chat Completions shapes. Codex CLI output
+is validated and returned as a non-streaming completion or a single completion
+chunk followed by `[DONE]`; the CLI adapter does not expose token-by-token
+streaming.
 
 ### Errors
 
@@ -113,17 +117,36 @@ Unauthenticated process liveness:
 
 ## `GET /health/ready` and `GET /health`
 
-Unauthenticated bounded admission snapshot. Local pools are actively probed;
-provider state is currently non-probing and reflects enabled, adapter, and
-permit state.
+Unauthenticated bounded admission snapshot. Local pools are actively probed.
+Enabled HTTP providers resolve their credential and issue a credential-bearing
+`GET` to the provider's derived `models` URL; Codex providers run bounded
+`codex doctor --json` and require ChatGPT-managed authentication. Results are
+cached per provider for `readiness_ttl_ms`, concurrent refreshes coalesce, and
+each refresh is bounded by `readiness_timeout_ms`. A full provider permit pool
+reports `busy` without probing.
+
+Provider values are `ready`, `disabled`, `busy`, or `unavailable` (with
+`incompatible` retained as a closed state). HTTP `2xx`, `400`, `404`, `405`,
+and `429` establish reachability; authentication failures, timeouts, transport
+failures, and server errors report `unavailable`. Readiness sends no prompt or
+request body, but it can resolve provider credentials and execute the Codex
+diagnostic, so operators should restrict network access to this endpoint.
 
 The status is `200` when at least one pool or provider runtime reports ready,
 otherwise `503`.
 
 ## `GET /metrics`
 
-Authenticated Prometheus text exposition for configured pool/provider enablement
-and runtime identity. Label values come only from validated configuration.
+Authenticated Prometheus text exposition for configured pool/provider
+enablement, runtime identity, and these fixed-label provider counter families:
+
+- `octoroute_fabric_provider_admissions_total{provider,state}`;
+- `octoroute_fabric_provider_responses_total{provider,outcome}`;
+- `octoroute_fabric_provider_fallbacks_total{provider,trigger}`;
+- `octoroute_fabric_provider_probes_total{provider,state}`.
+
+Every provider/state combination is rendered, including zero values. Label
+values come only from validated configuration and closed enums.
 
 ## Security headers
 

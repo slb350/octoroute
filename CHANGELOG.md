@@ -16,8 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add a lazy HTTP provider registry with isolated credentials and concurrency,
   bounded timeouts, schema-preserving OpenAI-compatible dispatch, explicit
   OpenRouter Auto shaping, ordered pre-commit fallback, provider readiness, and
-  bounded response headers. Unsupported protocols and missing credentials fail
-  closed without prompt disclosure.
+  bounded response headers. Unsupported request features and missing
+  credentials fail closed without prompt disclosure.
+- Add explicit Anthropic Messages translation for system/developer and chat
+  messages, function tools and history, reasoning, sampling, errors,
+  non-streaming responses, usage, and fragmented SSE.
+- Add a locked-down Codex CLI provider with ChatGPT-auth diagnostics, a filtered
+  child environment, ephemeral read-only execution, disabled integrations,
+  bounded JSONL lifecycle parsing, and OpenAI response translation.
+- Add cached, coalesced, bounded provider authentication/reachability probes;
+  fixed-label admission, response, fallback, and probe counters; representative
+  OpenCode-style provider integration tests; and a deployment canary script.
 
 ### Changed
 

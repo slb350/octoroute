@@ -37,6 +37,9 @@ src/
       policy.rs
       local_pool.rs
       provider.rs
+      anthropic.rs
+      codex.rs
+      metrics.rs
       transport.rs
       service.rs
       http.rs
@@ -57,6 +60,12 @@ Unit and integration coverage should preserve these invariants:
   and context-overflow states;
 - member and provider permits remain held until response bodies are dropped;
 - `local-only` removes provider targets before any credential resolution;
+- cached readiness resolves credentials only on refresh, coalesces concurrent
+  callers, and never includes prompt data;
+- Anthropic messages, tools, reasoning, finish reasons, usage, errors, and
+  fragmented SSE translate into OpenAI-compatible shapes;
+- Codex child environments exclude gateway/provider secrets and every run is
+  ephemeral, read-only, bounded, and contract-validated;
 - each fallback class requires its matching configured trigger;
 - 429 and pre-commit failures do not fall forward indiscriminately;
 - committed non-retryable provider responses are returned;
@@ -64,9 +73,11 @@ Unit and integration coverage should preserve these invariants:
 - generated `config.toml` round-trips through `FabricConfig`;
 - the complete Axum application forwards local SSE bytes opaquely.
 
-Use WireMock for local/provider contract tests. Tests should assert exact request
-bodies and bounded headers, and should use zero-contact or environment-read
-assertions for privacy guarantees.
+Use WireMock for local/provider contract tests. Use a temporary fake executable
+for Codex lifecycle and environment assertions. Tests should assert exact
+request bodies and bounded headers, and should use zero-contact or
+environment-read assertions for privacy guarantees. The OpenCode-style
+Anthropic tool/SSE and Codex end-to-end cases live in `service_tests.rs`.
 
 ## Adding an HTTP provider adapter
 
@@ -74,15 +85,16 @@ Keep protocol translation isolated from the registry and executor:
 
 1. validate protocol-specific configuration statically;
 2. advertise compatibility only for verified request features;
-3. resolve credentials only after selection;
+3. resolve credentials only after selection or a body-free expired readiness
+   probe;
 4. prepare headers plus the first body chunk before commitment;
 5. classify failures into the closed route trigger set;
 6. retain permits through the response body;
 7. test streaming, tools, reasoning, errors, and secret redaction.
 
-OpenAI-compatible providers share one schema-preserving adapter. Anthropic must
-translate messages, tools, reasoning, errors, and streaming explicitly rather
-than pretending wire compatibility.
+OpenAI-compatible providers share one schema-preserving adapter.
+Anthropic-compatible providers use the explicit message, tool, reasoning,
+error, and streaming translator rather than pretending wire compatibility.
 
 ## Adding a command provider
 

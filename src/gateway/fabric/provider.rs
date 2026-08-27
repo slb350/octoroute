@@ -71,7 +71,7 @@ impl ProviderLease {
         &self.model
     }
 
-    pub(crate) fn into_transport_parts(self) -> (ProviderDispatch, Duration, OwnedSemaphorePermit) {
+    pub(super) fn into_transport_parts(self) -> (ProviderDispatch, Duration, OwnedSemaphorePermit) {
         (self.dispatch, self.timeout, self._permit)
     }
 }

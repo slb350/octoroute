@@ -30,33 +30,43 @@ target. These values are bounded by configuration validation.
 
 ## Metrics
 
-`GET /metrics` requires bearer authentication and currently exposes bootstrap
-v3 gauges:
+`GET /metrics` requires bearer authentication and exposes fixed-cardinality v3
+gauges and counters:
 
 ```text
-octoroute_fabric_runtime_info{config_version="3",provider_runtime="open_ai"} 1
+octoroute_fabric_runtime_info{config_version="3",provider_runtime="complete"} 1
 octoroute_fabric_pool_enabled{pool="workers"} 1
 octoroute_fabric_provider_enabled{provider="openrouter"} 1
+octoroute_fabric_provider_admissions_total{provider="openrouter",state="admitted"} 0
+octoroute_fabric_provider_responses_total{provider="openrouter",outcome="success"} 0
+octoroute_fabric_provider_fallbacks_total{provider="openrouter",trigger="rate_limited"} 0
+octoroute_fabric_provider_probes_total{provider="openrouter",state="ready"} 0
 ```
 
 Pool and provider labels come only from validated configuration. Prompt text,
 model output, credentials, session IDs, and provider error strings must never
 become labels.
 
-Detailed bounded counters and latency histograms remain an implementation item;
-see [runtime status](v3-runtime-status.md).
+Admission states, response outcomes, fallback triggers, and probe states are
+closed enums. Every configured provider/enumerated-value pair is emitted even
+when its value is zero, so series cardinality is bounded at startup.
 
 ## Liveness and readiness
 
 `GET /health/live` confirms the process is serving the v3 runtime.
 
 `GET /health/ready` and `/health` return per-pool and per-provider states. Pool
-readiness probes eligible members concurrently. Provider readiness is currently
-non-probing and reflects enabled, adapter compatibility, and available permits.
+readiness probes eligible members concurrently. Enabled HTTP providers resolve
+their credential and perform a body-free authenticated reachability request;
+Codex providers perform `codex doctor --json` and require ChatGPT-managed auth.
+Each provider result is cached for `readiness_ttl_ms`, refreshes coalesce, and
+the operation is bounded by `readiness_timeout_ms`. A provider with no available
+permit reports `busy` immediately.
 
 The process reports ready when at least one pool or provider runtime is ready.
-An OpenAI provider may therefore appear ready before its lazy credential is
-first resolved; credential/authentication probes are a tracked next boundary.
+Readiness is unauthenticated and contains no prompt data, but a cache refresh
+can resolve a provider credential or launch the Codex diagnostic. Restrict it
+to operator networks and avoid polling faster than the configured TTL.
 
 ## Streaming failures
 

@@ -1,5 +1,6 @@
 # Octoroute v3 example for a gateway running on a client workstation.
-# Secrets are loaded lazily from the ignored `.env` file beside this file.
+# Provider secrets are loaded lazily when selected or on an expired readiness
+# probe from the ignored `.env` file beside this file.
 
 config_version = 3
 

@@ -1,6 +1,7 @@
 # Octoroute v3 inference-fabric example and generated configuration template.
-# Secrets are loaded lazily from process environment variables or the ignored
-# `.env` file beside this configuration.
+# Provider secrets are loaded lazily on selection or an expired readiness probe
+# from process environment variables or the ignored `.env` file beside this
+# configuration.
 
 config_version = 3
 

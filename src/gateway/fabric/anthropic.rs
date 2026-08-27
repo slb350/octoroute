@@ -42,7 +42,7 @@ pub(super) fn build_request(
         return Err(AnthropicAdapterError::Incompatible("messages"));
     }
 
-    let max_tokens = requested_max_tokens(source)
+    let max_tokens = requested_max_tokens(source)?
         .or(config.max_tokens)
         .ok_or(AnthropicAdapterError::Incompatible("max_tokens"))?;
     let stream = source
@@ -64,7 +64,10 @@ pub(super) fn build_request(
     copy_number(source, &mut body, "top_p")?;
     copy_number(source, &mut body, "top_k")?;
     copy_stop(source, &mut body)?;
-    if let Some(temperature) = config.temperature {
+    copy_number(source, &mut body, "temperature")?;
+    if !body.contains_key("temperature")
+        && let Some(temperature) = config.temperature
+    {
         body.insert(
             "temperature".to_string(),
             Value::Number(
@@ -73,7 +76,7 @@ pub(super) fn build_request(
         );
     }
     translate_tools(source, &mut body)?;
-    let effort = requested_reasoning_effort(source)
+    let effort = requested_reasoning_effort(source)?
         .or(config.reasoning_effort)
         .unwrap_or(route_effort);
     if let Some(budget) = thinking_budget(effort, max_tokens) {
@@ -94,18 +97,26 @@ fn reject_unsupported_request_fields(
 ) -> Result<(), AnthropicAdapterError> {
     if source
         .get("n")
-        .and_then(Value::as_u64)
-        .is_some_and(|value| value != 1)
+        .filter(|value| !value.is_null())
+        .is_some_and(|value| value.as_u64() != Some(1))
         || source
             .get("modalities")
-            .and_then(Value::as_array)
-            .is_some_and(|values| values.iter().any(|value| value.as_str() != Some("text")))
+            .filter(|value| !value.is_null())
+            .is_some_and(|value| {
+                value.as_array().is_none_or(|values| {
+                    values.iter().any(|value| value.as_str() != Some("text"))
+                })
+            })
         || source
             .get("response_format")
-            .and_then(Value::as_object)
-            .and_then(|value| value.get("type"))
-            .and_then(Value::as_str)
-            .is_some_and(|value| value != "text")
+            .filter(|value| !value.is_null())
+            .is_some_and(|value| {
+                value
+                    .as_object()
+                    .and_then(|value| value.get("type"))
+                    .and_then(Value::as_str)
+                    != Some("text")
+            })
         || ["logprobs", "top_logprobs", "audio"]
             .iter()
             .any(|field| source.get(*field).is_some_and(|value| !value.is_null()))
@@ -328,26 +339,41 @@ fn translate_tools(
     Ok(())
 }
 
-fn requested_max_tokens(source: &Map<String, Value>) -> Option<u32> {
-    ["max_completion_tokens", "max_tokens"]
-        .iter()
-        .find_map(|field| source.get(*field).and_then(Value::as_u64))
-        .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| *value > 0)
+fn requested_max_tokens(
+    source: &Map<String, Value>,
+) -> Result<Option<u32>, AnthropicAdapterError> {
+    for field in ["max_completion_tokens", "max_tokens"] {
+        let Some(value) = source.get(field).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        let value = value
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .ok_or(AnthropicAdapterError::Incompatible("max_tokens"))?;
+        return Ok(Some(value));
+    }
+    Ok(None)
 }
 
-fn requested_reasoning_effort(source: &Map<String, Value>) -> Option<ReasoningEffort> {
-    source
+fn requested_reasoning_effort(
+    source: &Map<String, Value>,
+) -> Result<Option<ReasoningEffort>, AnthropicAdapterError> {
+    let direct = source
         .get("reasoning_effort")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            source
-                .get("reasoning")
-                .and_then(Value::as_object)
-                .and_then(|reasoning| reasoning.get("effort"))
-                .and_then(Value::as_str)
-        })
-        .and_then(parse_effort)
+        .filter(|value| !value.is_null());
+    let nested = match source.get("reasoning").filter(|value| !value.is_null()) {
+        Some(Value::Object(reasoning)) => reasoning.get("effort").filter(|value| !value.is_null()),
+        Some(_) => return Err(AnthropicAdapterError::Incompatible("reasoning effort")),
+        None => None,
+    };
+    match direct.or(nested) {
+        Some(Value::String(value)) => parse_effort(value)
+            .map(Some)
+            .ok_or(AnthropicAdapterError::Incompatible("reasoning effort")),
+        Some(_) => Err(AnthropicAdapterError::Incompatible("reasoning effort")),
+        None => Ok(None),
+    }
 }
 
 fn parse_effort(value: &str) -> Option<ReasoningEffort> {
@@ -508,6 +534,7 @@ pub(super) struct AnthropicSseTranslator {
     id: String,
     model: String,
     created: u64,
+    input_tokens: u64,
     tool_indices: BTreeMap<u64, u64>,
     next_tool_index: u64,
     done: bool,
@@ -520,6 +547,7 @@ impl AnthropicSseTranslator {
             id: format!("chatcmpl-{}", Uuid::new_v4()),
             model: model.to_string(),
             created: unix_timestamp(),
+            input_tokens: 0,
             tool_indices: BTreeMap::new(),
             next_tool_index: 0,
             done: false,
@@ -570,6 +598,12 @@ impl AnthropicSseTranslator {
                     if let Some(model) = message.get("model").and_then(Value::as_str) {
                         self.model = model.to_string();
                     }
+                    self.input_tokens = message
+                        .get("usage")
+                        .and_then(Value::as_object)
+                        .and_then(|usage| usage.get("input_tokens"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default();
                 }
                 Ok(Some(self.chunk(
                     json!({"role": "assistant"}),
@@ -585,7 +619,11 @@ impl AnthropicSseTranslator {
                     .and_then(Value::as_object)
                     .and_then(|delta| delta.get("stop_reason"))
                     .and_then(Value::as_str);
-                let usage = translate_usage(value.get("usage"));
+                let mut usage = translate_usage(value.get("usage"));
+                usage["prompt_tokens"] = Value::Number(Number::from(self.input_tokens));
+                let output_tokens = usage["completion_tokens"].as_u64().unwrap_or_default();
+                usage["total_tokens"] =
+                    Value::Number(Number::from(self.input_tokens.saturating_add(output_tokens)));
                 Ok(Some(self.chunk(
                     json!({}),
                     finish_reason(stop_reason),
@@ -868,6 +906,40 @@ mod tests {
     }
 
     #[test]
+    fn caller_sampling_wins_and_malformed_controls_fail_closed() {
+        let config = FabricConfig::from_toml(include_str!("../../../config.toml"))
+            .expect("repository config");
+        let provider = &config.providers["kimi"];
+        let sampling_request = request(json!({
+            "model": "cloud-sota",
+            "messages": [{"role": "user", "content": "answer"}],
+            "temperature": 0.7
+        }));
+        let translated = build_request(provider, &sampling_request, ReasoningEffort::Low)
+            .expect("Anthropic request");
+        let body: Value = serde_json::from_slice(&translated.body).expect("translated JSON");
+        assert_eq!(body["temperature"], 0.7);
+
+        for malformed in [
+            json!({"n": "1"}),
+            json!({"response_format": "text"}),
+            json!({"max_completion_tokens": "many"}),
+            json!({"reasoning_effort": 1}),
+        ] {
+            let mut body = json!({
+                "model": "cloud-sota",
+                "messages": [{"role": "user", "content": "answer"}]
+            });
+            body.as_object_mut()
+                .expect("object")
+                .extend(malformed.as_object().expect("object").clone());
+            let error = build_request(provider, &request(body), ReasoningEffort::Low)
+                .expect_err("malformed control must fail closed");
+            assert!(error.is_incompatible());
+        }
+    }
+
+    #[test]
     fn anthropic_message_response_becomes_open_ai_chat_completion() {
         let response = json!({
             "id": "msg-1",
@@ -901,7 +973,7 @@ mod tests {
     fn fragmented_anthropic_sse_is_incrementally_translated() {
         let input = concat!(
             "event: message_start\n",
-            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"model\":\"k3\"}}\n\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"model\":\"k3\",\"usage\":{\"input_tokens\":2}}}\n\n",
             "event: content_block_start\n",
             "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"Hi\"}}\n\n",
             "event: message_delta\n",
@@ -925,6 +997,7 @@ mod tests {
             output.contains("\\\"content\\\":\\\"Hi\\\"") || output.contains("\"content\":\"Hi\""),
             "{output}"
         );
+        assert!(output.contains("\"prompt_tokens\":2"), "{output}");
         assert!(output.contains("data: [DONE]"), "{output}");
     }
 

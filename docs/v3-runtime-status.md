@@ -18,6 +18,12 @@ A v3 configuration starts an authenticated OpenAI-compatible service with:
 - a lazy HTTP provider registry keyed by validated names;
 - isolated provider credentials, permits, and deadlines;
 - schema-preserving OpenAI-compatible provider dispatch;
+- explicit Anthropic Messages request, response, tool, reasoning, error, and
+  incremental SSE translation;
+- locked-down, subscription-backed Codex CLI dispatch with ChatGPT-managed
+  authentication and structured output validation;
+- cached bounded provider authentication/reachability probes;
+- fixed-label provider admission, response, fallback, and probe counters;
 - explicit OpenRouter Auto request shaping;
 - held-first-byte streaming that retains the selected member/provider and
   inbound permits until the response body is dropped;
@@ -26,9 +32,10 @@ A v3 configuration starts an authenticated OpenAI-compatible service with:
 
 OpenAI-compatible dispatch supports z.ai, OpenRouter, direct OpenAI, and other
 configured endpoints with the same wire contract. Environment credentials and
-bounded argv credential commands resolve lazily only after a provider step is
-selected. Missing or invalid credentials fail closed before provider contact
-and continue only when route policy explicitly allows the mapped trigger.
+bounded argv credential commands resolve lazily after a provider step is
+selected or an explicit readiness request expires that provider's probe cache.
+Missing or invalid credentials fail closed before chat-provider contact and
+continue only when route policy explicitly allows the mapped trigger.
 
 The default `config.toml`, laptop profile, CLI generator, executable startup,
 crate version, documentation, and integration tests are v3-only. Superseded
@@ -40,6 +47,8 @@ primitives were retained under neutral or fabric ownership.
 
 - `X-Octoroute-Privacy: local-only` removes provider steps before dispatch.
 - Local-only requests do not resolve cloud credentials or contact providers.
+- Readiness sends no prompt data; its bounded provider probes are the only
+  credential-resolution path outside selected provider admission.
 - Local targets always precede providers in a route.
 - Fallback is allowed only for the route's closed trigger set.
 - Rate limits fall forward only when `rate_limited` is configured.
@@ -50,17 +59,16 @@ primitives were retained under neutral or fabric ownership.
 - Secrets are referenced by configured name and omitted from errors and logs.
 - Physical endpoint identity is bounded configuration, not prompt-derived state.
 
-## Represented but incompatible
+## Provider runtime boundary
 
-Anthropic-compatible HTTP and Codex CLI providers remain explicit schema and
-registry variants. They do not resolve credentials, execute commands, or
-receive prompts until dedicated adapters advertise compatibility.
+The registry now has three executable variants: OpenAI-compatible HTTP,
+Anthropic-compatible HTTP, and Codex CLI. Compatibility remains request-scoped:
+an adapter rejects features without a verified mapping before external prompt
+disclosure and can continue only through the route's explicit `incompatible`
+fallback trigger.
 
-## Next implementation boundary
-
-1. add the Anthropic-compatible adapter with explicit message, tool, reasoning,
-   error, and streaming translation;
-2. add provider authentication/readiness probes with bounded cached state;
-3. expand bounded provider metrics and fallback-class coverage;
-4. implement the locked-down Codex CLI adapter and OpenAI response translation;
-5. run representative OpenCode integration and deployment canaries.
+Representative OpenCode-style tool/SSE translation, fake-Codex lifecycle and
+environment isolation, readiness caching, provider fallback metrics, and
+local-only zero-contact behavior are covered by the test suite. Operators can
+run `scripts/v3-canary.sh` for liveness, readiness, model discovery, local-only
+non-streaming/streaming completions, and an optional explicit provider route.

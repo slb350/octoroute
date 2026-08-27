@@ -29,20 +29,25 @@ to a provider.
   argv commands.
 - OpenAI-compatible HTTP dispatch for z.ai, OpenRouter, direct OpenAI, and
   similarly shaped endpoints.
+- Explicit Anthropic Messages translation for text, tools, reasoning,
+  non-streaming responses, and incremental SSE.
+- Locked-down Codex CLI dispatch with ChatGPT-managed authentication, an
+  allowlisted child environment, ephemeral read-only execution, and bounded
+  structured output.
 - An explicit OpenRouter Auto profile owned by Octoroute.
+- Cached, bounded provider authentication/reachability probes and fixed-label
+  provider admission, response, fallback, and probe counters.
 - Closed fallback triggers and a held first byte, preventing target changes
   after response commitment.
-
-Anthropic-compatible HTTP and Codex CLI providers are accepted by the schema
-but currently report `incompatible`; their dedicated adapters are the next
-runtime boundaries.
 
 ## Quick start
 
 Requirements:
 
 - Rust 1.90 or newer.
-- At least one configured local llama.cpp member or OpenAI-compatible provider.
+- At least one configured local llama.cpp member or enabled provider.
+- The official Codex CLI logged in with ChatGPT when a `codex_cli` provider
+  should be ready.
 - An inbound gateway secret.
 
 Copy `.env.example` to `.env` beside `config.toml` and set the inbound key plus
@@ -52,9 +57,12 @@ credentials for providers you intend to use:
 OCTOROUTE_API_KEY=generate-a-long-random-client-secret
 OPENROUTER_API_KEY=your-openrouter-key
 ZAI_API_KEY=your-zai-key
+KIMI_API_KEY=your-kimi-key
 ```
 
-Provider credentials are resolved only when their route step is selected.
+Provider credentials are resolved when their route step is selected or when an
+operator calls readiness and the provider's cached probe has expired. A
+local-only request path itself never resolves them.
 
 Generate or inspect the v3 template:
 
@@ -154,7 +162,7 @@ destination-specific model/default policy fields.
 | `POST /v1/chat/completions` | Bearer | Routed completion or SSE |
 | `GET /v1/models` | Bearer | Virtual model IDs |
 | `GET /health/live` | No | Process liveness |
-| `GET /health/ready` | No | Pool/provider admission snapshot |
+| `GET /health/ready` | No | Cached active pool/provider readiness snapshot |
 | `GET /health` | No | Readiness alias |
 | `GET /metrics` | Bearer | Bounded Prometheus exposition |
 
@@ -171,7 +179,7 @@ cargo test --locked --all-targets --all-features
 cargo doc --locked --all-features --no-deps
 ```
 
-The implementation plan and remaining adapter work are tracked in
+The implementation and merge contract are tracked in
 [the v3 design](docs/plans/octoroute-v3-tiered-inference-fabric.md).
 
 License: MIT.

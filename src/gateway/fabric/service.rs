@@ -195,7 +195,7 @@ where
         models.into_iter().collect()
     }
 
-    /// Probe all configured local pools concurrently.
+    /// Probe all configured local pools and providers concurrently.
     pub async fn readiness(&self) -> FabricReadiness {
         let probes = self.config.local_pools.iter().map(|(name, pool_config)| {
             let pool = self.pools.get(name).cloned();
