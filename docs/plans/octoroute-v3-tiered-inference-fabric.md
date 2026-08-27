@@ -41,7 +41,7 @@ OpenCode owns:
 
 - task decomposition;
 - choosing worker versus supervisor semantics;
-- Medium versus XHigh reasoning effort;
+- choosing the reasoning effort for each task;
 - subagent sessions and context compaction;
 - git worktrees, branches, tests, and merges;
 - reviewing and integrating worker results;
@@ -63,9 +63,9 @@ Octoroute owns:
 - pre-commit fallback only;
 - bounded route reasons, headers, metrics, and auditability.
 
-This keeps endpoint identity and provider credentials out of OpenCode prompts. A
-subagent asks for `model: worker`; it does not need to know which physical endpoint
-is idle.
+This keeps endpoint identity and provider credentials out of OpenCode prompts.
+A subagent asks for `model: worker`; it does not need to know which physical
+endpoint is idle.
 
 ## V3 virtual models
 
@@ -91,7 +91,7 @@ context contract, capabilities, and reasoning default. Each member has its own
 URL, concurrency limit, enabled state, and priority. Pool size and hardware are
 operator choices rather than part of the client contract.
 
-The repository example uses three interchangeable members:
+The repository example uses multiple interchangeable members:
 
 ```text
 pool: workers
@@ -101,7 +101,7 @@ reasoning default: Medium
 members:
   worker-0 -> local model endpoint
   worker-1 -> local model endpoint
-  worker-2 -> local model endpoint
+  worker-N -> local model endpoint
 ```
 
 Each example member is single-slot. Parallelism comes from independent model
@@ -126,7 +126,7 @@ context gates.
 ## Reasoning policy
 
 V3 supports Low, Medium, High, and XHigh so Octoroute can preserve the settings
-accepted by different clients and providers. The repository example still uses
+accepted by different clients and providers. The repository example uses
 Medium for bounded worker tasks and XHigh for complex supervisor work. Low is
 available for operators who prefer it, even though it is not the default policy
 for this deployment.
@@ -282,7 +282,7 @@ Implemented in the first branch commit:
 - local-only route narrowing;
 - provider backend/protocol metadata;
 - Drep-derived provider presets;
-- tested three-worker and disabled-Ultra example.
+- tested multi-member worker and disabled-supervisor example.
 
 ### Phase 2: local pool leases
 
@@ -353,18 +353,20 @@ worktree isolation and review.
 
 Validate with a representative suite:
 
-- three simultaneous independent worker requests occupy three GPUs;
-- a fourth worker request returns/queues according to configured policy without
-  taking cloud fallback on the `worker` local-only route;
-- 128K exact-context admission rejects oversized input before dispatch;
-- Medium and XHigh fields survive schema-preserving proxying;
-- disabled Ultra is skipped without marking the whole route unhealthy;
-- enabling Ultra makes it the first supervisor target;
-- Kimi and z.ai provider quirks are applied only to their requests;
-- local-only never launches Codex or contacts cloud;
+- simultaneous independent worker requests occupy distinct local endpoints;
+- an additional worker request returns or queues according to configured policy
+  without taking cloud fallback on the `worker` local-only route;
+- exact-context admission rejects oversized input before dispatch;
+- Low, Medium, High, and XHigh fields survive schema-preserving proxying;
+- a disabled local supervisor is skipped without marking the whole route
+  unhealthy;
+- enabling a local supervisor makes it the first supervisor target;
+- provider-specific request quirks are applied only to their providers;
+- local-only never launches a subscription command or contacts cloud;
 - pre-commit failures may continue; post-commit failures may not switch target;
 - provider rate limits can continue only when the route explicitly allows it;
-- OpenCode can run three worktree-isolated subagents and integrate their results.
+- OpenCode can run multiple worktree-isolated subagents and integrate their
+  results.
 
 ## Non-goals
 
@@ -374,7 +376,7 @@ V3 does not:
 - decompose tasks;
 - merge agent commits;
 - use a semantic classifier to override an explicit OpenCode tier choice;
-- tensor-parallelize one model across the three 3080s;
+- tensor-parallelize one model across an endpoint pool;
 - hide provider contract failures behind unlimited retries;
 - promise that every subscription CLI can be losslessly represented as OpenAI
   chat completions.
@@ -385,7 +387,7 @@ The v3 branch is ready to merge when:
 
 - all v2 tests remain green;
 - config versions 2 and 3 fail closed into the correct parser;
-- three local members are independently admitted and selected under load;
+- configured local members are independently admitted and selected under load;
 - every provider has protocol, credential, concurrency, and compatibility tests;
 - local-only invariants are proven across every route and failure class;
 - response streaming holds leases and forbids post-commit switching;
