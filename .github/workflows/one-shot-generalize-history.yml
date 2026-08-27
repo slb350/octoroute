@@ -6,6 +6,7 @@ on:
       - feat/v3-tiered-inference-fabric
     paths:
       - .github/workflows/one-shot-generalize-history.yml
+      - scripts/one_shot_generalize_history.py
 
 permissions:
   contents: write
