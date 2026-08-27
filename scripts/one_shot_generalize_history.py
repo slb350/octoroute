@@ -45,6 +45,30 @@ assumptions are enforced.
 """
 text = text[:start] + replacement + text[end:]
 
+phase_start = text.index("### Phase 10: Deployment and release")
+phase_end = text.index("## Test layout", phase_start)
+phase_replacement = """### Phase 10: Deployment and release
+
+1. Build and install Octoroute as a managed service.
+2. Run each local model endpoint under a durable process manager.
+3. Restrict local model ingress to the gateway host or trusted network.
+4. Enable and scrape upstream metrics where supported.
+5. Choose non-conflicting listener addresses and ports through configuration.
+6. Point clients at Octoroute rather than directly at model endpoints.
+7. Start in observation mode with explicit local and cloud requests.
+8. Enable `auto` for a controlled client subset.
+9. Validate metrics, logs, costs, privacy, and fallback behavior.
+10. Run fault drills for exhausted local capacity, stopped local endpoints,
+    unavailable cloud providers, client disconnects, invalid credentials, and
+    context overflow.
+11. Complete the security hardening checklist.
+12. Verify stable and the `1.90` toolchain channel, which CI pins as
+    `1.90.0`.
+13. Publish 2.0.0 only after the migration and rollback paths are tested.
+
+"""
+text = text[:phase_start] + phase_replacement + text[phase_end:]
+
 replacements = {
     "Its live local model response schema must be pinned in a contract fixture before\n"
     "  it becomes an admission dependency.":
@@ -63,6 +87,9 @@ replacements = {
     "The live local model": "The configured local model",
     "live local model": "configured local model",
     "local model host": "local endpoint host",
+    "A personal deployment can restrict it": "An operator can restrict it",
+    "representative personal requests": "representative workloads",
+    "personal configuration": "operator-specific configuration",
 }
 for old, new in replacements.items():
     text = text.replace(old, new)
@@ -70,7 +97,11 @@ for old, new in replacements.items():
 for forbidden in [
     "Gitea",
     "abandoned SSH",
+    "abandoned-session",
     "personal AI traffic",
+    "personal deployment",
+    "personal requests",
+    "personal configuration",
     "Port 3000",
     "Port 8081 is free",
     "inspected on 2026-07-22",
