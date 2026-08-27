@@ -103,9 +103,9 @@ fn reject_unsupported_request_fields(
             .get("modalities")
             .filter(|value| !value.is_null())
             .is_some_and(|value| {
-                value.as_array().is_none_or(|values| {
-                    values.iter().any(|value| value.as_str() != Some("text"))
-                })
+                value
+                    .as_array()
+                    .is_none_or(|values| values.iter().any(|value| value.as_str() != Some("text")))
             })
         || source
             .get("response_format")
@@ -339,9 +339,7 @@ fn translate_tools(
     Ok(())
 }
 
-fn requested_max_tokens(
-    source: &Map<String, Value>,
-) -> Result<Option<u32>, AnthropicAdapterError> {
+fn requested_max_tokens(source: &Map<String, Value>) -> Result<Option<u32>, AnthropicAdapterError> {
     for field in ["max_completion_tokens", "max_tokens"] {
         let Some(value) = source.get(field).filter(|value| !value.is_null()) else {
             continue;
@@ -622,8 +620,9 @@ impl AnthropicSseTranslator {
                 let mut usage = translate_usage(value.get("usage"));
                 usage["prompt_tokens"] = Value::Number(Number::from(self.input_tokens));
                 let output_tokens = usage["completion_tokens"].as_u64().unwrap_or_default();
-                usage["total_tokens"] =
-                    Value::Number(Number::from(self.input_tokens.saturating_add(output_tokens)));
+                usage["total_tokens"] = Value::Number(Number::from(
+                    self.input_tokens.saturating_add(output_tokens),
+                ));
                 Ok(Some(self.chunk(
                     json!({}),
                     finish_reason(stop_reason),
