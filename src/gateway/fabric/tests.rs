@@ -40,6 +40,14 @@ fn repository_example_parses() {
         Some(ProviderProtocol::Anthropic)
     );
     assert_eq!(config.providers["codex"].kind, ProviderKind::CodexCli);
+    assert_eq!(
+        config.providers["zai"]
+            .endpoint
+            .as_ref()
+            .expect("z.ai endpoint")
+            .path(),
+        "/api/coding/paas/v4/"
+    );
 }
 
 #[test]

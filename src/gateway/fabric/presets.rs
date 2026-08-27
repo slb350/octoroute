@@ -15,7 +15,7 @@ pub struct ProviderPreset {
     pub model: &'static str,
     pub api_key_env: Option<&'static str>,
     pub reasoning_effort: Option<ReasoningEffort>,
-    pub temperature: Option<f32>,
+    pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
     pub profile: ProviderProfile,
 }

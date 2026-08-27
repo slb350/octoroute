@@ -138,6 +138,17 @@ impl GatewayRequest {
         .map(Bytes::from)
         .map_err(|_| GatewayRequestError::Serialization)
     }
+
+    /// Clone the schema-preserving body while replacing only the destination model.
+    pub(crate) fn body_value_for_model(
+        &self,
+        model: &str,
+    ) -> Result<Value, GatewayRequestError> {
+        validate_destination_model(model)?;
+        let mut body = self.body.clone();
+        body.insert("model".to_string(), Value::String(model.to_string()));
+        Ok(Value::Object(body))
+    }
 }
 
 /// Safe request validation failures which never include body contents.

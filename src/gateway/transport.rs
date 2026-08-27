@@ -348,6 +348,9 @@ pub enum GatewayTransportError {
     /// Configured local deadline elapsed before the first body byte.
     #[error("local upstream timed out before the first body byte")]
     FirstByteTimeout,
+    /// Configured provider deadline elapsed before the first body byte.
+    #[error("provider timed out before the first body byte")]
+    ProviderTimeout,
 }
 
 fn safe_response_headers(source: &HeaderMap) -> HeaderMap {

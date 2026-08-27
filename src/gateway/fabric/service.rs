@@ -3,6 +3,7 @@
 use super::{
     FabricConfig, FabricRouteError, FabricTransport, FabricUpstreamTransport, FallbackTrigger,
     LlamaCppPool, LlamaCppPoolBuildError, PoolAdmissionOutcome, PoolAdmissionState, RoutePlan,
+    ProviderAdmissionOutcome, ProviderAdmissionState, ProviderRegistry, ProviderRegistryBuildError,
     RouteTarget,
 };
 use crate::gateway::{
@@ -38,12 +39,15 @@ const ROUTE_HEADER: &str = "x-octoroute-route";
 const POOL_HEADER: &str = "x-octoroute-pool";
 const MEMBER_HEADER: &str = "x-octoroute-member";
 const MODEL_REVISION_HEADER: &str = "x-octoroute-model-revision";
+const PROVIDER_HEADER: &str = "x-octoroute-provider";
+const TARGET_HEADER: &str = "x-octoroute-target";
 
-/// Executable v3 gateway service. This first runtime slice dispatches local-pool steps.
+/// Executable v3 gateway service for ordered local-pool and provider routes.
 pub struct FabricGatewayService<T> {
     config: Arc<FabricConfig>,
     authenticator: BearerAuthenticator,
     pools: BTreeMap<String, LlamaCppPool>,
+    providers: ProviderRegistry,
     transport: T,
     inbound_permits: Arc<Semaphore>,
     rate_limiter: FixedWindowRateLimiter,
@@ -53,6 +57,7 @@ pub struct FabricGatewayService<T> {
 #[derive(Debug, Clone)]
 pub struct FabricReadiness {
     pools: BTreeMap<String, PoolAdmissionState>,
+    providers: BTreeMap<String, ProviderAdmissionState>,
 }
 
 impl FabricReadiness {
@@ -60,10 +65,18 @@ impl FabricReadiness {
         &self.pools
     }
 
+    pub fn providers(&self) -> &BTreeMap<String, ProviderAdmissionState> {
+        &self.providers
+    }
+
     pub fn is_ready(&self) -> bool {
         self.pools
             .values()
             .any(|state| *state == PoolAdmissionState::Ready)
+            || self
+                .providers
+                .values()
+                .any(|state| *state == ProviderAdmissionState::Ready)
     }
 }
 
@@ -71,14 +84,18 @@ impl<T> FabricGatewayService<T>
 where
     T: FabricUpstreamTransport,
 {
-    /// Build the v3 service and resolve only secrets needed by the inbound API and enabled pools.
-    pub fn new(
+    /// Build the v3 service without resolving provider credentials.
+    pub fn new<E>(
         config: FabricConfig,
-        environment: &impl Environment,
+        environment: E,
         transport: T,
-    ) -> Result<Self, FabricGatewayServiceBuildError> {
+    ) -> Result<Self, FabricGatewayServiceBuildError>
+    where
+        E: Environment + Send + Sync + 'static,
+    {
+        let environment: Arc<dyn Environment + Send + Sync> = Arc::new(environment);
         let inbound_key = resolve_secret(
-            environment,
+            environment.as_ref(),
             "server.api_key_env",
             config.server.api_key_env.as_str(),
         )?;
@@ -87,7 +104,7 @@ where
             if !pool_config.enabled {
                 continue;
             }
-            let pool = LlamaCppPool::new(pool_config, environment).map_err(|source| {
+            let pool = LlamaCppPool::new(pool_config, environment.as_ref()).map_err(|source| {
                 FabricGatewayServiceBuildError::Pool {
                     pool: name.clone(),
                     source,
@@ -95,6 +112,7 @@ where
             })?;
             pools.insert(name.clone(), pool);
         }
+        let providers = ProviderRegistry::new(&config.providers, environment)?;
 
         Ok(Self {
             authenticator: BearerAuthenticator::new(inbound_key),
@@ -102,6 +120,7 @@ where
             rate_limiter: FixedWindowRateLimiter::new(config.server.requests_per_minute),
             config: Arc::new(config),
             pools,
+            providers,
             transport,
         })
     }
@@ -197,6 +216,7 @@ where
         });
         FabricReadiness {
             pools: join_all(probes).await.into_iter().collect(),
+            providers: self.providers.readiness(),
         }
     }
 
@@ -205,7 +225,7 @@ where
         let mut output = String::from(
             "# HELP octoroute_fabric_runtime_info V3 inference-fabric runtime information.\n\
                  # TYPE octoroute_fabric_runtime_info gauge\n\
-                 octoroute_fabric_runtime_info{config_version=\"3\",provider_runtime=\"pending\"} 1\n\
+                 octoroute_fabric_runtime_info{config_version=\"3\",provider_runtime=\"open_ai\"} 1\n\
                  # HELP octoroute_fabric_pool_enabled Whether a configured local pool is enabled.\n\
                  # TYPE octoroute_fabric_pool_enabled gauge\n",
         );
@@ -213,6 +233,16 @@ where
             let enabled = u8::from(pool.enabled);
             output.push_str(&format!(
                 "octoroute_fabric_pool_enabled{{pool=\"{name}\"}} {enabled}\n"
+            ));
+        }
+        output.push_str(
+            "# HELP octoroute_fabric_provider_enabled Whether a configured provider is enabled.\n\
+             # TYPE octoroute_fabric_provider_enabled gauge\n",
+        );
+        for (name, provider) in &self.config.providers {
+            let enabled = u8::from(provider.enabled);
+            output.push_str(&format!(
+                "octoroute_fabric_provider_enabled{{provider=\"{name}\"}} {enabled}\n"
             ));
         }
         output
@@ -389,19 +419,113 @@ where
                     }
                 }
                 RouteTarget::Provider(provider_name) => {
-                    tracing::info!(
-                        request_id,
-                        route = plan.model.as_str(),
-                        provider = provider_name,
-                        "v3 provider step reached before provider runtime is enabled"
-                    );
-                    return error_response(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "the selected provider route is configured but its runtime adapter is not enabled yet",
-                        "upstream_error",
-                        "provider_runtime_unavailable",
-                        request_id,
-                    );
+                    let outcome = match self
+                        .providers
+                        .try_admit(provider_name, request, plan.default_reasoning_effort)
+                        .await
+                    {
+                        Ok(outcome) => outcome,
+                        Err(error) => {
+                            return error_response(
+                                StatusCode::BAD_REQUEST,
+                                &error.to_string(),
+                                "invalid_request_error",
+                                "provider_request_invalid",
+                                request_id,
+                            );
+                        }
+                    };
+                    match outcome {
+                        ProviderAdmissionOutcome::Admitted(lease) => {
+                            let provider = lease.provider().to_string();
+                            let model = lease.model().to_string();
+                            match self.transport.provider(*lease).await {
+                                Ok(response)
+                                    if response.status() == StatusCode::TOO_MANY_REQUESTS
+                                        && has_more
+                                        && plan
+                                            .fallback_on
+                                            .contains(&FallbackTrigger::RateLimited) =>
+                                {
+                                    tracing::warn!(
+                                        request_id,
+                                        route = plan.model.as_str(),
+                                        provider,
+                                        "provider rate limited before commitment; trying next route step"
+                                    );
+                                    drop(response);
+                                    continue;
+                                }
+                                Ok(response)
+                                    if response.status().is_server_error()
+                                        && has_more
+                                        && plan
+                                            .fallback_on
+                                            .contains(&FallbackTrigger::PrecommitFailure) =>
+                                {
+                                    tracing::warn!(
+                                        request_id,
+                                        route = plan.model.as_str(),
+                                        provider,
+                                        status = response.status().as_u16(),
+                                        "provider failed before commitment; trying next route step"
+                                    );
+                                    drop(response);
+                                    continue;
+                                }
+                                Ok(response) => {
+                                    return decorate_provider(
+                                        response,
+                                        plan,
+                                        &provider,
+                                        &model,
+                                        request_id,
+                                    );
+                                }
+                                Err(error)
+                                    if has_more
+                                        && plan
+                                            .fallback_on
+                                            .contains(&FallbackTrigger::PrecommitFailure) =>
+                                {
+                                    tracing::warn!(
+                                        request_id,
+                                        route = plan.model.as_str(),
+                                        provider,
+                                        %error,
+                                        "provider transport failed before commitment; trying next route step"
+                                    );
+                                    continue;
+                                }
+                                Err(error) => {
+                                    tracing::warn!(
+                                        request_id,
+                                        route = plan.model.as_str(),
+                                        provider,
+                                        %error,
+                                        "provider transport failed before commitment"
+                                    );
+                                    return error_response(
+                                        StatusCode::BAD_GATEWAY,
+                                        "provider failed before response commitment",
+                                        "upstream_error",
+                                        "provider_upstream_error",
+                                        request_id,
+                                    );
+                                }
+                            }
+                        }
+                        ProviderAdmissionOutcome::Rejected(state) => {
+                            let trigger = provider_fallback_trigger(state);
+                            if has_more
+                                && trigger
+                                    .is_some_and(|trigger| plan.fallback_on.contains(&trigger))
+                            {
+                                continue;
+                            }
+                            return provider_state_error(state, provider_name, request_id);
+                        }
+                    }
                 }
             }
         }
@@ -417,10 +541,13 @@ where
 }
 
 impl FabricGatewayService<FabricTransport> {
-    pub fn from_config(
+    pub fn from_config<E>(
         config: FabricConfig,
-        environment: &impl Environment,
-    ) -> Result<Self, FabricGatewayServiceBuildError> {
+        environment: E,
+    ) -> Result<Self, FabricGatewayServiceBuildError>
+    where
+        E: Environment + Send + Sync + 'static,
+    {
         let transport = FabricTransport::new()?;
         Self::new(config, environment, transport)
     }
@@ -440,11 +567,13 @@ pub enum FabricGatewayServiceBuildError {
         source: LlamaCppPoolBuildError,
     },
     #[error(transparent)]
+    ProviderRegistry(#[from] ProviderRegistryBuildError),
+    #[error(transparent)]
     Transport(#[from] GatewayTransportError),
 }
 
 fn resolve_secret(
-    environment: &impl Environment,
+    environment: &(impl Environment + ?Sized),
     field: &str,
     name: &str,
 ) -> Result<SecretString, FabricGatewayServiceBuildError> {
@@ -474,6 +603,17 @@ fn fallback_trigger(state: PoolAdmissionState) -> Option<FallbackTrigger> {
         PoolAdmissionState::Incompatible => Some(FallbackTrigger::Incompatible),
         PoolAdmissionState::Busy => Some(FallbackTrigger::Busy),
         PoolAdmissionState::ContextOverflow => Some(FallbackTrigger::ContextOverflow),
+    }
+}
+
+fn provider_fallback_trigger(state: ProviderAdmissionState) -> Option<FallbackTrigger> {
+    match state {
+        ProviderAdmissionState::Ready => None,
+        ProviderAdmissionState::Disabled | ProviderAdmissionState::Unavailable => {
+            Some(FallbackTrigger::Unhealthy)
+        }
+        ProviderAdmissionState::Incompatible => Some(FallbackTrigger::Incompatible),
+        ProviderAdmissionState::Busy => Some(FallbackTrigger::Busy),
     }
 }
 
@@ -535,6 +675,47 @@ fn pool_state_error(state: PoolAdmissionState, pool: &str, request_id: &str) -> 
     error_response(status, message, "invalid_request_error", code, request_id)
 }
 
+fn provider_state_error(
+    state: ProviderAdmissionState,
+    provider: &str,
+    request_id: &str,
+) -> Response<Body> {
+    let (status, message, code) = match state {
+        ProviderAdmissionState::Ready => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "provider admission returned an inconsistent ready state",
+            "internal_routing_error",
+        ),
+        ProviderAdmissionState::Disabled => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the selected provider is disabled",
+            "provider_disabled",
+        ),
+        ProviderAdmissionState::Incompatible => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the selected provider does not have a compatible runtime adapter",
+            "provider_incompatible",
+        ),
+        ProviderAdmissionState::Busy => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the selected provider is at its concurrency limit",
+            "provider_busy",
+        ),
+        ProviderAdmissionState::Unavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the selected provider is unavailable",
+            "provider_unavailable",
+        ),
+    };
+    tracing::info!(
+        request_id,
+        provider,
+        state = ?state,
+        "v3 provider route could not be admitted"
+    );
+    error_response(status, message, "upstream_error", code, request_id)
+}
+
 fn decorate_local(
     response: PreparedUpstreamResponse,
     plan: &RoutePlan,
@@ -549,6 +730,11 @@ fn decorate_local(
     insert_header(response.headers_mut(), REASON_HEADER, "local_pool");
     insert_header(response.headers_mut(), UPSTREAM_HEADER, &upstream);
     insert_header(response.headers_mut(), ROUTE_HEADER, &plan.model);
+    insert_header(
+        response.headers_mut(),
+        TARGET_HEADER,
+        &format!("pool:{pool}"),
+    );
     insert_header(response.headers_mut(), POOL_HEADER, pool);
     insert_header(response.headers_mut(), MEMBER_HEADER, member);
     insert_header(response.headers_mut(), MODEL_REVISION_HEADER, revision);
@@ -566,6 +752,44 @@ fn decorate_local(
         destination = "local",
         pool,
         member,
+        status = response.status().as_u16(),
+        "v3 gateway response committed"
+    );
+    response
+}
+
+fn decorate_provider(
+    response: PreparedUpstreamResponse,
+    plan: &RoutePlan,
+    provider: &str,
+    model: &str,
+    request_id: &str,
+) -> Response<Body> {
+    let mut response = response.into_response();
+    insert_header(response.headers_mut(), DESTINATION_HEADER, "cloud");
+    insert_header(response.headers_mut(), REASON_HEADER, "provider");
+    insert_header(response.headers_mut(), UPSTREAM_HEADER, provider);
+    insert_header(response.headers_mut(), ROUTE_HEADER, &plan.model);
+    insert_header(response.headers_mut(), PROVIDER_HEADER, provider);
+    insert_header(
+        response.headers_mut(),
+        TARGET_HEADER,
+        &format!("provider:{provider}"),
+    );
+    insert_header(
+        response.headers_mut(),
+        OCTOROUTE_REQUEST_ID_HEADER,
+        request_id,
+    );
+    if !response.headers().contains_key(REQUEST_ID_HEADER) {
+        insert_header(response.headers_mut(), REQUEST_ID_HEADER, request_id);
+    }
+    tracing::info!(
+        request_id,
+        route = plan.model.as_str(),
+        destination = "cloud",
+        provider,
+        model,
         status = response.status().as_u16(),
         "v3 gateway response committed"
     );

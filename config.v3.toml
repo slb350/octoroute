@@ -1,8 +1,7 @@
 # Octoroute v3 inference-fabric example.
 #
-# This file is parsed and tested by src/gateway/fabric. The v3 runtime wiring is
-# being implemented on feat/v3-tiered-inference-fabric; config.toml remains the
-# current v2 template until that migration is complete.
+# This file is parsed and tested by src/gateway/fabric while the v3 runtime is
+# completed on feat/v3-tiered-inference-fabric.
 
 config_version = 3
 

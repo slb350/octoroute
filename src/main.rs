@@ -121,7 +121,7 @@ async fn run_server(config_path: &Path) -> Result<(), Box<dyn std::error::Error>
         RuntimeConfig::V3(config) => {
             let address = SocketAddr::from((config.server.host, config.server.port));
             let log_level = config.observability.log_level.clone();
-            let service = FabricGatewayService::from_config(*config, &environment)?;
+            let service = FabricGatewayService::from_config(*config, environment)?;
             (address, fabric_gateway_app(service), 3_u8, log_level)
         }
     };

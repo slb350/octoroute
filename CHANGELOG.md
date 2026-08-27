@@ -11,10 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Begin the executable v3 runtime with version-aware binary startup, authenticated
-  OpenAI-compatible HTTP endpoints, virtual-model discovery, local-pool readiness,
-  ordered local-pool admission and fallback, and shared pre-commit streaming.
-  Configured provider steps remain fail-closed until their adapters are enabled.
+- Build the executable v3 runtime with authenticated OpenAI-compatible ingress,
+  virtual-model discovery, local-pool admission, and held-first-byte streaming.
+- Add a lazy HTTP provider registry with isolated credentials and concurrency,
+  bounded timeouts, schema-preserving OpenAI-compatible dispatch, explicit
+  OpenRouter Auto shaping, ordered pre-commit fallback, provider readiness, and
+  bounded response headers. Unsupported protocols and missing credentials fail
+  closed without prompt disclosure.
 
 
 ## [2.2.2] - 2026-08-23

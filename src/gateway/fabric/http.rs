@@ -1,6 +1,8 @@
 //! Axum HTTP surface for the executable v3 inference fabric.
 
-use super::{FabricGatewayService, FabricUpstreamTransport, PoolAdmissionState};
+use super::{
+    FabricGatewayService, FabricUpstreamTransport, PoolAdmissionState, ProviderAdmissionState,
+};
 use crate::gateway::{
     http::security_headers,
     service::{
@@ -87,6 +89,16 @@ where
         .iter()
         .map(|(name, state)| (name.clone(), Value::String(pool_state(*state).to_string())))
         .collect::<Map<_, _>>();
+    let providers = readiness
+        .providers()
+        .iter()
+        .map(|(name, state)| {
+            (
+                name.clone(),
+                Value::String(provider_state(*state).to_string()),
+            )
+        })
+        .collect::<Map<_, _>>();
     let status = if readiness.is_ready() {
         StatusCode::OK
     } else {
@@ -98,7 +110,8 @@ where
             "status": if readiness.is_ready() { "ready" } else { "not_ready" },
             "config_version": 3,
             "pools": pools,
-            "provider_runtime": "pending"
+            "providers": providers,
+            "provider_runtime": "open_ai"
         })),
     )
         .into_response()
@@ -134,5 +147,15 @@ fn pool_state(state: PoolAdmissionState) -> &'static str {
         PoolAdmissionState::Busy => "busy",
         PoolAdmissionState::Unhealthy => "unavailable",
         PoolAdmissionState::ContextOverflow => "context_overflow",
+    }
+}
+
+fn provider_state(state: ProviderAdmissionState) -> &'static str {
+    match state {
+        ProviderAdmissionState::Ready => "ready",
+        ProviderAdmissionState::Disabled => "disabled",
+        ProviderAdmissionState::Incompatible => "incompatible",
+        ProviderAdmissionState::Busy => "busy",
+        ProviderAdmissionState::Unavailable => "unavailable",
     }
 }

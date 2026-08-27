@@ -123,7 +123,7 @@ pub struct ProviderConfig {
     pub timeout_ms: u64,
     pub priority: u16,
     pub reasoning_effort: Option<ReasoningEffort>,
-    pub temperature: Option<f32>,
+    pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
     pub profile: ProviderProfile,
 }
@@ -341,7 +341,7 @@ struct RawProviderConfig {
     #[serde(default = "default_priority")]
     priority: u16,
     reasoning_effort: Option<ReasoningEffort>,
-    temperature: Option<f32>,
+    temperature: Option<f64>,
     max_tokens: Option<u32>,
     #[serde(default)]
     profile: ProviderProfile,
@@ -751,7 +751,7 @@ fn validate_routes(
 }
 
 fn validate_url(field: &str, value: &str, https_only: bool) -> Result<Url, FabricConfigError> {
-    let url = Url::parse(value).map_err(|_| invalid(field, "must be an absolute URL"))?;
+    let mut url = Url::parse(value).map_err(|_| invalid(field, "must be an absolute URL"))?;
     let valid_scheme = if https_only {
         url.scheme() == "https"
     } else {
@@ -776,6 +776,10 @@ fn validate_url(field: &str, value: &str, https_only: bool) -> Result<Url, Fabri
             field,
             "must not include credentials, query, or fragment",
         ));
+    }
+    if !url.path().ends_with('/') {
+        let normalized = format!("{}/", url.path());
+        url.set_path(&normalized);
     }
     Ok(url)
 }

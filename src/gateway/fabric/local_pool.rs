@@ -180,7 +180,7 @@ impl LlamaCppPool {
     /// Build a local pool, resolving only the credential names referenced by members.
     pub fn new(
         config: &LocalPoolConfig,
-        environment: &impl Environment,
+        environment: &(impl Environment + ?Sized),
     ) -> Result<Self, LlamaCppPoolBuildError> {
         let client = build().map_err(LlamaCppPoolBuildError::HttpClient)?;
         Self::with_client(config, environment, client)
@@ -188,7 +188,7 @@ impl LlamaCppPool {
 
     pub(crate) fn with_client(
         config: &LocalPoolConfig,
-        environment: &impl Environment,
+        environment: &(impl Environment + ?Sized),
         client: Client,
     ) -> Result<Self, LlamaCppPoolBuildError> {
         let mut members = Vec::new();

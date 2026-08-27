@@ -1,13 +1,11 @@
-//! Octoroute v3 inference-fabric primitives and executable local runtime.
-//!
-//! The v3 module remains separate from the proven v2 request path while provider
-//! adapters and the complete ordered route executor are built out.
+//! Octoroute v3 inference-fabric primitives and executable runtime.
 
 mod config;
 mod http;
 mod local_pool;
 mod policy;
 mod presets;
+mod provider;
 mod service;
 mod transport;
 
@@ -26,6 +24,10 @@ pub use policy::{
     RoutePlan,
 };
 pub use presets::{PROVIDER_PRESETS, ProviderPreset, provider_preset};
+pub use provider::{
+    ProviderAdmissionOutcome, ProviderAdmissionState, ProviderLease, ProviderRegistry,
+    ProviderRegistryBuildError, ProviderRequestError,
+};
 pub use service::{FabricGatewayService, FabricGatewayServiceBuildError, FabricReadiness};
 pub use transport::{FabricTransport, FabricUpstreamTransport};
 
