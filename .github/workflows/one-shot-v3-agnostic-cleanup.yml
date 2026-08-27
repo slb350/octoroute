@@ -1,0 +1,423 @@
+name: One-shot model terminology cleanup
+
+on:
+  push:
+    branches:
+      - feat/v3-tiered-inference-fabric
+    paths:
+      - .github/workflows/one-shot-v3-agnostic-cleanup.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rewrite:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Generalize local endpoint terminology and examples
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          ROOT = Path('.')
+          WORKFLOW = Path('.github/workflows/one-shot-v3-agnostic-cleanup.yml')
+          old_service = Path('deploy/strix-llama-server.service')
+          new_service = Path('deploy/local-llama-server.service')
+          if old_service.exists():
+              old_service.rename(new_service)
+
+          common_replacements = [
+              ('deploy/strix-llama-server.service', 'deploy/local-llama-server.service'),
+              ('strix-llama-server.service', 'local-llama-server.service'),
+              ('strix-llama-server', 'local-llama-server'),
+              ('octoroute-strix-capability-card', 'octoroute-local-capability-card'),
+              ('STRIX_LLM_API_KEY', 'LOCAL_LLM_API_KEY'),
+              ('# Octoroute v2 production configuration for Strix.',
+               '# Octoroute v2 example configuration for a local model endpoint.'),
+              ("# Octoroute v2 configuration for running the gateway on Steve's laptop.",
+               '# Octoroute v2 example for a gateway running on a client workstation.'),
+              ('Octoroute is a local-first, OpenAI-compatible LLM gateway for a personal\nStrix llama.cpp server and OpenRouter.',
+               'Octoroute is a local-first, OpenAI-compatible LLM gateway for local\nmodel endpoints and configurable cloud providers.'),
+              ('The repository configuration targets the live Strix contract:',
+               'The repository configuration provides a generic local-endpoint example:'),
+              ('measured Strix profile', 'measured local-model profile'),
+              ('running Octoroute on Strix', 'running Octoroute beside a local model endpoint'),
+              ('Start the gateway on Strix', 'Start the gateway beside the local model endpoint'),
+              ('for the Strix deployment', 'for a network deployment'),
+              ('Capable Strix', 'Capable local model'),
+              ('Force Strix', 'Force the local model'),
+              ('Aggregated Strix/OpenRouter readiness', 'Aggregated local/OpenRouter readiness'),
+              ('Strix answer', 'local model answer'),
+              ('Strix lacks', 'the local model lacks'),
+              ('on Strix', 'on the local model endpoint'),
+              ('from Strix', 'from the local model endpoint'),
+              ('puzzle-75b', 'example-local-model'),
+              ('agents-a1-q8_0', 'example-local-revision'),
+              ('agents-a1-q8', 'example-local-model'),
+              ('Agents-A1-Q8_0.gguf', 'local-model.gguf'),
+              ('Agents-A1', 'example local model'),
+              ('agents-a1', 'example-local-model'),
+              ('deepseek/deepseek-v4-flash', 'provider/model'),
+              ('Qwen3.8-27B Unsloth UD-Q4_K_M', 'configured coding model'),
+              ('Qwen3.8-27B', 'local coding model'),
+              ('Qwen3.8', 'local coding model'),
+              ('Qwen workers', 'local worker replicas'),
+              ('Qwen worker', 'local worker'),
+              ('qwen3.8-27b', 'coding-worker-model'),
+              ('unsloth-ud-q4_k_m', 'example-worker-revision'),
+              ('256 GB M5 Ultra', 'optional high-capacity local supervisor'),
+              ('M5 Ultra', 'high-capacity local supervisor'),
+              ('m5-ultra', 'supervisor-0'),
+              ('RTX 3080 20 GB', 'local model endpoint'),
+              ('3x RTX 3080', 'multiple local endpoints'),
+              ('RTX 3080', 'local model endpoint'),
+              ('three-card', 'multi-endpoint'),
+              ('Three-card', 'Multi-endpoint'),
+              ('Local Ultra', 'Local supervisor'),
+              ('local Ultra', 'local supervisor'),
+              ('the Ultra', 'the local supervisor'),
+              ('Enabling the Ultra', 'Enabling the local supervisor'),
+              ('GPU identity', 'endpoint identity'),
+              ('physical GPU', 'physical endpoint'),
+              ("Steve's laptop", 'a client workstation'),
+              ('http://gpu-box.local:8001', 'http://worker-0.local:8000'),
+              ('http://gpu-box.local:8002', 'http://worker-1.local:8000'),
+              ('http://gpu-box.local:8003', 'http://worker-2.local:8000'),
+              ('http://m5-ultra.local:8000', 'http://supervisor-0.local:8000'),
+              ('pending-m5-ultra-model', 'example-supervisor-revision'),
+              ('name = "m5-ultra"', 'name = "supervisor-0"'),
+              ('personal coding cluster', 'coding-oriented inference fabric'),
+          ]
+
+          def rewrite_text(path: Path, text: str) -> str:
+              for old, new in common_replacements:
+                  text = text.replace(old, new)
+
+              # Preserve valid Rust identifiers while removing the old codename.
+              if path.suffix == '.rs':
+                  text = re.sub(r'Strix(?=[A-Z0-9_])', 'LocalModel', text)
+                  text = re.sub(r'\bStrix\b', 'local model', text)
+                  text = text.replace('STRIX', 'LOCAL_MODEL')
+                  text = text.replace('strixtea', 'local-model')
+                  text = text.replace('strix-395', 'local-model-endpoint')
+                  text = text.replace('strix.local', 'local-model.local')
+                  text = text.replace('strix', 'local')
+              else:
+                  text = re.sub(r'\bStrix\b', 'local model', text)
+                  text = text.replace('STRIX', 'LOCAL_MODEL')
+                  text = text.replace('strixtea', 'local-model')
+                  text = text.replace('strix-395', 'local-model-endpoint')
+                  text = text.replace('strix.local', 'local-model.local')
+                  text = text.replace('strix', 'local-model')
+
+              return text
+
+          for path in ROOT.rglob('*'):
+              if not path.is_file() or '.git' in path.parts or path == WORKFLOW:
+                  continue
+              try:
+                  original = path.read_text(encoding='utf-8')
+              except UnicodeDecodeError:
+                  continue
+              updated = rewrite_text(path, original)
+              if updated != original:
+                  path.write_text(updated, encoding='utf-8')
+
+          # Make the v3 example explicitly reusable rather than describing one machine.
+          config_path = Path('config.v3.toml')
+          config = config_path.read_text(encoding='utf-8')
+          config = config.replace(
+              '# Three independent local coding model workers, one per local model endpoint card.',
+              '# Example pool of equivalent local coding-model endpoints.'
+          )
+          config = config.replace(
+              '# Disabled until the optional high-capacity local supervisor arrives. Enabling this pool should not\n'
+              '# require changing OpenCode or any other client-facing route.',
+              '# Optional higher-capability local supervisor pool. Enabling it should not\n'
+              '# require changing OpenCode or any other client-facing route.'
+          )
+          config = config.replace(
+              '# High-level planning/review. It uses the local supervisor when available and subscription\n'
+              '# plans until then. OpenCode chooses this route for complex work.',
+              '# High-level planning and review. It prefers a local supervisor when enabled,\n'
+              '# then uses the configured cloud or subscription chain.'
+          )
+          config = config.replace(
+              '# Force all-local operation while still allowing worker-to-local supervisor escalation.',
+              '# Force all-local operation while still allowing worker-to-supervisor escalation.'
+          )
+          provider_marker = "# Moonshot's Kimi for Coding plan."
+          if '# Provider entries below are examples' not in config:
+              config = config.replace(
+                  provider_marker,
+                  '# Provider entries below are examples. Operators may replace, disable, or\n'
+                  '# reorder them while retaining the same virtual-model contracts.\n'
+                  + provider_marker
+              )
+          config_path.write_text(config, encoding='utf-8')
+
+          # Replace the personalized architecture sections with implementation-neutral text.
+          plan_path = Path('docs/plans/octoroute-v3-tiered-inference-fabric.md')
+          plan = plan_path.read_text(encoding='utf-8')
+
+          def replace_section(text: str, heading: str, next_heading: str, body: str) -> str:
+              start = text.index(heading)
+              end = text.index(next_heading, start)
+              return text[:start] + body.rstrip() + '\n\n' + text[end:]
+
+          goal = '''## Goal
+
+Turn Octoroute from a single-local-endpoint/OpenRouter gateway into a reusable
+inference data plane for coding agents and other OpenAI-compatible clients:
+
+```text
+OpenCode / OpenAI-compatible clients
+                |
+                v
+           Octoroute v3
+                |
+       +--------+---------+
+       |        |         |
+       v        v         v
+ worker pool  optional   cloud/subscription
+ replicas     local      providers
+              supervisor
+```
+
+The intended steady-state policy is local-first, not local-only. Bounded work
+should normally remain on a configurable pool of equivalent local endpoints.
+Complex planning and review can use a higher-capability local supervisor when
+one is available. A deliberately small fraction of work may escalate to a
+configured cloud or subscription model when the quality difference matters.
+
+When no local supervisor is enabled, the same `supervisor` virtual model uses
+its configured provider chain. Adding a local supervisor later is therefore a
+configuration change rather than a client or OpenCode rewrite.'''
+          plan = replace_section(plan, '## Goal', '## Responsibility boundary', goal)
+
+          virtual_models = '''## V3 virtual models
+
+The example configuration defines reusable routing roles rather than binding
+clients to physical machines or model releases:
+
+| Client model | Intended behavior |
+| --- | --- |
+| `auto` | Alias for the configured local-first default route |
+| `worker` | Equivalent local worker endpoints, never cloud |
+| `supervisor` | Optional local supervisor, then configured provider chain |
+| `local` | Local worker and supervisor pools only, never cloud |
+| `cloud-sota` | Deliberate non-local escalation |
+
+OpenCode should normally choose `worker` or `supervisor` explicitly because it
+already has the task plan. `auto` remains useful for ordinary OpenAI-compatible
+clients and general prompts.'''
+          plan = replace_section(plan, '## V3 virtual models', '## Local pools', virtual_models)
+
+          local_pools = '''## Local pools
+
+A local pool describes equivalent model servers with a shared model identity,
+context contract, capabilities, and reasoning default. Each member has its own
+URL, concurrency limit, enabled state, and priority. Pool size and hardware are
+operator choices rather than part of the client contract.
+
+The repository example uses three interchangeable members:
+
+```text
+pool: workers
+model: configured coding model
+context: configured per deployment
+reasoning default: Medium
+members:
+  worker-0 -> local model endpoint
+  worker-1 -> local model endpoint
+  worker-2 -> local model endpoint
+```
+
+Each example member is single-slot. Parallelism comes from independent model
+replicas rather than multiple concurrent requests competing for one endpoint's
+context cache and compute bandwidth.
+
+The initial selector is deterministic:
+
+1. reject a disabled pool;
+2. reject unsupported capabilities;
+3. reject an exact input + output + safety budget that exceeds the pool context;
+4. ignore disabled or unreported members;
+5. ignore unhealthy members;
+6. ignore members at `max_in_flight`;
+7. select the lowest live load;
+8. use configured priority, then a rotating cursor, to break ties.
+
+A future sticky-session policy may prefer an existing member while its cached
+prefix is valuable, but stickiness must never bypass health, capacity, or
+context gates.'''
+          plan = replace_section(plan, '## Local pools', '## Reasoning policy', local_pools)
+
+          reasoning = '''## Reasoning policy
+
+V3 supports Low, Medium, High, and XHigh so Octoroute can preserve the settings
+accepted by different clients and providers. The repository example still uses
+Medium for bounded worker tasks and XHigh for complex supervisor work. Low is
+available for operators who prefer it, even though it is not the default policy
+for this deployment.
+
+Octoroute preserves or supplies the selected effort but does not infer task
+complexity from prompt text. Agent runtimes such as OpenCode remain responsible
+for choosing the appropriate reasoning level and escalating failed work.'''
+          plan = replace_section(plan, '## Reasoning policy', '## Provider types', reasoning)
+          plan_path.write_text(plan, encoding='utf-8')
+
+          # Support Low as a valid, provider-neutral reasoning value.
+          rust_config_path = Path('src/gateway/fabric/config.rs')
+          rust_config = rust_config_path.read_text(encoding='utf-8')
+          rust_config = rust_config.replace(
+              '/// Supported reasoning settings. Low is deliberately absent from v3 policy.',
+              '/// Supported reasoning settings exposed by configured backends.'
+          )
+          marker = 'pub enum ReasoningEffort {\n    Medium,\n'
+          if marker not in rust_config:
+              raise SystemExit('ReasoningEffort enum marker not found')
+          rust_config = rust_config.replace(
+              marker,
+              'pub enum ReasoningEffort {\n    Low,\n    Medium,\n',
+              1,
+          )
+          rust_config_path.write_text(rust_config, encoding='utf-8')
+
+          tests_path = Path('src/gateway/fabric/tests.rs')
+          tests = tests_path.read_text(encoding='utf-8')
+          pattern = re.compile(
+              r'\n#\[test\]\nfn low_reasoning_is_not_a_supported_policy_value\(\) \{.*?\n\}\n',
+              re.DOTALL,
+          )
+          replacement = '''
+#[test]
+fn low_reasoning_is_a_supported_policy_value() {
+    let input = include_str!("../../../config.v3.toml").replacen(
+        "default_reasoning_effort = \\"medium\\"",
+        "default_reasoning_effort = \\"low\\"",
+        1,
+    );
+    let config = FabricConfig::from_toml(&input).expect("low must parse");
+    assert_eq!(
+        config.local_pools["workers"].default_reasoning_effort,
+        ReasoningEffort::Low
+    );
+}
+'''
+          tests, count = pattern.subn(replacement, tests, count=1)
+          if count != 1:
+              raise SystemExit('Low-reasoning test block not found exactly once')
+          tests_path.write_text(tests, encoding='utf-8')
+
+          # Generic systemd template for any local llama.cpp endpoint.
+          new_service.write_text('''[Unit]
+Description=Local llama.cpp inference server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=octoroute
+Group=octoroute
+SupplementaryGroups=render
+WorkingDirectory=/opt/llama.cpp
+Environment=LOCAL_MODEL_PATH=/var/lib/octoroute/models/local-model.gguf
+Environment=LOCAL_MODEL_ALIAS=local-model
+Environment=LOCAL_CONTEXT_SIZE=65536
+Environment=LOCAL_GPU_LAYERS=999
+Environment=LOCAL_THREADS=8
+Environment=LOCAL_BATCH_SIZE=2048
+Environment=LOCAL_PARALLEL=1
+EnvironmentFile=-/etc/octoroute/local-llm.env
+ExecStart=/opt/llama.cpp/build/bin/llama-server \\
+    -m ${LOCAL_MODEL_PATH} \\
+    --alias ${LOCAL_MODEL_ALIAS} \\
+    -c ${LOCAL_CONTEXT_SIZE} \\
+    -ngl ${LOCAL_GPU_LAYERS} \\
+    -t ${LOCAL_THREADS} \\
+    -b ${LOCAL_BATCH_SIZE} \\
+    --host 127.0.0.1 \\
+    --port 8080 \\
+    --parallel ${LOCAL_PARALLEL} \\
+    --metrics
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+''', encoding='utf-8')
+
+          # Guard the repository-wide requirement and the public v3 examples.
+          forbidden_anywhere = re.compile(r'strix', re.IGNORECASE)
+          forbidden_personal = re.compile(r'/home/steve|User=steve|Group=steve|Steve[’\']s laptop')
+          forbidden_v3 = re.compile(
+              r'RTX 3080|M5 Ultra|Qwen3(?:\\.8)?|UD-Q4|gpu-box|m5-ultra',
+              re.IGNORECASE,
+          )
+          failures = []
+          for path in ROOT.rglob('*'):
+              if not path.is_file() or '.git' in path.parts or path == WORKFLOW:
+                  continue
+              try:
+                  text = path.read_text(encoding='utf-8')
+              except UnicodeDecodeError:
+                  continue
+              if forbidden_anywhere.search(text):
+                  failures.append(f'{path}: legacy codename remains')
+              if forbidden_personal.search(text):
+                  failures.append(f'{path}: personal deployment detail remains')
+              if path in {config_path, plan_path} and forbidden_v3.search(text):
+                  failures.append(f'{path}: hardware/model-specific v3 example remains')
+          if failures:
+              raise SystemExit('\n'.join(failures))
+          PY
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Test
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Commit cleanup
+        shell: bash
+        run: |
+          rm .github/workflows/one-shot-v3-agnostic-cleanup.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "refactor: make local model terminology deployment-agnostic"
+          git push origin HEAD:${{ github.ref_name }}
