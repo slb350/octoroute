@@ -130,11 +130,8 @@ async fn v3_worker_route_streams_through_shared_precommit_transport() {
         .with("ZAI_API_KEY", "unused-zai-key")
         .with("OPENROUTER_API_KEY", "unused-openrouter-key");
     let environment_audit = environment.clone();
-    let service = FabricGatewayService::from_config(
-        local_config(&server),
-        environment,
-    )
-    .expect("service");
+    let service =
+        FabricGatewayService::from_config(local_config(&server), environment).expect("service");
     let body = Bytes::from(
         serde_json::to_vec(&json!({
             "model": "worker",
@@ -220,11 +217,8 @@ async fn unsupported_provider_kind_fails_closed_without_resolving_cloud_credenti
         .with("OCTOROUTE_API_KEY", "inbound-test-key")
         .with("OPENROUTER_API_KEY", "unused-openrouter-key");
     let environment_audit = environment.clone();
-    let service = FabricGatewayService::from_config(
-        local_config(&server),
-        environment,
-    )
-    .expect("service");
+    let service =
+        FabricGatewayService::from_config(local_config(&server), environment).expect("service");
     let body = Bytes::from(
         serde_json::to_vec(&json!({
             "model": "cloud-sota",

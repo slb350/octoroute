@@ -2,9 +2,9 @@
 
 use super::{
     FabricConfig, FabricRouteError, FabricTransport, FabricUpstreamTransport, FallbackTrigger,
-    LlamaCppPool, LlamaCppPoolBuildError, PoolAdmissionOutcome, PoolAdmissionState, RoutePlan,
+    LlamaCppPool, LlamaCppPoolBuildError, PoolAdmissionOutcome, PoolAdmissionState,
     ProviderAdmissionOutcome, ProviderAdmissionState, ProviderRegistry, ProviderRegistryBuildError,
-    RouteTarget,
+    RoutePlan, RouteTarget,
 };
 use crate::gateway::{
     auth::BearerAuthenticator,
@@ -475,11 +475,7 @@ where
                                 }
                                 Ok(response) => {
                                     return decorate_provider(
-                                        response,
-                                        plan,
-                                        &provider,
-                                        &model,
-                                        request_id,
+                                        response, plan, &provider, &model, request_id,
                                     );
                                 }
                                 Err(error)

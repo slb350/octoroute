@@ -19,10 +19,8 @@ pub trait FabricUpstreamTransport: Send + Sync {
     async fn local(&self, lease: PoolLease) -> Result<PreparedUpstreamResponse, Self::Error>;
 
     /// Dispatch one selected HTTP provider and stop before client commitment.
-    async fn provider(
-        &self,
-        lease: ProviderLease,
-    ) -> Result<PreparedUpstreamResponse, Self::Error>;
+    async fn provider(&self, lease: ProviderLease)
+    -> Result<PreparedUpstreamResponse, Self::Error>;
 }
 
 /// Production v3 transport using a held first-byte stream for every backend.

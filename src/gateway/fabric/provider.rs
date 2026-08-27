@@ -1,8 +1,6 @@
 //! Lazy, credential-isolated runtime registry for configured inference providers.
 
-use super::{
-    ProviderConfig, ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort,
-};
+use super::{ProviderConfig, ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort};
 use crate::gateway::{
     config::Environment,
     http_client::endpoint_url,
@@ -12,12 +10,7 @@ use bytes::Bytes;
 use reqwest::Url;
 use secrecy::SecretString;
 use serde_json::{Map, Number, Value};
-use std::{
-    collections::BTreeMap,
-    process::Stdio,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeMap, process::Stdio, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::{
     io::AsyncReadExt,
@@ -292,8 +285,7 @@ fn build_open_ai_body(
     if let Some(temperature) = config.temperature
         && !present(object, "temperature")
     {
-        let number = Number::from_f64(temperature)
-            .ok_or(ProviderRequestError::Serialization)?;
+        let number = Number::from_f64(temperature).ok_or(ProviderRequestError::Serialization)?;
         object.insert("temperature".to_string(), Value::Number(number));
     }
     if let Some(max_tokens) = config.max_tokens
@@ -314,7 +306,9 @@ fn build_open_ai_body(
         .map_err(|_| ProviderRequestError::Serialization)
 }
 
-fn apply_openrouter_auto_profile(body: &mut Map<String, Value>) -> Result<(), ProviderRequestError> {
+fn apply_openrouter_auto_profile(
+    body: &mut Map<String, Value>,
+) -> Result<(), ProviderRequestError> {
     let plugins = body
         .entry("plugins")
         .or_insert_with(|| Value::Array(Vec::new()));
@@ -437,11 +431,7 @@ async fn resolve_command_credential(
         return Err(ProviderCredentialError::CommandFailed);
     }
     let output = String::from_utf8(output).map_err(|_| ProviderCredentialError::Invalid)?;
-    validate_credential(
-        output
-            .trim_end_matches(|character| character == '\r' || character == '\n')
-            .to_string(),
-    )
+    validate_credential(output.trim_end_matches(['\r', '\n']).to_string())
 }
 
 async fn terminate(child: &mut Child) {
