@@ -1,0 +1,39 @@
+name: One-shot historical design generalization
+
+on:
+  push:
+    branches:
+      - feat/v3-tiered-inference-fabric
+    paths:
+      - .github/workflows/one-shot-generalize-history.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rewrite:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Generalize historical deployment evidence
+        run: python3 scripts/one_shot_generalize_history.py
+
+      - name: Verify repository tests
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Commit cleanup
+        shell: bash
+        run: |
+          rm .github/workflows/one-shot-generalize-history.yml
+          rm scripts/one_shot_generalize_history.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "docs: generalize historical local endpoint assumptions"
+          git push origin HEAD:${{ github.ref_name }}
