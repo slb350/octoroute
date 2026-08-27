@@ -1,9 +1,8 @@
 use super::*;
-use crate::gateway::config::LocalCapability;
 use std::collections::BTreeSet;
 
 fn example() -> FabricConfig {
-    FabricConfig::from_toml(include_str!("../../../config.v3.toml"))
+    FabricConfig::from_toml(include_str!("../../../config.toml"))
         .expect("the repository v3 example must remain valid")
 }
 
@@ -168,7 +167,7 @@ fn cloud_only_route_rejects_local_only_header() {
 
 #[test]
 fn low_reasoning_is_a_supported_policy_value() {
-    let input = include_str!("../../../config.v3.toml").replacen(
+    let input = include_str!("../../../config.toml").replacen(
         "default_reasoning_effort = \"medium\"",
         "default_reasoning_effort = \"low\"",
         1,
@@ -204,7 +203,7 @@ fn malformed_v3_toml_does_not_echo_values() {
 
 #[test]
 fn route_rejects_returning_local_after_cloud() {
-    let input = include_str!("../../../config.v3.toml").replace(
+    let input = include_str!("../../../config.toml").replace(
         "steps = [\"pool:workers\", \"pool:supervisor-local\", \"provider:kimi\", \"provider:zai\", \"provider:openrouter\"]",
         "steps = [\"provider:kimi\", \"pool:workers\"]",
     );
@@ -218,7 +217,7 @@ fn route_rejects_returning_local_after_cloud() {
 
 #[test]
 fn http_provider_requires_exactly_one_credential_source() {
-    let input = include_str!("../../../config.v3.toml").replace(
+    let input = include_str!("../../../config.toml").replace(
         "api_key_env = \"KIMI_API_KEY\"",
         "api_key_env = \"KIMI_API_KEY\"\napi_key_command = [\"secret-tool\", \"lookup\", \"kimi\"]",
     );

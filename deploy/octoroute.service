@@ -1,5 +1,5 @@
 [Unit]
-Description=Octoroute local-first LLM gateway
+Description=Octoroute v3 inference fabric
 After=network-online.target
 Wants=network-online.target
 

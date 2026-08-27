@@ -1,8 +1,8 @@
 //! Runtime admission for a pool of equivalent llama.cpp servers.
 
-use super::LocalPoolConfig;
+use super::{LocalCapability, LocalPoolConfig};
 use crate::gateway::{
-    config::{Environment, LocalCapability},
+    env::Environment,
     http_client::{LOCAL_CHAT_COMPLETIONS_PATH, authorized, build, endpoint_url},
     request::{GatewayRequest, GatewayRequestError, RequestFeature},
 };

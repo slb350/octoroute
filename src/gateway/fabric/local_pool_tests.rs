@@ -1,5 +1,5 @@
 use super::{FabricConfig, LlamaCppPool, LlamaCppPoolBuildError, PoolAdmissionState, PoolLease};
-use crate::gateway::{config::Environment, request::GatewayRequest};
+use crate::gateway::{env::Environment, request::GatewayRequest};
 use reqwest::Url;
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -18,7 +18,7 @@ impl Environment for EmptyEnvironment {
 }
 
 fn example() -> FabricConfig {
-    FabricConfig::from_toml(include_str!("../../../config.v3.toml")).expect("repository example")
+    FabricConfig::from_toml(include_str!("../../../config.toml")).expect("repository example")
 }
 
 fn request(output_tokens: u32) -> GatewayRequest {

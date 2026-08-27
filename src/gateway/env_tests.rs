@@ -1,10 +1,26 @@
 use super::{
-    config::Environment,
-    env::{DotenvEnvironment, DotenvLoadError},
-    test_support::TestEnvironment,
+    env::{DotenvEnvironment, DotenvLoadError, Environment},
 };
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 use tempfile::NamedTempFile;
+
+#[derive(Debug, Default)]
+struct TestEnvironment {
+    values: BTreeMap<String, String>,
+}
+
+impl TestEnvironment {
+    fn with(mut self, name: &str, value: &str) -> Self {
+        self.values.insert(name.to_string(), value.to_string());
+        self
+    }
+}
+
+impl Environment for TestEnvironment {
+    fn get(&self, name: &str) -> Option<String> {
+        self.values.get(name).cloned()
+    }
+}
 
 fn dotenv_file(contents: &str) -> NamedTempFile {
     let file = NamedTempFile::new().expect("temporary dotenv file");

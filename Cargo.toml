@@ -1,10 +1,10 @@
 [package]
 name = "octoroute"
-version = "2.2.2"
+version = "3.0.0"
 edition = "2024"
 rust-version = "1.90"
 authors = ["Steve Brandon"]
-description = "Local-first OpenAI-compatible gateway for llama.cpp and OpenRouter"
+description = "OpenAI-compatible inference fabric for local pools and cloud providers"
 license = "MIT"
 repository = "https://github.com/slb350/octoroute"
 exclude = ["AGENTS.md", "CLAUDE.md"]
@@ -33,10 +33,8 @@ h2 = "0.4.16"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"] }
-prometheus = "0.14"
 
 [dev-dependencies]
-proptest = "1.4"
 tempfile = "3"
 wiremock = "0.6"
 tower = { version = "0.5", features = ["util"] }

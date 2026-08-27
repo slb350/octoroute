@@ -925,7 +925,7 @@ dependencies = [
 
 [[package]]
 name = "octoroute"
-version = "2.2.2"
+version = "3.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -934,8 +934,6 @@ dependencies = [
  "dotenvy",
  "futures",
  "h2",
- "prometheus",
- "proptest",
  "reqwest",
  "secrecy",
  "serde",

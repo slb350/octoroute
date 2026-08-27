@@ -1,203 +1,95 @@
 # Deployment
 
-## Build
+Octoroute v3 is a single Rust service in front of local llama.cpp pools and
+configured provider endpoints.
 
-```bash
-cargo build --release --locked
-```
+## Prepare configuration
 
-The binary is `target/release/octoroute`. Octoroute requires Rust 1.90 to
-build; the deployed binary has no Rust runtime dependency.
+Start from `config.toml` or `config.laptop.toml`. Set stable pool/member names,
+immutable model revisions, context limits, provider chains, and route privacy.
 
-## Files
-
-Install:
-
-```text
-/opt/octoroute/bin/octoroute
-/opt/octoroute/config.toml
-/opt/octoroute/.env
-```
-
-`.env` must be readable only by the service account:
+Create a `.env` beside the selected config file:
 
 ```dotenv
-OCTOROUTE_API_KEY=<long random client credential>
-OPENROUTER_API_KEY=<OpenRouter API credential>
+OCTOROUTE_API_KEY=<long random inbound secret>
+OPENROUTER_API_KEY=<provider credential when used>
+ZAI_API_KEY=<provider credential when used>
 ```
 
-Never include secrets in `config.toml`, command arguments, unit files, logs,
-or source control.
+The process environment overrides `.env`. Provider variables can be omitted
+until their route steps are used, but the inbound key and credentials for
+enabled authenticated local members must exist at startup.
 
-When Octoroute runs beside the local model endpoint, a loopback base URL such
-as `http://127.0.0.1:8080` minimizes exposure. When the gateway and model run on
-separate hosts, use the model endpoint's trusted LAN or VPN address instead.
-Keep both services behind firewall rules appropriate for the deployment.
+Restrict both files to the service account.
 
-The repository profile binds Octoroute to port 8081 as an example. Operators
-may choose another non-conflicting port in `config.toml`.
-
-## systemd gateway service
-
-```ini
-[Unit]
-Description=Octoroute local-first LLM gateway
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=octoroute
-Group=octoroute
-WorkingDirectory=/opt/octoroute
-ExecStart=/opt/octoroute/bin/octoroute --config /opt/octoroute/config.toml
-Restart=on-failure
-RestartSec=2
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateDevices=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-RestrictNamespaces=true
-RestrictRealtime=true
-RestrictSUIDSGID=true
-LockPersonality=true
-MemoryDenyWriteExecute=true
-UMask=0077
-
-[Install]
-WantedBy=multi-user.target
-```
-
-The tracked `deploy/octoroute.service` contains this unit. Create a locked
-service account and install the files:
+## Build and run
 
 ```bash
-sudo useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin octoroute
-sudo install -d -o root -g octoroute -m 0750 /opt/octoroute/bin
-sudo install -o root -g root -m 0755 target/release/octoroute /opt/octoroute/bin/octoroute
-sudo install -o root -g octoroute -m 0640 config.toml /opt/octoroute/config.toml
-sudo install -o root -g octoroute -m 0640 .env /opt/octoroute/.env
-sudo install -o root -g root -m 0644 deploy/octoroute.service /etc/systemd/system/octoroute.service
+cargo build --locked --release
+target/release/octoroute --config /etc/octoroute/config.toml
 ```
 
-A production `.env` should contain only credentials referenced by the active
-configuration. Do not print secret values while creating the deployment file.
+The repository includes example systemd units in `deploy/`. Adjust user/group,
+paths, network dependencies, and local-model service relationships for the
+deployment.
 
-Then:
+## Network placement
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now octoroute.service
-sudo systemctl status octoroute.service
-```
+- Bind `127.0.0.1` for a same-host client.
+- For remote clients, bind a private address and place authenticated TLS in
+  front of Octoroute.
+- Keep llama.cpp members on trusted private networks.
+- Restrict outbound traffic to configured HTTPS provider endpoints.
+- Do not expose local health, slot, or token-count endpoints publicly.
 
-## Optional managed llama.cpp service
+## Startup sequence
 
-The tracked `deploy/local-llama-server.service` is a generic template for a
-local llama.cpp endpoint. Its defaults are intentionally placeholders. Override
-model path, alias, context size, compute offload, thread count, batch size, and
-parallelism in `/etc/octoroute/local-llm.env` for the target machine.
+Startup performs static config validation, loads the optional `.env`, resolves
+the inbound secret and enabled local-member secrets, constructs local pools,
+and constructs provider adapters without reading provider credentials.
 
-Example overrides:
+The listener binds only after those steps succeed. Unsupported Anthropic and
+Codex adapters do not block startup; they report incompatible when selected or
+in readiness.
 
-```dotenv
-LOCAL_MODEL_PATH=/var/lib/octoroute/models/local-model.gguf
-LOCAL_MODEL_ALIAS=local-model
-LOCAL_CONTEXT_SIZE=65536
-LOCAL_GPU_LAYERS=999
-LOCAL_THREADS=8
-LOCAL_BATCH_SIZE=2048
-LOCAL_PARALLEL=1
-```
+## Verification
 
-Install the unit:
+After startup:
 
-```bash
-sudo install -o root -g root -m 0644 deploy/local-llama-server.service \
-  /etc/systemd/system/local-llama-server.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now local-llama-server.service
-```
+1. call `/health/live` and verify `config_version: 3`;
+2. call `/health/ready` and inspect every configured pool/provider;
+3. authenticate to `/v1/models` and confirm the expected virtual routes;
+4. send a non-streaming `worker` request;
+5. send a streaming `worker` request and verify opaque SSE completion;
+6. send `auto` with `X-Octoroute-Privacy: local-only` while local admission is
+   unavailable and verify that no provider credential or endpoint is touched;
+7. canary each enabled OpenAI-compatible provider route separately;
+8. scrape authenticated `/metrics` and retain request IDs in proxy logs.
 
-Do not run another process on the same address and port. Before starting
-Octoroute, validate the configured llama.cpp contract from the gateway host:
+Readiness currently does not authenticate/probe providers, so a successful
+provider canary is required before directing production traffic.
 
-```bash
-curl --fail http://127.0.0.1:8080/health
-curl --fail 'http://127.0.0.1:8080/slots?fail_on_no_slot=1'
-curl --fail -H 'Content-Type: application/json' \
-  -d '{"model":"local-model","messages":[{"role":"user","content":"probe"}]}' \
-  http://127.0.0.1:8080/v1/chat/completions/input_tokens
-```
+## Rolling changes
 
-Use the actual configured endpoint instead of loopback when the model runs on
-a separate trusted host.
+Virtual model names are the client contract. Pool membership, model revisions,
+provider priority, and route chains can change without reconfiguring clients.
 
-## Network
+For a model replacement:
 
-The gateway always requires bearer authentication, but it should still be
-limited to trusted LAN or VPN clients with a firewall or reverse proxy. See
-[Security](security.md) for browser, rotation, reverse-proxy, and
-incident-response requirements.
+1. deploy the new llama.cpp member under a new or updated immutable revision;
+2. verify its health, slot, input-token, and chat endpoints;
+3. add/enable it in a pool with bounded capacity;
+4. canary through Octoroute;
+5. remove the old member after in-flight streams finish.
 
-Allow outbound access only to:
+For provider changes, add the credential out of band, canary an explicit route,
+then adjust route order. Local targets must remain before providers.
 
-- configured local model endpoints;
-- configured cloud providers.
+## Rollback
 
-For the v2 example, the cloud provider is `https://openrouter.ai`.
+Keep the previous v3 binary and configuration as a pair. To roll back, stop the
+service, restore both artifacts, and restart. Avoid restoring a configuration
+that names a model revision no longer deployed.
 
-Do not expose llama.cpp directly to untrusted clients when Octoroute is meant
-to enforce privacy, admission, and spend controls.
-
-## Readiness
-
-Use:
-
-```bash
-curl --fail http://127.0.0.1:8081/health/live
-curl --fail http://127.0.0.1:8081/health/ready
-```
-
-The second endpoint is healthy when at least one upstream is available.
-
-Protected smoke test:
-
-```bash
-curl --fail http://127.0.0.1:8081/v1/models \
-  -H "Authorization: Bearer $OCTOROUTE_API_KEY"
-```
-
-## Rollout validation
-
-1. Verify `/health/live`.
-2. Verify `/health/ready` reports the expected upstream states.
-3. Send `model: local` with `X-Octoroute-Privacy: local-only`.
-4. Occupy all configured local capacity and verify `model: auto` reports
-   `X-Octoroute-Reason: local_busy` and follows the configured fallback policy.
-5. Verify the same capacity condition with local-only returns an error rather
-   than contacting cloud.
-6. Verify cloud non-streaming and SSE responses expose the actual model.
-7. Scrape `/metrics` with authentication.
-
-## Shutdown
-
-SIGINT and SIGTERM trigger graceful Axum shutdown. In-flight body streams are
-allowed to finish according to Axum/hyper shutdown behavior; dropping a
-client stream releases its Octoroute and upstream permits.
-
-## Release
-
-The initial `2.0.0` release introduced the breaking v2 configuration/API
-change. Minor release `2.2.0` adds calibrated local-success forecasting,
-offline threshold evaluation, bounded shadow trajectory signals, and an
-opt-in enforced-mode session latch while retaining shadow mode as the default.
-Do not publish or tag while the tree is dirty or verification is incomplete.
-
-See [Migrating from Octoroute v1 to v2](migration-v2.md) for staged rollout
-and rollback instructions.
+Credential revocation is independent of binary rollback. Revoke suspected
+provider keys immediately, update the environment, and restart the service.

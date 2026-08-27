@@ -1,9 +1,13 @@
 use super::{
-    config::LocalCapability,
+    fabric::LocalCapability,
     request::{GatewayRequest, GatewayRequestError, RequestFeature},
-    test_support::gateway_request,
 };
 use serde_json::json;
+
+fn gateway_request(value: serde_json::Value) -> GatewayRequest {
+    GatewayRequest::parse(&serde_json::to_vec(&value).expect("serialize request"))
+        .expect("valid gateway request")
+}
 
 #[test]
 fn preserves_unknown_fields_when_patching_only_the_model() {

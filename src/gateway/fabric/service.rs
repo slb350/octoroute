@@ -1,22 +1,20 @@
 //! Authenticated v3 orchestration for virtual routes and local inference pools.
 
 use super::{
-    FabricConfig, FabricRouteError, FabricTransport, FabricUpstreamTransport, FallbackTrigger,
-    LlamaCppPool, LlamaCppPoolBuildError, PoolAdmissionOutcome, PoolAdmissionState,
-    ProviderAdmissionOutcome, ProviderAdmissionState, ProviderRegistry, ProviderRegistryBuildError,
-    RoutePlan, RouteTarget,
+    FabricConfig, FabricRouteError, FabricTransport, FabricTransportError, FabricUpstreamTransport,
+    FallbackTrigger, LlamaCppPool, LlamaCppPoolBuildError, PoolAdmissionOutcome,
+    PoolAdmissionState, PreparedUpstreamResponse, PrivacyDirective, ProviderAdmissionOutcome,
+    ProviderAdmissionState, ProviderRegistry, ProviderRegistryBuildError, RoutePlan, RouteTarget,
+};
+use super::http_support::{
+    FixedWindowRateLimiter, MetadataAuthorizationError, OCTOROUTE_REQUEST_ID_HEADER,
+    REQUEST_ID_HEADER, error_response, header_bytes, hold_response_guard, insert_header,
+    metadata_authorization_error, rate_limit_response,
 };
 use crate::gateway::{
     auth::BearerAuthenticator,
-    config::Environment,
+    env::Environment,
     request::GatewayRequest,
-    routing::PrivacyDirective,
-    service::{
-        FixedWindowRateLimiter, MetadataAuthorizationError, OCTOROUTE_REQUEST_ID_HEADER,
-        REQUEST_ID_HEADER, error_response, header_bytes, hold_response_guard, insert_header,
-        metadata_authorization_error, rate_limit_response,
-    },
-    transport::{GatewayTransportError, PreparedUpstreamResponse},
 };
 use axum::{
     body::{Body, Bytes, to_bytes},
@@ -177,7 +175,7 @@ where
         hold_response_guard(response, permit)
     }
 
-    pub fn authorize_metadata(
+    pub(super) fn authorize_metadata(
         &self,
         headers: &HeaderMap,
     ) -> Result<(), MetadataAuthorizationError> {
@@ -565,7 +563,7 @@ pub enum FabricGatewayServiceBuildError {
     #[error(transparent)]
     ProviderRegistry(#[from] ProviderRegistryBuildError),
     #[error(transparent)]
-    Transport(#[from] GatewayTransportError),
+    Transport(#[from] FabricTransportError),
 }
 
 fn resolve_secret(

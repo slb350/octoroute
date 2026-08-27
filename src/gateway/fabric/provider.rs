@@ -2,7 +2,7 @@
 
 use super::{ProviderConfig, ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort};
 use crate::gateway::{
-    config::Environment,
+    env::Environment,
     http_client::endpoint_url,
     request::{GatewayRequest, GatewayRequestError},
 };

@@ -1,6 +1,5 @@
-//! Layered process and repository `.env` configuration.
+//! Secret-bearing process and repository `.env` configuration.
 
-use crate::gateway::config::Environment;
 use secrecy::{ExposeSecret, SecretString};
 use std::{
     collections::HashMap,
@@ -8,6 +7,22 @@ use std::{
     path::{Path, PathBuf},
 };
 use thiserror::Error;
+
+/// Source used to resolve secret-bearing environment variables.
+pub trait Environment {
+    /// Return an environment variable without logging its value.
+    fn get(&self, name: &str) -> Option<String>;
+}
+
+/// Environment source backed by the current process.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProcessEnvironment;
+
+impl Environment for ProcessEnvironment {
+    fn get(&self, name: &str) -> Option<String> {
+        std::env::var(name).ok()
+    }
+}
 
 /// Environment composed from process values over an optional dotenv file.
 pub struct DotenvEnvironment<E> {

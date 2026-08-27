@@ -1,21 +1,19 @@
 //! Command-line interface for Octoroute.
-//!
-//! Provides argument parsing and subcommand handling for the Octoroute binary.
 
 use clap::{Parser, Subcommand};
 
-/// Local-first OpenAI-compatible gateway with OpenRouter cloud fallback.
+/// OpenAI-compatible inference fabric for local pools and configured providers.
 #[derive(Parser)]
 #[command(name = "octoroute")]
 #[command(version)]
-#[command(about = "Local-first OpenAI-compatible LLM gateway")]
+#[command(about = "OpenAI-compatible tiered inference fabric")]
 #[command(
-    long_about = "Octoroute intelligently routes work a local llama.cpp model can handle well \
-    to that model and sends harder work to OpenRouter Auto, while preserving OpenAI \
-    chat-completion schemas."
+    long_about = "Octoroute exposes stable virtual models backed by local llama.cpp pools and \
+    ordered provider chains while preserving OpenAI chat-completion schemas and strict \
+    local-only privacy."
 )]
 pub struct Cli {
-    /// Path to configuration file.
+    /// Path to the v3 configuration file.
     #[arg(short, long, default_value = "config.toml", global = true)]
     pub config: String,
 
@@ -25,23 +23,11 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Generate a template configuration file.
+    /// Generate a v3 template configuration file.
     Config {
         /// Output file path (prints to stdout if not specified).
         #[arg(short, long)]
         output: Option<String>,
-    },
-    /// Analyze labeled semantic-forecast JSONL without starting the gateway.
-    Calibrate {
-        /// Labeled forecast artifact JSONL path.
-        #[arg(short, long)]
-        input: String,
-        /// Optional report path; stdout is used when omitted.
-        #[arg(short, long)]
-        output: Option<String>,
-        /// Threshold-grid increment from 0.01 through 0.25.
-        #[arg(long, default_value_t = 0.05)]
-        grid_step: f64,
     },
 }
 
@@ -53,11 +39,11 @@ pub fn generate_config_template() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::fabric::FabricConfig;
     use clap::CommandFactory;
 
     #[test]
     fn verify_cli() {
-        // Clap's built-in verification for the CLI structure
         Cli::command().debug_assert();
     }
 
@@ -93,75 +79,15 @@ mod tests {
     }
 
     #[test]
-    fn calibrate_subcommand_is_offline_and_explicit() {
-        let cli = Cli::parse_from([
-            "octoroute",
-            "calibrate",
-            "--input",
-            "forecasts.jsonl",
-            "--output",
-            "report.json",
-            "--grid-step",
-            "0.1",
-        ]);
-        assert!(matches!(
-            cli.command,
-            Some(Command::Calibrate {
-                ref input,
-                ref output,
-                grid_step,
-            }) if input == "forecasts.jsonl"
-                && output.as_deref() == Some("report.json")
-                && grid_step == 0.1
-        ));
-    }
-
-    #[test]
-    fn template_is_valid_toml() {
+    fn template_is_the_valid_v3_schema() {
         let template = generate_config_template();
-        // Should parse without errors
-        let result: Result<toml::Value, _> = toml::from_str(template);
-        assert!(
-            result.is_ok(),
-            "Template should be valid TOML: {:?}",
-            result.err()
-        );
-    }
+        let config = FabricConfig::from_toml(template).expect("valid v3 template");
 
-    #[test]
-    fn template_has_all_sections() {
-        let template = generate_config_template();
-        assert!(template.contains("config_version = 2"));
-        assert!(template.contains("[server]"));
-        assert!(template.contains("[upstreams.local]"));
-        assert!(template.contains("[upstreams.openrouter]"));
-        assert!(template.contains("[routing]"));
-        assert!(template.contains("[observability]"));
-    }
-
-    #[test]
-    fn template_deserializes_to_valid_config() {
-        use crate::gateway::config::{Environment, GatewayConfig};
-
-        struct TemplateEnvironment;
-
-        impl Environment for TemplateEnvironment {
-            fn get(&self, name: &str) -> Option<String> {
-                match name {
-                    "OCTOROUTE_API_KEY" | "OPENROUTER_API_KEY" => Some("test-secret".to_string()),
-                    _ => None,
-                }
-            }
-        }
-
-        let template = generate_config_template();
-        let config = GatewayConfig::from_toml(template, &TemplateEnvironment)
-            .expect("template must be a valid v2 config");
-        assert_eq!(config.local().model(), "local-model");
-        assert_eq!(config.openrouter().auto_model(), "openrouter/auto");
-        assert_eq!(
-            config.routing().semantic_mode(),
-            crate::gateway::config::SemanticRoutingMode::Shadow
-        );
+        assert!(template.contains("config_version = 3"));
+        assert!(template.contains("[[fabric.local_pools]]"));
+        assert!(template.contains("[[fabric.providers]]"));
+        assert!(template.contains("[[routing.routes]]"));
+        assert_eq!(config.default_model, "auto-route");
+        assert_eq!(config.local_pools["workers"].members.len(), 3);
     }
 }

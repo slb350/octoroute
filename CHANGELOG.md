@@ -19,6 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bounded response headers. Unsupported protocols and missing credentials fail
   closed without prompt disclosure.
 
+### Changed
+
+- Make version 3 the only executable/configuration contract: `config.toml`, the
+  CLI generator, laptop profile, startup path, crate metadata, public
+  integration tests, and operator documentation now use the inference fabric.
+- Move reusable environment, capability, privacy, HTTP-limit, error, and
+  held-first-byte streaming primitives under neutral or fabric ownership.
+
+### Removed
+
+- Remove the runtime version switch and the superseded single-local/OpenRouter
+  service, semantic forecaster, calibration command, session latch, metrics,
+  configuration parser, transport, documentation, and tests.
+
 
 ## [2.2.2] - 2026-08-23
 

@@ -1,152 +1,132 @@
 # API reference
 
-Octoroute implements the OpenAI Chat Completions surface at `/v1`.
-
-## Authentication
-
-Protected endpoints require:
+Octoroute exposes an OpenAI-compatible v3 surface. Unless noted otherwise,
+protected endpoints require:
 
 ```http
 Authorization: Bearer <OCTOROUTE_API_KEY>
 ```
 
-Missing, repeated, malformed, and incorrect credentials return `401` with
-`WWW-Authenticate: Bearer`.
+## `POST /v1/chat/completions`
 
-## POST `/v1/chat/completions`
+The body must be a JSON object with a non-empty string `model` and a non-empty
+`messages` array. `stream`, when present and non-null, must be a boolean.
 
-The body must be a JSON object with:
+Octoroute parses only the fields needed for validation, local capability
+admission, token budgeting, and provider defaults. Unknown fields and message
+content remain schema-preserving.
 
-- `model`: non-empty string;
-- `messages`: non-empty array;
-- `stream`: optional boolean.
+`model` resolves as follows:
 
-Other fields are preserved. Output context admission uses
-`max_completion_tokens` first, then `max_tokens`, then
-`default_max_output_tokens`. A null optional limit is treated as unset.
+- `auto` selects the configured default virtual route;
+- any other value must exactly name a configured route.
 
-Local eligibility requires message objects with supported roles and string or
-verified nonempty typed-array content. Only an assistant message with valid
-tool calls may omit content or set it to null. Tool-role or assistant
-tool-call history requires the local `tools` capability even when the request
-omits top-level tool definitions. Malformed message/content shapes and
-unsupported typed block names route automatic requests to cloud; forced-local
-requests return `400` rather than sending an incompatible body to local model.
-
-### Model values
-
-| Value | Route |
-| --- | --- |
-| `auto` | Intelligently choose capable local execution or OpenRouter Auto |
-| `local` | Force local, never cloud |
-| `local-model` | Exact configured local alias, never cloud |
-| `cloud` | Force OpenRouter Auto |
-| `openrouter/auto` | Force OpenRouter Auto |
-| `provider/model` | Force an exact OpenRouter model |
-
-Unknown unqualified names return `400`.
-
-### Privacy
+Optional request privacy:
 
 ```http
 X-Octoroute-Privacy: local-only
 ```
 
-The header must appear at most once and have exactly that value. Combining it
-with cloud intent is a `400`. If local admission fails, Octoroute returns an
-error and does not contact OpenRouter.
+This header removes provider steps before dispatch. If no local target remains,
+the request fails without resolving a provider credential or sending prompt
+data outside the local network.
 
-### Streaming
+### Local capability inference
 
-With `"stream": true`, Octoroute forwards upstream SSE body bytes opaquely,
-including comments, data frames, usage chunks, and `[DONE]`. It does not parse
-and reconstruct frames.
+Local admission recognizes chat, streaming, tools/tool history, structured
+output, image/audio/video input, and reasoning controls. Unknown or malformed
+message/content shapes fail closed as locally incompatible and can proceed only
+to a provider when both the route privacy and fallback policy allow it.
 
-### Gateway headers
+`max_completion_tokens` takes precedence over `max_tokens`; when neither is
+present, the selected pool's configured default reserves output context.
 
-Successful upstream responses include:
+### Success response headers
 
-- `X-Octoroute-Destination`
-- `X-Octoroute-Reason`
-- `X-Octoroute-Upstream`
-- `X-Octoroute-Request-Id`
-- `X-Request-Id`
+Every routed response includes bounded route identity:
 
-The Octoroute request ID is always the gateway-generated correlation UUID.
-`X-Request-Id` preserves a safe upstream value when present and otherwise
-matches it.
+| Header | Meaning |
+| --- | --- |
+| `X-Octoroute-Destination` | `local` or `cloud` |
+| `X-Octoroute-Reason` | `local_pool` or `provider` |
+| `X-Octoroute-Route` | Selected virtual route |
+| `X-Octoroute-Target` | `pool:name` or `provider:name` |
+| `X-Octoroute-Upstream` | Selected pool/member or provider |
+| `X-Octoroute-Pool` | Local pool, when local |
+| `X-Octoroute-Member` | Local member, when local |
+| `X-Octoroute-Model-Revision` | Local model revision, when local |
+| `X-Octoroute-Provider` | Provider name, when cloud |
+| `X-Octoroute-Request-Id` | Gateway-generated UUID |
+| `X-Request-Id` | Safe upstream ID when supplied, otherwise gateway UUID |
 
-Reason values are bounded:
-
-```text
-explicit_local
-explicit_cloud
-local_only
-local_capable
-local_incompatible
-local_context_limit
-local_busy
-local_unhealthy
-local_early_failure
-cloud_default
-cloud_quality
-router_failure
-session_cloud_latch
-```
-
-`cloud_quality` and `router_failure` are emitted only when semantic routing is
-`enforced`. In `shadow` mode, classifier outcomes are observable through
-metrics but do not replace the actual destination reason.
-`session_cloud_latch` is emitted only when the optional enforced-mode session
-latch is active for automatic traffic; explicit local and `local-only`
-requests bypass the latch.
+The response body and SSE stream are forwarded opaquely. Octoroute buffers only
+the first upstream body chunk so fallback remains possible before commitment.
 
 ### Errors
 
-Gateway-created errors use:
+Errors use the OpenAI-compatible envelope:
 
 ```json
 {
   "error": {
-    "message": "safe explanation",
+    "message": "bounded operator-safe message",
     "type": "invalid_request_error",
-    "code": "routing_error"
+    "code": "bounded_code"
   }
 }
 ```
 
-Common statuses:
+Representative statuses:
 
-| Status | Meaning |
-| --- | --- |
-| 400 | Invalid body, model, privacy, capability, or output budget |
-| 401 | Authentication failed |
-| 413 | Body exceeds `max_request_bytes` |
-| 429 | Rate, request-concurrency, or cloud-concurrency limit |
-| 431 | Headers exceed `max_header_bytes` |
-| 502 | Upstream failed before commitment and fallback was unavailable |
-| 503 | Forced-local request cannot currently be admitted |
+- `400` for invalid JSON, envelope, privacy, route, capability, or token budget;
+- `401` for missing or invalid bearer authentication;
+- `413` for request bodies above the configured limit;
+- `429` for inbound rate or concurrency limits;
+- `431` for headers above the configured limit;
+- `502` for a selected upstream failure before commitment when fallback is not
+  allowed or no later step exists;
+- `503` when no eligible target is available, disabled, busy, unhealthy, or
+  adapter-incompatible.
 
-Raw upstream non-2xx statuses and bodies pass through after safe header
-filtering unless an automatic local 5xx triggers pre-commit cloud fallback.
+Errors never include request bodies, credentials, or raw provider responses.
 
-## GET `/v1/models`
+## `GET /v1/models`
 
-Requires bearer authentication. Returns OpenAI model objects for:
+Authenticated. Returns `auto` plus every configured virtual route:
 
-- `auto`
-- `local`
-- `cloud`
-- the configured local alias
+```json
+{
+  "object": "list",
+  "data": [
+    {"id": "auto", "object": "model", "created": 0, "owned_by": "octoroute"}
+  ]
+}
+```
 
-## Health
+## `GET /health/live`
 
-- `GET /health/live`: process liveness
-- `GET /health/ready`: concurrent local and OpenRouter readiness
-- `GET /health`: alias of readiness
+Unauthenticated process liveness:
 
-Health endpoints are not authenticated.
+```json
+{"status":"ok","config_version":3}
+```
 
-## GET `/metrics`
+## `GET /health/ready` and `GET /health`
 
-Requires bearer authentication and returns Prometheus text exposition.
+Unauthenticated bounded admission snapshot. Local pools are actively probed;
+provider state is currently non-probing and reflects enabled, adapter, and
+permit state.
+
+The status is `200` when at least one pool or provider runtime reports ready,
+otherwise `503`.
+
+## `GET /metrics`
+
+Authenticated Prometheus text exposition for configured pool/provider enablement
+and runtime identity. Label values come only from validated configuration.
+
+## Security headers
+
+Every route adds `nosniff`, frame denial, no-referrer, restrictive permissions
+policy, and a deny-all content security policy. A gateway request ID is added
+even when a handler returns before routing.

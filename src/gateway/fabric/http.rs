@@ -3,12 +3,9 @@
 use super::{
     FabricGatewayService, FabricUpstreamTransport, PoolAdmissionState, ProviderAdmissionState,
 };
-use crate::gateway::{
-    http::security_headers,
-    service::{
-        MetadataAuthorizationError,
-        metadata_authorization_error as build_metadata_authorization_error,
-    },
+use super::http_support::{
+    MetadataAuthorizationError, metadata_authorization_error as build_metadata_authorization_error,
+    security_headers,
 };
 use axum::{
     Json, Router,

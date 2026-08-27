@@ -211,8 +211,8 @@ Each route has an explicit fallback allowlist. Initial reasons are:
 - `rate_limited`;
 - `precommit_failure`.
 
-Fallback is still legal only before the first client-visible body byte. No v3
-provider or pool may weaken the v2 pre-commit invariant.
+Fallback is legal only before the first client-visible body byte. No provider
+or pool may weaken the pre-commit invariant.
 
 A provider's model refusal, malformed output, authentication failure, or other
 non-retryable contract error should not be indiscriminately hidden by fallback.
@@ -239,34 +239,26 @@ Explicit local routes and local-only requests must never invoke:
 
 Health probes may remain credentialed, but they never include prompt content.
 
-## Semantic routing
+## Semantic classification
 
-V2's semantic forecaster remains shadow-only during the v3 migration. The
-existing measured result, 44% routing accuracy versus a 73% always-local
-baseline with roughly 760-1500 ms of added latency, is not strong enough to make
-worker/supervisor/cloud decisions authoritative.
+The v3 runtime has no semantic forecaster. OpenCode remains authoritative for
+worker/supervisor choices because it understands the task plan, while other
+clients use explicit virtual routes or the configured `auto` alias.
 
-OpenCode is initially authoritative because it understands the task plan. V3
-may later record a shadow prediction for each explicit decision and calibrate a
-new classifier against real outcomes. Enforcement requires a new labeled gate;
-it is not inherited from v2 merely because the configuration version changes.
+A future classifier may observe explicit decisions and be evaluated against
+real outcomes, but it must earn a new labeled evidence gate before influencing
+routing. It is not part of the current runtime or configuration.
 
-## Configuration migration
+## Runtime replacement
 
-`config.v3.toml` is a tested example, not yet the production default. The
-migration sequence is intentionally additive:
+The feature branch is the migration unit and will not merge until the v3
+runtime is complete. `config.toml`, the generated CLI template, the binary, and
+all public integration tests now use only version 3. Shared request, auth,
+environment, HTTP-limit, and streaming primitives live under neutral or fabric
+ownership; the superseded runtime and version switch have been removed.
 
-1. land and test the v3 static schema and policy module;
-2. introduce pool leases without changing v2 single-local behavior;
-3. add generic HTTP provider transports;
-4. add the Codex subscription adapter;
-5. add the v3 route executor and response headers;
-6. teach the binary to load config version 2 or 3;
-7. run v3 in shadow/explicit-model mode against representative OpenCode work;
-8. make v3 the generated template only after parity tests are green.
-
-V2 must continue compiling and passing its existing tests throughout the
-branch. A version-3 document must never be partially interpreted as v2.
+This keeps one executable contract during implementation. A document that is
+not the exact v3 schema fails closed in `FabricConfig`.
 
 ## Runtime implementation plan
 
@@ -301,9 +293,8 @@ LlamaCppPool
   PoolLease(member identity + request bytes + permit)
 ```
 
-`GatewayTransport::local` should dispatch using the URL and credential carried
-by the lease rather than a single URL captured at construction. The permit must
-remain held until the streamed body is dropped, matching v2.
+The fabric transport dispatches using the URL and credential carried by the
+lease. The permit remains held until the streamed body is dropped.
 
 ### Phase 3: HTTP provider registry
 
@@ -385,14 +376,13 @@ V3 does not:
 
 The v3 branch is ready to merge when:
 
-- all v2 tests remain green;
-- config versions 2 and 3 fail closed into the correct parser;
+- all v3 unit, integration, lint, format, docs, audit, and benchmark gates pass;
+- the binary and generated template accept only the exact v3 schema;
 - configured local members are independently admitted and selected under load;
 - every provider has protocol, credential, concurrency, and compatibility tests;
 - local-only invariants are proven across every route and failure class;
 - response streaming holds leases and forbids post-commit switching;
 - OpenCode can use `worker`, `supervisor`, `local`, and `cloud-sota` through one
   endpoint;
-- a migration document and production deployment profile are complete;
-- shadow traffic confirms the intended predominantly-local routing mix before
-  any automatic quality classifier is enabled.
+- operator documentation and production deployment profiles are complete;
+- representative traffic confirms the intended predominantly-local routing mix.

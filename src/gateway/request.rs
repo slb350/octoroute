@@ -1,6 +1,6 @@
 //! Minimally parsed, schema-preserving chat-completion requests.
 
-use crate::gateway::config::LocalCapability;
+use crate::gateway::fabric::LocalCapability;
 use bytes::Bytes;
 use serde::{Serialize, Serializer, ser::SerializeMap as _};
 use serde_json::{Map, Value};

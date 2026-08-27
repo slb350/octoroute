@@ -1,8 +1,7 @@
 //! Validated static configuration for the v3 inference fabric.
 
-use crate::gateway::config::LocalCapability;
 use reqwest::Url;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::IpAddr,
@@ -27,6 +26,28 @@ const DEFAULT_CONTEXT_SAFETY_TOKENS: u32 = 2_048;
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_384;
 const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 1_800_000;
 const DEFAULT_PRIORITY: u16 = 100;
+
+/// Capabilities which may be admitted to a local inference pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalCapability {
+    /// OpenAI chat-completion messages.
+    Chat,
+    /// Incremental SSE responses.
+    Stream,
+    /// OpenAI tool definitions and calls.
+    Tools,
+    /// JSON object or JSON schema output.
+    StructuredOutput,
+    /// Image content blocks.
+    ImageInput,
+    /// Audio content blocks.
+    AudioInput,
+    /// Video content blocks.
+    VideoInput,
+    /// Reasoning controls or reasoning content.
+    Reasoning,
+}
 
 /// Fully validated v3 inference-fabric configuration.
 #[derive(Debug, Clone)]

@@ -2,6 +2,7 @@
 
 mod config;
 mod http;
+mod http_support;
 mod local_pool;
 mod policy;
 mod presets;
@@ -11,9 +12,9 @@ mod transport;
 
 pub use config::{
     FABRIC_CONFIG_VERSION, FabricConfig, FabricConfigError, FabricObservabilityConfig,
-    FabricServerConfig, FallbackTrigger, LocalMemberConfig, LocalPoolConfig, PoolStrategy,
-    ProviderConfig, ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort, RoutePrivacy,
-    RouteTarget, VirtualRoute,
+    FabricServerConfig, FallbackTrigger, LocalCapability, LocalMemberConfig, LocalPoolConfig,
+    PoolStrategy, ProviderConfig, ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort,
+    RoutePrivacy, RouteTarget, VirtualRoute,
 };
 pub use http::fabric_gateway_app;
 pub use local_pool::{
@@ -21,7 +22,7 @@ pub use local_pool::{
 };
 pub use policy::{
     FabricRouteError, LocalRequirements, LocalSelection, MemberSnapshot, PoolSelectionError,
-    RoutePlan,
+    PrivacyDirective, PrivacyDirectiveError, RoutePlan,
 };
 pub use presets::{PROVIDER_PRESETS, ProviderPreset, provider_preset};
 pub use provider::{
@@ -29,7 +30,9 @@ pub use provider::{
     ProviderRegistryBuildError, ProviderRequestError,
 };
 pub use service::{FabricGatewayService, FabricGatewayServiceBuildError, FabricReadiness};
-pub use transport::{FabricTransport, FabricUpstreamTransport};
+pub use transport::{
+    FabricTransport, FabricTransportError, FabricUpstreamTransport, PreparedUpstreamResponse,
+};
 
 #[cfg(test)]
 mod local_pool_tests;

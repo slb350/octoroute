@@ -1,132 +1,101 @@
 # Security
 
-Octoroute is a private API gateway that can spend cloud credits and transmit
-prompt data. Authentication and network boundaries are required even for a
-personal deployment.
+Octoroute is an authenticated proxy across local and external trust boundaries.
+Treat its configuration, service account, `.env`, and listening interface as
+security-sensitive.
 
-## Authentication
+## Inbound authentication
 
-All inference, model metadata, and metrics requests require exactly one:
+Every chat, model-list, and metrics request requires the bearer secret named by
+`server.api_key_env`. Comparison is constant-time. Missing and invalid values
+produce bounded errors without echoing credentials.
 
-```http
-Authorization: Bearer <OCTOROUTE_API_KEY>
-```
+Use a long random value, restrict `.env` to the service account, and bind to
+loopback unless remote clients require access. Put TLS and network access
+control in front of non-loopback deployments.
 
-The configured credential is hashed to a fixed length before constant-time
-comparison. Missing, repeated, malformed, or incorrect headers return 401.
-Credentials that cannot be represented safely as HTTP bearer values fail
-startup.
+## Credential isolation
 
-Octoroute has one configured inbound credential in v2. Rotate it by replacing
-`OCTOROUTE_API_KEY` and restarting the service. Existing requests finish; new
-requests must use the new value.
+Configuration contains credential names, never raw values. Process environment
+values override the optional `.env` beside the selected config file.
 
-## Secret handling
+The inbound secret and enabled local-member secrets resolve during service
+construction. Provider credentials remain lazy: building the registry, listing
+models, probing local readiness, and executing a local-only request do not read
+them.
 
-- Secrets live in process environment variables or the ignored `.env`.
-- TOML contains environment variable names, never secret values.
-- Process variables override `.env`.
-- Configuration and dotenv errors omit input values.
-- Secret-bearing types redact `Debug` output.
-- Inbound Authorization is never forwarded to either upstream.
-- Local and OpenRouter clients use separate credentials.
-- Other provider keys in `.env` are ignored unless configuration names them.
+An HTTP provider accepts exactly one of:
 
-Restrict `.env` to the service account. Rotate the OpenRouter key through the
-OpenRouter account and restart Octoroute. Revoke it immediately after any
-suspected exposure.
+- `api_key_env`; or
+- `api_key_command`, a literal argv without shell parsing.
 
-## Request controls
+Credential commands run with cleared environment plus `PATH`, null stdin and
+stderr, piped stdout, process-kill-on-drop, a five-second timeout, and a 4 KiB
+output limit. Output must be non-empty visible ASCII without whitespace.
 
-- Header bytes are bounded before authentication.
-- Authentication happens before request-body consumption.
-- Request bodies are read with a hard byte limit.
-- JSON is minimally validated before routing.
-- Authenticated inference requests have a fixed-window rate limit.
-- Inbound, local, and cloud concurrency have independent ceilings.
-- Permits remain held through response completion or cancellation.
-- Prometheus labels are enum-derived and bounded.
+Do not point credential commands at general-purpose shells or scripts whose
+output includes logs.
 
-For Internet-facing deployments, add a reverse proxy or firewall with a
-coarse per-IP rate limit. The application limit protects the configured
-credential; it does not replace network-level denial-of-service controls.
+## Local-only disclosure boundary
 
-## Privacy boundary
+Routes declared `local_only` cannot reference providers. The request header
+`X-Octoroute-Privacy: local-only` narrows any other route to local pools before
+admission.
 
-`model: local`, the configured local alias, and
-`X-Octoroute-Privacy: local-only` prohibit cloud fallback. Unsupported,
-unhealthy, busy, or over-context local-only requests fail instead of reaching
-OpenRouter.
+Local-only requests do not:
 
-`model: auto` may use OpenRouter. Treat automatic prompts as cloud-eligible
-unless the local-only header is present.
+- resolve provider environment variables;
+- run provider credential commands;
+- contact provider endpoints;
+- invoke unsupported provider adapters;
+- fall back to cloud after local failure.
 
-## Browser posture
+A cloud-only route combined with the header is rejected directly.
 
-Octoroute does not use cookies, so CSRF protections do not apply. It emits no
-CORS allow-origin header; cross-origin browser JavaScript is denied by
-default. Browser applications should use a same-origin backend or an
-explicitly configured trusted reverse proxy rather than exposing the bearer
-credential to arbitrary page JavaScript.
+## Provider transport
 
-Every response includes:
+External HTTP providers require absolute HTTPS endpoints without URL
+credentials, queries, or fragments. Bearer credentials are applied only to the
+selected provider request.
 
-```text
-X-Content-Type-Options: nosniff
-X-Frame-Options: DENY
-Referrer-Policy: no-referrer
-Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
-Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
-```
+Each provider has a separate concurrency semaphore and timeout. Unsupported
+Anthropic and Codex CLI entries fail as incompatible before credential or prompt
+access.
 
-Octoroute does not emit HSTS because the default deployment is plain HTTP on
-a trusted LAN. Terminate TLS at a reverse proxy and configure HSTS there only
-after HTTPS is verified.
+The OpenRouter profile removes client-controlled `allowed_models` from the
+Octoroute-owned Auto Router plugin and writes the configured policy value.
 
-## Upstream transport
+## Request and response safety
 
-- OpenRouter configuration requires HTTPS.
-- Local HTTP is permitted for loopback or a trusted LAN.
-- Base URLs reject embedded credentials, queries, and fragments.
-- Response headers use a strict allowlist; cookies and hop-by-hop headers are
-  removed.
-- Streaming bodies are forwarded with backpressure and bounded request
-  memory.
-- Upstream switching is forbidden after the first response body byte.
+Inbound headers, bodies, rate, and concurrency are bounded before routing.
+Malformed content shapes are not treated as safe local capabilities.
 
-Place llama.cpp on loopback after all clients move to Octoroute. Otherwise a
-direct caller can bypass Octoroute admission and race its single-slot check.
+Upstream responses are stopped before commitment until the first body chunk is
+available. Fallback can occur only within the configured closed trigger set and
+only before client-visible bytes. Safe response headers are allowlisted; hop-by-
+hop, cookie, and arbitrary provider headers are not forwarded.
 
-## Supply chain
+Errors and logs omit:
 
-- `Cargo.lock` is tracked for reproducible application builds.
-- CI tests stable and Rust 1.90.0 with `--locked`.
-- CI runs Clippy, rustfmt, rustdoc warnings, and RustSec.
-- CI and release workflows default the GitHub token to read-only repository
-  contents. Only the release job receives `contents: write`.
-- Third-party GitHub Actions are pinned to reviewed immutable commits with
-  release comments. Release builds also use the lockfile and a pinned `cross`.
-- CI installs an explicitly versioned `cargo-audit`.
-- Weekly security maintenance refreshes RustSec and compatible dependencies.
+- request bodies and message content;
+- bearer and provider credentials;
+- credential-command output;
+- arbitrary provider response bodies;
+- unbounded client identifiers.
 
-Run before deployment:
+## Operational hardening
 
-```bash
-cargo audit
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked --all-targets --all-features
-```
+- Run as a dedicated unprivileged account.
+- Restrict configuration and `.env` permissions.
+- Allow outbound access only to configured endpoints.
+- Keep local llama.cpp services on a private network and use member bearer keys
+  when that boundary is shared.
+- Rotate a compromised provider key at the provider, update the environment,
+  and restart Octoroute.
+- Monitor authentication, admission, and upstream failure logs without enabling
+  body logging in surrounding proxies.
 
-## Incident response
-
-If a secret may have leaked:
-
-1. revoke the OpenRouter key;
-2. replace the Octoroute inbound key;
-3. rotate an optional llama.cpp key;
-4. restart the service;
-5. inspect bounded route/failure metrics and safe logs;
-6. verify no unknown client still reaches llama.cpp directly.
-
-Never paste credentials or personal prompt bodies into an issue, test
-fixture, benchmark, or support log.
+The future Codex CLI adapter must preserve ChatGPT-managed authentication,
+clear/allowlist the child environment, disable unrelated tools and integrations,
+use ephemeral non-interactive execution, and parse a bounded structured output
+contract. The schema entry does not grant those capabilities today.

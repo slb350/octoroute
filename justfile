@@ -18,7 +18,7 @@ test-unit:
 # Run only integration tests
 test-integration:
     @echo "Running integration tests..."
-    cargo test --locked --test cli_config_command --test gateway_v2
+    cargo test --locked --test cli_config_command --test gateway_v3
 
 # Run tests with nextest (if installed)
 test-nextest:

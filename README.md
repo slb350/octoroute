@@ -1,192 +1,109 @@
 # Octoroute
 
-Octoroute is a local-first, OpenAI-compatible LLM gateway for local model
-endpoints and configurable cloud providers.
+Octoroute v3 is an OpenAI-compatible inference fabric. Clients use stable
+virtual model names while Octoroute selects an eligible local llama.cpp pool or
+an ordered provider target.
 
 ```text
-OpenAI client
-     |
-     v
- Octoroute
-   |    \
-   |     `-- OpenRouter `openrouter/auto` --> cloud model/provider
-   |
-   `-- compatible work --> local model answer
+OpenAI-compatible client
           |
-          `-- optional local semantic decision: shadow or enforced
+          v
+     Octoroute v3
+       /      \
+local pools   provider chain
 ```
 
-Octoroute owns the local-versus-cloud decision. OpenRouter owns cloud model
-and provider selection. The routing decision stays on the local network.
+The routing policy is explicit configuration, not prompt classification.
+`X-Octoroute-Privacy: local-only` narrows a route before admission, so a
+local-only request cannot resolve provider credentials or disclose its prompt
+to a provider.
 
-## What it does
+## Current runtime
 
-- Exposes `POST /v1/chat/completions` and `GET /v1/models`.
-- Preserves unknown request fields and forwards response/SSE bytes opaquely.
-- Keeps malformed message/content shapes away from local inference and
-  requires verified local tool capability for tool-call history.
-- Keeps compatible `auto` work local by default while observing bounded
-  semantic decisions on the local model endpoint in shadow mode.
-- Can disable semantic routing entirely or explicitly enforce it so work that
-  needs stronger intelligence routes to OpenRouter `openrouter/auto`.
-- Also uses OpenRouter when the local model lacks a requested capability, is
-  busy or unhealthy, or cannot fit the exact prompt plus output budget.
-- Accepts exact OpenRouter slugs such as `provider/model`.
-- Guarantees that `model: local`, the exact local alias, and
-  `X-Octoroute-Privacy: local-only` never fall back to cloud.
-- Falls back from an automatic local attempt only before the first response
-  body byte is committed.
-- Enforces bearer authentication, request/header limits, fixed-window rate
-  limiting, per-credential concurrency, and a global cloud concurrency limit.
-- Exposes bounded-cardinality Prometheus metrics and health endpoints.
+- `POST /v1/chat/completions` with schema-preserving request forwarding.
+- `GET /v1/models`, liveness, readiness, and Prometheus endpoints.
+- Named virtual routes with ordered local-pool and provider steps.
+- Exact local context/capability checks and least-loaded member selection.
+- Per-member, per-provider, and inbound concurrency limits.
+- Lazy, isolated provider credentials from environment variables or bounded
+  argv commands.
+- OpenAI-compatible HTTP dispatch for z.ai, OpenRouter, direct OpenAI, and
+  similarly shaped endpoints.
+- An explicit OpenRouter Auto profile owned by Octoroute.
+- Closed fallback triggers and a held first byte, preventing target changes
+  after response commitment.
+
+Anthropic-compatible HTTP and Codex CLI providers are accepted by the schema
+but currently report `incompatible`; their dedicated adapters are the next
+runtime boundaries.
 
 ## Quick start
 
 Requirements:
 
-- Rust 1.90 or newer
-- A llama.cpp server exposing `/health`, `/slots`, and
-  `/v1/chat/completions/input_tokens`
-- An OpenRouter API key
+- Rust 1.90 or newer.
+- At least one configured local llama.cpp member or OpenAI-compatible provider.
+- An inbound gateway secret.
 
-Copy `.env.example` to an ignored `.env` beside `config.toml`, then fill the
-two required values:
+Copy `.env.example` to `.env` beside `config.toml` and set the inbound key plus
+credentials for providers you intend to use:
 
 ```dotenv
 OCTOROUTE_API_KEY=generate-a-long-random-client-secret
 OPENROUTER_API_KEY=your-openrouter-key
+ZAI_API_KEY=your-zai-key
 ```
 
-Other provider credentials may remain in `.env`; Octoroute v2 reads only the
-environment variable names referenced by `config.toml`.
+Provider credentials are resolved only when their route step is selected.
 
-Generate or inspect the v2 configuration:
+Generate or inspect the v3 template:
 
 ```bash
 cargo run -- config
-cargo run -- config --output config.toml
+cargo run -- config --output my-config.toml
 ```
 
-The repository configuration provides a generic local-endpoint example:
-
-```toml
-config_version = 2
-
-[server]
-host = "0.0.0.0"
-port = 8081
-
-[upstreams.local]
-kind = "llama_cpp"
-name = "local-model"
-base_url = "http://127.0.0.1:8080"
-model = "local-model"
-model_revision = "example-local-revision"
-context_window = 65536
-max_in_flight = 1
-
-[upstreams.openrouter]
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-auto_model = "openrouter/auto"
-cost_quality_tradeoff = 9
-
-[routing]
-semantic_mode = "shadow"
-decision_timeout_ms = 30000
-local_success_threshold = 0.50
-boundary_threshold_step = 0.10
-shadow_sample_rate = 1.0
-session_latch_enabled = false
-session_latch_ttl_ms = 900000
-session_latch_max_entries = 1024
-session_latch_evidence_threshold = 2
-```
-
-`semantic_mode` is `disabled`, `shadow`, or `enforced`. Shadow is the default:
-it records the forecast-derived outcome without letting that outcome select
-the destination. The local model forecasts `p_local_success` and a closed
-capability boundary; Octoroute, not the model, applies the configured threshold.
-`boundary_threshold_step` raises that threshold for uncertain, unsupported,
-and unmatched forecasts, with two steps for unsupported forecasts. Enforced
-mode should be enabled only after its judgment is validated against
-representative labeled traffic. Shadow and enforced modes add one local
-forecasting inference, about 760 to 1,500 ms in the measured local-model
-profile, to compatible `auto` requests.
-
-`shadow_sample_rate` can deterministically sample compatible shadow requests
-from `0.0` through `1.0` using the server-generated request ID. The default is
-`1.0`, and benchmark or calibration runs must retain full sampling. Skipped
-requests proceed directly to ordinary local admission. Enforced mode is never
-sampled.
-
-The optional session latch is disabled by default and can be enabled only with
-`semantic_mode = "enforced"`. Two consecutive hard
-`unsupported`/`known_local_limit` forecasts latch a valid `session_id` to
-cloud for 15 minutes by default. IDs are SHA-256 hashed in memory, storage is
-bounded, and explicit local or `local-only` intent always bypasses the latch.
-
-The forecast prompt includes the versioned
-`octoroute-local-capability-card/v2`. It identifies the configured local alias
-and immutable `model_revision`, lists only capabilities enabled in
-configuration, and records measured local limitations without exposing URLs,
-credentials, prompts, or runtime state. A SHA-256 fingerprint of the exact
-rendered card is included in bounded shadow events and required by calibration
-artifacts, preventing rows from different model revisions or capability
-configurations from being analyzed as one population. Change `model_revision`
-whenever the loaded weights change, even if the llama.cpp alias stays stable.
-In shadow mode only, explicitly typed and paired tool results can contribute
-closed trajectory evidence; malformed, ordinary, or unsupported tool history
-abstains, and the evidence never selects a route directly.
-
-This profile runs Octoroute beside a local model endpoint. The
-`config.laptop.toml` profile instead binds Octoroute to laptop loopback and uses
-`http://local-model.local:8080` as the local upstream.
-
-Start the gateway beside the local model endpoint:
+Start the gateway:
 
 ```bash
 cargo run --release -- --config config.toml
 ```
 
-Start the gateway on the laptop:
+For a workstation deployment using `http://local-model.local:8080`, use
+`config.laptop.toml`.
+
+## Virtual models
+
+The repository template exposes:
+
+| Model | Route contract |
+| --- | --- |
+| `auto` | Alias for the configured `routing.default_model` |
+| `worker` | Local worker pool only |
+| `supervisor` | Optional local supervisor, then configured providers |
+| `local` | Local pools only |
+| `cloud-sota` | Provider-only escalation |
+
+Virtual names and physical targets are configuration. A client never needs a
+pool member URL or provider credential.
+
+Example request:
 
 ```bash
-cargo run --release -- --config config.laptop.toml
-```
-
-Point an OpenAI-compatible client at `http://local-model.local:8081/v1` for a
-network deployment or `http://127.0.0.1:8081/v1` for a loopback deployment.
-Use `OCTOROUTE_API_KEY` as the client API key.
-
-## Model intent
-
-| `model` value | Behavior | Cloud fallback |
-| --- | --- | --- |
-| `auto` | Capable local model or stronger cloud | Before commitment |
-| `local` | Force the local model | Never |
-| `local-model` | Force the exact configured local alias | Never |
-| `cloud` | Force OpenRouter Auto | OpenRouter-managed only |
-| `openrouter/auto` | Force OpenRouter Auto | OpenRouter-managed only |
-| `provider/model` | Force that OpenRouter model | OpenRouter-managed only |
-
-Example:
-
-```bash
-curl http://local-model.local:8081/v1/chat/completions \
+curl http://127.0.0.1:8081/v1/chat/completions \
   -H "Authorization: Bearer $OCTOROUTE_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "auto",
+    "model": "worker",
     "messages": [{"role": "user", "content": "Explain this Rust error"}],
     "stream": true
   }'
 ```
 
-For a request that must remain local:
+Force any cloud-eligible route to remain local:
 
 ```bash
-curl http://local-model.local:8081/v1/chat/completions \
+curl http://127.0.0.1:8081/v1/chat/completions \
   -H "Authorization: Bearer $OCTOROUTE_API_KEY" \
   -H "X-Octoroute-Privacy: local-only" \
   -H "Content-Type: application/json" \
@@ -196,68 +113,65 @@ curl http://local-model.local:8081/v1/chat/completions \
   }'
 ```
 
-If local admission fails, this returns an error rather than contacting a
-cloud service.
+If no local target can accept the request, Octoroute returns an error without
+contacting a provider.
 
-## Gateway response headers
+## Fallback contract
+
+Each route opts into a subset of these bounded triggers:
+
+- `busy`
+- `unhealthy`
+- `context_overflow`
+- `incompatible`
+- `rate_limited`
+- `precommit_failure`
+
+Local targets must precede provider targets. A rate limit falls forward only
+when `rate_limited` is configured; a transport or upstream server failure falls
+forward only when `precommit_failure` is configured. Authentication failures
+and other committed provider responses are returned to the client.
+
+## Response headers
+
+Successful routed responses include bounded identity such as:
 
 - `X-Octoroute-Destination: local|cloud`
-- `X-Octoroute-Reason`: bounded route reason such as `local_capable`,
-  `cloud_quality`, `local_busy`, or `local_early_failure`
-- `X-Octoroute-Upstream: local-model|openrouter`
-- `X-Octoroute-Request-Id`: Octoroute-generated correlation UUID
-- `X-Request-Id`
+- `X-Octoroute-Route`
+- `X-Octoroute-Target: pool:name|provider:name`
+- `X-Octoroute-Pool` and `X-Octoroute-Member` for local work
+- `X-Octoroute-Provider` for provider work
+- `X-Octoroute-Model-Revision` for local work
+- `X-Octoroute-Request-Id` and `X-Request-Id`
 
-`X-Request-Id` preserves a safe upstream request ID when one is returned;
-`X-Octoroute-Request-Id` always identifies the gateway request and is the join
-key for shadow forecast events.
-
-Octoroute never rewrites OpenRouter's returned `model`; callers see the model
-that actually answered.
+Unknown request fields and upstream response/SSE bytes remain opaque except for
+destination-specific model/default policy fields.
 
 ## Operations
 
 | Endpoint | Authentication | Purpose |
 | --- | --- | --- |
-| `POST /v1/chat/completions` | Bearer | Routed completion/SSE |
-| `GET /v1/models` | Bearer | Virtual and local model IDs |
+| `POST /v1/chat/completions` | Bearer | Routed completion or SSE |
+| `GET /v1/models` | Bearer | Virtual model IDs |
 | `GET /health/live` | No | Process liveness |
-| `GET /health/ready` | No | Aggregated local/OpenRouter readiness |
+| `GET /health/ready` | No | Pool/provider admission snapshot |
 | `GET /health` | No | Readiness alias |
-| `GET /metrics` | Bearer | Prometheus exposition |
+| `GET /metrics` | Bearer | Bounded Prometheus exposition |
 
-See:
-
-- [Architecture](docs/architecture.md)
-- [API reference](docs/api-reference.md)
-- [Configuration](docs/configuration.md)
-- [V1-to-v2 migration](docs/migration-v2.md)
-- [Security](docs/security.md)
-- [Deployment](docs/deployment.md)
-- [Observability](docs/observability.md)
-- [Forecast calibration](docs/calibration.md)
-- [Trajectory signals](docs/trajectory-signals.md)
-- [Development](docs/development.md)
+See [configuration](docs/configuration.md), [API reference](docs/api-reference.md),
+[architecture](docs/architecture.md), [security](docs/security.md), and
+[runtime status](docs/v3-runtime-status.md).
 
 ## Development
 
 ```bash
 cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+cargo doc --locked --all-features --no-deps
 ```
 
-The v2 routing boundary is recorded in
-[docs/plans/intelligent-auto-routing.md](docs/plans/intelligent-auto-routing.md).
-The calibrated forecast policy and its still-pending labeled evaluation gate
-are recorded in
-[docs/plans/calibrated-semantic-routing.md](docs/plans/calibrated-semantic-routing.md).
-
-## Scope
-
-Octoroute v2 intentionally does not provide direct Anthropic, Google,
-OpenAI, or DeepSeek adapters. OpenRouter is the single cloud boundary. It
-also does not execute tools, rewrite prompts, persist conversations, or
-provide a UI.
+The implementation plan and remaining adapter work are tracked in
+[the v3 design](docs/plans/octoroute-v3-tiered-inference-fabric.md).
 
 License: MIT.

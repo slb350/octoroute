@@ -1,5 +1,5 @@
 use super::{FabricConfig, FabricGatewayService, RouteTarget};
-use crate::gateway::config::Environment;
+use crate::gateway::env::Environment;
 use axum::{
     body::{Bytes, to_bytes},
     http::{HeaderMap, HeaderValue, header::AUTHORIZATION},
@@ -53,7 +53,7 @@ fn headers() -> HeaderMap {
 
 fn local_config(server: &MockServer) -> FabricConfig {
     let mut config =
-        FabricConfig::from_toml(include_str!("../../../config.v3.toml")).expect("config");
+        FabricConfig::from_toml(include_str!("../../../config.toml")).expect("config");
     let workers = config.local_pools.get_mut("workers").expect("workers pool");
     workers.members.truncate(1);
     workers.members[0].base_url = Url::parse(&server.uri()).expect("mock URL");

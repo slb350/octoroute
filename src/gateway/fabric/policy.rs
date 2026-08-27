@@ -1,12 +1,51 @@
 //! Deterministic virtual-model planning and local-pool member selection.
 
 use super::{
-    FabricConfig, FallbackTrigger, PoolStrategy, ReasoningEffort, RoutePrivacy, RouteTarget,
+    FabricConfig, FallbackTrigger, LocalCapability, PoolStrategy, ReasoningEffort, RoutePrivacy,
+    RouteTarget,
 };
-use crate::gateway::config::LocalCapability;
+use axum::http::HeaderMap;
 use reqwest::Url;
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
+
+const PRIVACY_HEADER: &str = "x-octoroute-privacy";
+
+/// Optional request-level privacy constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivacyDirective {
+    /// No additional privacy constraint.
+    None,
+    /// The request must never leave the local gateway.
+    LocalOnly,
+}
+
+impl PrivacyDirective {
+    /// Parse Octoroute's single-valued privacy header.
+    pub fn from_headers(headers: &HeaderMap) -> Result<Self, PrivacyDirectiveError> {
+        let mut values = headers.get_all(PRIVACY_HEADER).iter();
+        let Some(value) = values.next() else {
+            return Ok(Self::None);
+        };
+        if values.next().is_some() {
+            return Err(PrivacyDirectiveError::Invalid);
+        }
+        let value = value.to_str().map_err(|_| PrivacyDirectiveError::Invalid)?;
+        if value == "local-only" {
+            Ok(Self::LocalOnly)
+        } else {
+            Err(PrivacyDirectiveError::Invalid)
+        }
+    }
+}
+
+/// Invalid privacy headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum PrivacyDirectiveError {
+    /// Header was repeated, non-UTF-8, or used an unsupported value.
+    #[error("invalid X-Octoroute-Privacy header; the only accepted value is `local-only`")]
+    Invalid,
+}
 
 impl FabricConfig {
     /// Return a validated route plan, optionally narrowing it to local-only targets.
