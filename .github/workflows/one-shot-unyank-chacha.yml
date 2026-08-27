@@ -1,4 +1,4 @@
-name: One-shot trace yanked dependency across all targets
+name: One-shot prune stale yanked lockfile entries
 
 on:
   push:
@@ -8,10 +8,11 @@ on:
       - .github/workflows/one-shot-unyank-chacha.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  trace:
+  prune:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -24,11 +25,35 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Show reverse dependency paths for every target
+      - name: Prune stale lockfile entries
         run: |
-          echo '=== rand 0.10.2 ==='
-          cargo tree --locked --target all -i rand@0.10.2
-          echo '=== chacha20 0.10.1 ==='
-          cargo tree --locked --target all -i chacha20@0.10.1
-          echo '=== feature path for rand 0.10.2 ==='
-          cargo tree --locked --target all -e features -i rand@0.10.2
+          cargo update
+          if grep -q 'name = "chacha20"' Cargo.lock; then
+            echo 'stale chacha20 entry remains' >&2
+            exit 1
+          fi
+          if grep -A2 'name = "rand"' Cargo.lock | grep -q 'version = "0.10'; then
+            echo 'stale rand 0.10 entry remains' >&2
+            exit 1
+          fi
+          git diff --stat -- Cargo.lock
+          git diff -- Cargo.lock
+
+      - name: Run tests
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Audit the pruned lockfile
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit --deny warnings
+
+      - name: Commit the lockfile cleanup
+        shell: bash
+        run: |
+          rm .github/workflows/one-shot-unyank-chacha.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Cargo.lock .github/workflows/one-shot-unyank-chacha.yml
+          git diff --cached --quiet && exit 0
+          git commit -m "chore(deps): prune stale yanked lockfile entries"
+          git push origin HEAD:${{ github.ref_name }}
