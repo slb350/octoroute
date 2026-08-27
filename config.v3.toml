@@ -2,7 +2,7 @@
 #
 # This file is parsed and tested by src/gateway/fabric. The v3 runtime wiring is
 # being implemented on feat/v3-tiered-inference-fabric; config.toml remains the
-# production v2 template until that migration is complete.
+# current v2 template until that migration is complete.
 
 config_version = 3
 
