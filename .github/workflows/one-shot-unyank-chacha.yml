@@ -1,4 +1,4 @@
-name: One-shot trace rand 0.10 reverse dependency
+name: One-shot trace yanked dependency across all targets
 
 on:
   push:
@@ -24,11 +24,11 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Show reverse dependency paths
+      - name: Show reverse dependency paths for every target
         run: |
           echo '=== rand 0.10.2 ==='
-          cargo tree --locked -i rand@0.10.2
+          cargo tree --locked --target all -i rand@0.10.2
           echo '=== chacha20 0.10.1 ==='
-          cargo tree --locked -i chacha20@0.10.1
+          cargo tree --locked --target all -i chacha20@0.10.1
           echo '=== feature path for rand 0.10.2 ==='
-          cargo tree --locked -e features -i rand@0.10.2
+          cargo tree --locked --target all -e features -i rand@0.10.2
