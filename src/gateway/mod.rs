@@ -1,8 +1,9 @@
-//! Octoroute v2 local/cloud gateway.
+//! Octoroute v2 local/cloud gateway and v3 inference-fabric foundations.
 
 pub mod auth;
 pub mod config;
 pub mod env;
+pub mod fabric;
 pub mod http;
 mod http_client;
 pub(crate) mod intelligence;
