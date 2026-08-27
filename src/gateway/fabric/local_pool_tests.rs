@@ -77,7 +77,7 @@ async fn mount_ready(server: &MockServer, input_tokens: u32, output_tokens: u32)
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions/input_tokens"))
         .and(body_json(json!({
-            "model": "qwen3.8-27b",
+            "model": "coding-worker-model",
             "messages": [{"role": "user", "content": "implement the bounded task"}],
             "max_completion_tokens": output_tokens,
             "reasoning_effort": "medium"
@@ -110,7 +110,7 @@ async fn equal_workers_rotate_across_sequential_sessions() {
         let lease = lease(pool.try_admit(&request(16_000)).await.expect("admission"));
         assert_eq!(lease.member(), expected);
         assert_eq!(lease.pool(), "workers");
-        assert_eq!(lease.model_revision(), "unsloth-ud-q4_k_m");
+        assert_eq!(lease.model_revision(), "example-worker-revision");
         assert_eq!(lease.chat_url().path(), "/v1/chat/completions");
     }
 }

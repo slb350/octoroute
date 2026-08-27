@@ -120,7 +120,7 @@ async fn assert_trajectory_forecast_context(mode: &str, expects_trajectory: bool
         config,
         FakeTransport::default().with_local(FakeResult::Response(
             StatusCode::OK,
-            r#"{"model":"puzzle-75b","choices":[]}"#,
+            r#"{"model":"example-local-model","choices":[]}"#,
         )),
     );
 
@@ -173,7 +173,7 @@ async fn auto_routes_hard_work_to_openrouter_auto_even_when_local_is_idle() {
     let transport = FakeTransport::default()
         .with_local(FakeResult::Response(
             StatusCode::OK,
-            r#"{"model":"puzzle-75b","choices":[]}"#,
+            r#"{"model":"example-local-model","choices":[]}"#,
         ))
         .with_cloud(FakeResult::Response(
             StatusCode::OK,
@@ -206,15 +206,15 @@ async fn auto_routes_hard_work_to_openrouter_auto_even_when_local_is_idle() {
         })
         .map(|request| serde_json::from_slice(&request.body).expect("classifier JSON"))
         .expect("classifier request");
-    assert_eq!(classifier["model"], "puzzle-75b");
+    assert_eq!(classifier["model"], "example-local-model");
     assert_eq!(classifier["stream"], false);
     assert_eq!(classifier["chat_template_kwargs"]["enable_thinking"], false);
     let system_prompt = classifier["messages"][0]["content"]
         .as_str()
         .expect("semantic system prompt");
-    assert!(system_prompt.contains("octoroute-strix-capability-card/v2"));
-    assert!(system_prompt.contains(r#"upstream_name: "strix""#));
-    assert!(system_prompt.contains(r#"model_alias: "puzzle-75b""#));
+    assert!(system_prompt.contains("octoroute-local-capability-card/v2"));
+    assert!(system_prompt.contains(r#"upstream_name: "local""#));
+    assert!(system_prompt.contains(r#"model_alias: "example-local-model""#));
     assert!(system_prompt.contains(r#"model_revision: "test-model-revision""#));
     assert!(system_prompt.contains(r#"enabled_capabilities: ["chat","stream"]"#));
     assert!(system_prompt.contains(r#"disabled_capabilities: ["tools","structured_output""#));
@@ -301,7 +301,7 @@ async fn capability_boundary_adjusts_the_deterministic_local_threshold() {
         let transport = FakeTransport::default()
             .with_local(FakeResult::Response(
                 StatusCode::OK,
-                r#"{"model":"puzzle-75b","choices":[]}"#,
+                r#"{"model":"example-local-model","choices":[]}"#,
             ))
             .with_cloud(FakeResult::Response(
                 StatusCode::OK,
@@ -362,7 +362,7 @@ async fn auto_keeps_routine_work_local_after_intelligent_classification() {
     let config = gateway_config(&local.uri(), "", "", "semantic_mode = \"enforced\"");
     let transport = FakeTransport::default().with_local(FakeResult::Response(
         StatusCode::OK,
-        r#"{"model":"puzzle-75b","choices":[]}"#,
+        r#"{"model":"example-local-model","choices":[]}"#,
     ));
     let gateway = service(config, transport.clone());
 
@@ -417,7 +417,7 @@ async fn shadow_mode_observes_cloud_but_keeps_compatible_work_local() {
     let config = gateway_config(&local.uri(), "", "", "semantic_mode = \"shadow\"");
     let transport = FakeTransport::default().with_local(FakeResult::Response(
         StatusCode::OK,
-        r#"{"model":"puzzle-75b","choices":[]}"#,
+        r#"{"model":"example-local-model","choices":[]}"#,
     ));
     let gateway = service(config, transport.clone());
 
@@ -450,7 +450,7 @@ async fn shadow_mode_router_failure_does_not_override_local_admission() {
     let config = gateway_config(&local.uri(), "", "", "semantic_mode = \"shadow\"");
     let transport = FakeTransport::default().with_local(FakeResult::Response(
         StatusCode::OK,
-        r#"{"model":"puzzle-75b","choices":[]}"#,
+        r#"{"model":"example-local-model","choices":[]}"#,
     ));
     let gateway = service(config, transport.clone());
 
@@ -480,7 +480,7 @@ async fn disabled_mode_skips_semantic_routing() {
     let config = gateway_config(&local.uri(), "", "", "semantic_mode = \"disabled\"");
     let transport = FakeTransport::default().with_local(FakeResult::Response(
         StatusCode::OK,
-        r#"{"model":"puzzle-75b","choices":[]}"#,
+        r#"{"model":"example-local-model","choices":[]}"#,
     ));
     let gateway = service(config, transport.clone());
 

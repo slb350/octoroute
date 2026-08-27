@@ -28,10 +28,10 @@ requests_per_minute = 120
 
 [upstreams.local]
 kind = "llama_cpp"
-name = "strix"
+name = "local-model"
 base_url = "http://127.0.0.1:8080"
-model = "strixtea"
-model_revision = "agents-a1-q8_0"
+model = "local-model"
+model_revision = "example-local-revision"
 context_window = 65536
 context_safety_tokens = 1024
 default_max_output_tokens = 4096
@@ -73,9 +73,9 @@ session_latch_evidence_threshold = 2
 log_level = "info"
 ```
 
-This is the Strix deployment profile. Port 8081 is used because Strix already
+This is the local model deployment profile. Port 8081 is used because local model already
 serves Gitea on port 3000. For development from another LAN host, change the
-local base URL to `http://strix.local:8080`.
+local base URL to `http://local-model.local:8080`.
 
 ## Server
 
@@ -103,7 +103,7 @@ local base URL to `http://strix.local:8080`.
 - Probe paths must be same-origin absolute paths.
 - `health_cache_ttl_ms` and `probe_timeout_ms` must be positive.
 - `first_byte_timeout_ms`, when set, must be positive. Configure it only from
-  measured Strix prompt-processing behavior; omission means no invented local
+  measured local model prompt-processing behavior; omission means no invented local
   first-byte deadline.
 
 Capabilities are a closed enum:

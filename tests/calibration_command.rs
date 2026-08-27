@@ -2,8 +2,8 @@ use std::{fs, process::Command};
 use tempfile::tempdir;
 
 const LABELED_FORECASTS: &str = concat!(
-    "{\"challenge_id\":\"easy\",\"model_alias\":\"strixtea\",\"model_revision\":\"agents-a1-q8_0\",\"capability_card_version\":\"octoroute-strix-capability-card/v2\",\"capability_card_fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"p_local_success\":0.9,\"capability_boundary\":\"supported\",\"primary_rule\":\"bounded_verification\",\"local_success\":true}\n",
-    "{\"challenge_id\":\"hard\",\"model_alias\":\"strixtea\",\"model_revision\":\"agents-a1-q8_0\",\"capability_card_version\":\"octoroute-strix-capability-card/v2\",\"capability_card_fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"p_local_success\":0.1,\"capability_boundary\":\"unsupported\",\"primary_rule\":\"known_local_limit\",\"local_success\":false}\n"
+    "{\"challenge_id\":\"easy\",\"model_alias\":\"local-model\",\"model_revision\":\"example-local-revision\",\"capability_card_version\":\"octoroute-local-capability-card/v2\",\"capability_card_fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"p_local_success\":0.9,\"capability_boundary\":\"supported\",\"primary_rule\":\"bounded_verification\",\"local_success\":true}\n",
+    "{\"challenge_id\":\"hard\",\"model_alias\":\"local-model\",\"model_revision\":\"example-local-revision\",\"capability_card_version\":\"octoroute-local-capability-card/v2\",\"capability_card_fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"p_local_success\":0.1,\"capability_boundary\":\"unsupported\",\"primary_rule\":\"known_local_limit\",\"local_success\":false}\n"
 );
 
 #[test]

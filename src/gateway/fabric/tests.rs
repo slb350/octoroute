@@ -159,14 +159,17 @@ fn cloud_only_route_rejects_local_only_header() {
 }
 
 #[test]
-fn low_reasoning_is_not_a_supported_policy_value() {
+fn low_reasoning_is_a_supported_policy_value() {
     let input = include_str!("../../../config.v3.toml").replacen(
         "default_reasoning_effort = \"medium\"",
         "default_reasoning_effort = \"low\"",
         1,
     );
-    let error = FabricConfig::from_toml(&input).expect_err("low must not parse");
-    assert!(matches!(error, FabricConfigError::Parse(_)));
+    let config = FabricConfig::from_toml(&input).expect("low must parse");
+    assert_eq!(
+        config.local_pools["workers"].default_reasoning_effort,
+        ReasoningEffort::Low
+    );
 }
 
 #[test]

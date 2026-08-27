@@ -29,12 +29,12 @@ OPENROUTER_API_KEY=<OpenRouter API credential>
 Never include secrets in `config.toml`, command arguments, unit files, logs,
 or source control.
 
-If Octoroute runs on Strix itself, keep the repository local base URL,
+If Octoroute runs on the local model endpoint itself, keep the repository local base URL,
 `http://127.0.0.1:8080`. If it runs elsewhere on the LAN, use
-`http://strix.local:8080`.
+`http://local-model.local:8080`.
 
 The repository profile already uses loopback and binds Octoroute to port
-8081. Port 3000 is occupied by Gitea on Strix.
+8081. Port 3000 is occupied by Gitea on the local model endpoint.
 
 ## systemd system service
 
@@ -96,10 +96,10 @@ sudo systemctl enable --now octoroute.service
 sudo systemctl status octoroute.service
 ```
 
-## Existing Strix llama.cpp process
+## Existing local model llama.cpp process
 
-The inspected Strix server was launched manually from an SSH session. The
-tracked `deploy/strix-llama-server.service` preserves its tested model and
+The inspected local model server was launched manually from an SSH session. The
+tracked `deploy/local-llama-server.service` preserves its tested model and
 generation arguments while changing only these ingress/observability
 arguments:
 
@@ -111,20 +111,20 @@ arguments:
 
 Do not run the manual and managed llama.cpp processes on port 8080
 simultaneously. After the managed process is healthy, verify the endpoint is
-reachable from Strix loopback and no longer reachable directly from another
+reachable from the local model endpoint loopback and no longer reachable directly from another
 LAN host.
 
 Install the unit before the controlled cutover:
 
 ```bash
-sudo install -o root -g root -m 0644 deploy/strix-llama-server.service \
-  /etc/systemd/system/strix-llama-server.service
+sudo install -o root -g root -m 0644 deploy/local-llama-server.service \
+  /etc/systemd/system/local-llama-server.service
 sudo systemctl daemon-reload
 ```
 
 At cutover, terminate the current manual process gracefully, start the unit,
 and validate `/health`, `/slots?fail_on_no_slot=1`, and
-`/v1/chat/completions/input_tokens` from Strix loopback before starting
+`/v1/chat/completions/input_tokens` from the local model endpoint loopback before starting
 Octoroute. Roll back by stopping the unit and restoring the previous manual
 command with `--host 0.0.0.0` only while clients are still configured for the
 legacy direct endpoint.
@@ -138,7 +138,7 @@ incident-response requirements.
 
 Allow outbound:
 
-- Strix llama.cpp;
+- local model llama.cpp;
 - `https://openrouter.ai`.
 
 Do not expose llama.cpp directly to untrusted clients if Octoroute is meant
@@ -167,7 +167,7 @@ curl --fail http://127.0.0.1:8081/v1/models \
 1. Verify `/health/live`.
 2. Verify `/health/ready` reports both component states.
 3. Send `model: local` with `X-Octoroute-Privacy: local-only`.
-4. Occupy the single Strix slot and verify `model: auto` reports
+4. Occupy the single local model slot and verify `model: auto` reports
    `X-Octoroute-Reason: local_busy` and a cloud destination.
 5. Verify the same busy condition with local-only returns 503.
 6. Verify OpenRouter non-streaming and SSE responses expose the actual model.

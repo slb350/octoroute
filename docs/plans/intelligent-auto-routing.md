@@ -29,9 +29,9 @@ stage:
 1. Apply deterministic intent, privacy, and capability gates.
 2. For compatible automatic work, apply `routing.semantic_mode`:
    - `disabled` skips semantic classification;
-   - `shadow` asks Strix for a constrained decision, records it, and does not
+   - `shadow` asks local model for a constrained decision, records it, and does not
      let it select the destination;
-   - `enforced` asks Strix and honors its `local` or `cloud` decision.
+   - `enforced` asks local model and honors its `local` or `cloud` decision.
 
 The local decision request:
 
@@ -53,7 +53,7 @@ In enforced mode, a semantic timeout, failure, or invalid output sends
 automatic traffic safely to OpenRouter with reason `router_failure`. In shadow
 mode, the same outcome is recorded as `failure` and local admission continues
 when the classifier already reserved capacity.
-If Strix is busy or unhealthy before classification, the established
+If local model is busy or unhealthy before classification, the established
 `local_busy` or `local_unhealthy` cloud reason is used.
 
 ## Why the router is local
@@ -78,7 +78,7 @@ chooses cloud, OpenRouter Auto selects the cloud model and provider.
 ```text
 OpenAI-compatible request
   |
-  +-- explicit local/local-only --> local admission --> Strix answer or error
+  +-- explicit local/local-only --> local admission --> local model answer or error
   |
   +-- explicit cloud/model ------> OpenRouter
   |
@@ -90,11 +90,11 @@ OpenAI-compatible request
               |
               +-- disabled -------> exact local admission
               +-- shadow ---------> observe + exact local admission
-              `-- enforced Strix decision
+              `-- enforced local model decision
                     +-- cloud -----> OpenRouter `openrouter/auto`
                     `-- local -----> exact local admission
                                       |
-                                      +-- admitted --> Strix answer
+                                      +-- admitted --> local model answer
                                       `-- rejected --> OpenRouter Auto
 ```
 
@@ -116,7 +116,7 @@ it never substitutes for the actual route metric or response headers.
 
 Regression coverage must prove:
 
-- difficult work routes to OpenRouter Auto even while Strix is healthy and
+- difficult work routes to OpenRouter Auto even while local model is healthy and
   idle in enforced mode;
 - routine work remains local after semantic classification;
 - shadow cloud decisions and failures cannot override compatible local

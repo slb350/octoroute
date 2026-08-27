@@ -19,13 +19,13 @@ fn preserves_unknown_fields_when_patching_only_the_model() {
     let request = gateway_request(original.clone());
     let local = serde_json::from_slice::<serde_json::Value>(
         &request
-            .body_bytes_for_model("puzzle-75b")
+            .body_bytes_for_model("example-local-model")
             .expect("model mutation"),
     )
     .expect("serialized local body");
 
     let mut expected = original;
-    expected["model"] = json!("puzzle-75b");
+    expected["model"] = json!("example-local-model");
     assert_eq!(local, expected);
 }
 

@@ -116,7 +116,7 @@ async fn models_are_authenticated_and_advertise_virtual_and_exact_local_ids() {
         .iter()
         .map(|model| model["id"].as_str().expect("model id").to_string())
         .collect();
-    assert_eq!(ids, ["auto", "local", "cloud", "puzzle-75b"]);
+    assert_eq!(ids, ["auto", "local", "cloud", "example-local-model"]);
 }
 
 #[tokio::test]

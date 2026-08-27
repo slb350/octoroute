@@ -126,7 +126,7 @@ pub(crate) enum IntelligentRoute {
     },
 }
 
-/// Strix-backed semantic router which keeps classification on the local network.
+/// local model-backed semantic router which keeps classification on the local network.
 pub(crate) struct LocalSemanticRouter {
     admission: LlamaCppAdmission,
     client: Client,

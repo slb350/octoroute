@@ -375,12 +375,12 @@ async fn explicit_cloud_never_probes_local_and_preserves_selected_model() {
     let config = gateway_config(&local.uri(), "", "", "");
     let transport = FakeTransport::default().with_cloud(FakeResult::Response(
         StatusCode::OK,
-        r#"{"model":"deepseek/deepseek-v4-flash","choices":[]}"#,
+        r#"{"model":"provider/model","choices":[]}"#,
     ));
     let gateway = service(config, transport.clone());
 
     let response = gateway
-        .handle_chat(&authorized_headers(), body("deepseek/deepseek-v4-flash"))
+        .handle_chat(&authorized_headers(), body("provider/model"))
         .await;
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -394,10 +394,7 @@ async fn explicit_cloud_never_probes_local_and_preserves_selected_model() {
             .expect("requests")
             .is_empty()
     );
-    assert_eq!(
-        response_json(response).await["model"],
-        "deepseek/deepseek-v4-flash"
-    );
+    assert_eq!(response_json(response).await["model"], "provider/model");
     let metrics = gateway.metrics_text().expect("metrics");
     assert!(metrics.contains(
         "octoroute_upstream_requests_total{outcome=\"response\",status_class=\"2xx\",upstream=\"openrouter\"} 1"

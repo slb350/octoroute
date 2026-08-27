@@ -15,7 +15,7 @@ use std::{
 use thiserror::Error;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
-/// Fail-closed result of checking whether Strix can accept a request now.
+/// Fail-closed result of checking whether local model can accept a request now.
 #[derive(Debug)]
 pub enum AdmissionOutcome {
     /// All admission gates passed and the local capacity lease is held.

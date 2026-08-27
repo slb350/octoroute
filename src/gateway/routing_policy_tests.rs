@@ -36,9 +36,9 @@ api_key_env = "OCTOROUTE_API_KEY"
 
 [upstreams.local]
 kind = "llama_cpp"
-name = "strix"
+name = "local"
 base_url = "http://127.0.0.1:8080"
-	model = "puzzle-75b"
+	model = "example-local-model"
 	model_revision = "test-model-revision"
 	context_window = 65536
 context_safety_tokens = 1024

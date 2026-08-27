@@ -47,7 +47,7 @@ listeners.
 - credential-isolated transport and opaque stream tests;
 - service fallback/privacy/limit tests using a fake transport;
 - public Axum integration tests using real reqwest-to-wiremock local traffic;
-- live Strix and low-cost OpenRouter canaries before release.
+- live local model and low-cost OpenRouter canaries before release.
 
 Fixtures use synthetic prompts and test credentials. Never record a personal
 prompt or real key.
@@ -83,14 +83,14 @@ Keep source and test files below 600 lines where practical and never above
 
 ## Live contracts
 
-For Strix:
+For local model:
 
 ```bash
-curl http://strix.local:8080/health
-curl 'http://strix.local:8080/slots?fail_on_no_slot=1'
+curl http://local-model.local:8080/health
+curl 'http://local-model.local:8080/slots?fail_on_no_slot=1'
 curl -H 'Content-Type: application/json' \
-  -d '{"model":"strixtea","messages":[{"role":"user","content":"probe"}]}' \
-  http://strix.local:8080/v1/chat/completions/input_tokens
+  -d '{"model":"local-model","messages":[{"role":"user","content":"probe"}]}' \
+  http://local-model.local:8080/v1/chat/completions/input_tokens
 ```
 
 For OpenRouter, run canaries through Octoroute rather than calling the

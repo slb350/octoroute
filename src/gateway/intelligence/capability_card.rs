@@ -3,7 +3,7 @@ use crate::gateway::config::{LocalCapability, LocalUpstreamConfig};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 
-pub(super) const CARD_VERSION: &str = "octoroute-strix-capability-card/v2";
+pub(super) const CARD_VERSION: &str = "octoroute-local-capability-card/v2";
 
 pub(super) struct CapabilityCard {
     pub(super) prompt: String,

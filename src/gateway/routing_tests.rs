@@ -5,12 +5,12 @@ use axum::http::{HeaderMap, HeaderValue};
 
 #[test]
 fn resolves_virtual_local_and_cloud_models_without_guessing() {
-    let local = "puzzle-75b";
+    let local = "example-local-model";
     let cases = [
         ("auto", ModelIntent::Auto),
         ("local", ModelIntent::Local),
         ("cloud", ModelIntent::CloudAuto),
-        ("puzzle-75b", ModelIntent::Local),
+        ("example-local-model", ModelIntent::Local),
         ("openrouter/auto", ModelIntent::CloudAuto),
         (
             "anthropic/claude-sonnet-4.6",
@@ -28,7 +28,7 @@ fn resolves_virtual_local_and_cloud_models_without_guessing() {
 
 #[test]
 fn rejects_unknown_unqualified_models() {
-    let error = ModelIntent::resolve("made-up-model", "puzzle-75b", "openrouter/auto")
+    let error = ModelIntent::resolve("made-up-model", "example-local-model", "openrouter/auto")
         .expect_err("unknown model must be rejected");
 
     assert!(matches!(

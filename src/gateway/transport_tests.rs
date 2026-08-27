@@ -58,12 +58,12 @@ fn openrouter_request_uses_cloud_credential_and_correct_nested_base_path() {
         "",
     );
     let gateway_request = gateway_request(json!({
-        "model": "deepseek/deepseek-v4-flash",
+        "model": "provider/model",
         "messages": [{"role": "user", "content": "hello"}]
     }));
     let openrouter = OpenRouterRequest::build(
         gateway_request,
-        &ModelIntent::CloudModel("deepseek/deepseek-v4-flash".to_string()),
+        &ModelIntent::CloudModel("provider/model".to_string()),
         config.openrouter(),
     )
     .expect("OpenRouter body");
@@ -196,7 +196,7 @@ async fn local_response_stream_preserves_body_and_only_safe_headers() {
         .and(path("/v1/chat/completions"))
         .and(header("authorization", "Bearer local-secret"))
         .and(body_json(json!({
-            "model": "puzzle-75b",
+            "model": "example-local-model",
             "messages": [{"role": "user", "content": "hello"}],
             "unknown_field": {"preserved": true}
         })))

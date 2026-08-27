@@ -1,4 +1,4 @@
-# Octoroute v2 production configuration for Strix.
+# Octoroute v2 example configuration for a local model endpoint.
 # Secrets are loaded from process environment variables or the ignored `.env`
 # file beside this configuration.
 
@@ -15,11 +15,11 @@ requests_per_minute = 120
 
 [upstreams.local]
 kind = "llama_cpp"
-name = "strix"
+name = "local-model"
 base_url = "http://127.0.0.1:8080"
-model = "strixtea"
+model = "local-model"
 # Immutable weights release; change this whenever the file behind the alias changes.
-model_revision = "agents-a1-q8_0"
+model_revision = "example-local-revision"
 context_window = 65536
 context_safety_tokens = 1024
 default_max_output_tokens = 4096

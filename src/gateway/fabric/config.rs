@@ -146,10 +146,11 @@ pub enum ProviderProfile {
     OpenRouterAuto,
 }
 
-/// Supported reasoning settings. Low is deliberately absent from v3 policy.
+/// Supported reasoning settings exposed by configured backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
+    Low,
     Medium,
     High,
     Xhigh,

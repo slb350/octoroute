@@ -1,7 +1,7 @@
 # Octoroute
 
-Octoroute is a local-first, OpenAI-compatible LLM gateway for a personal
-Strix llama.cpp server and OpenRouter.
+Octoroute is a local-first, OpenAI-compatible LLM gateway for local
+model endpoints and configurable cloud providers.
 
 ```text
 OpenAI client
@@ -11,7 +11,7 @@ OpenAI client
    |    \
    |     `-- OpenRouter `openrouter/auto` --> cloud model/provider
    |
-   `-- compatible work --> Strix answer
+   `-- compatible work --> local model answer
           |
           `-- optional local semantic decision: shadow or enforced
 ```
@@ -26,13 +26,13 @@ and provider selection. The routing decision stays on the local network.
 - Keeps malformed message/content shapes away from local inference and
   requires verified local tool capability for tool-call history.
 - Keeps compatible `auto` work local by default while observing bounded
-  semantic decisions on Strix in shadow mode.
+  semantic decisions on the local model endpoint in shadow mode.
 - Can disable semantic routing entirely or explicitly enforce it so work that
   needs stronger intelligence routes to OpenRouter `openrouter/auto`.
-- Also uses OpenRouter when Strix lacks a requested capability, is busy or
+- Also uses OpenRouter when the local model lacks a requested capability, is busy or
   unhealthy, or cannot fit the exact prompt plus output budget.
 - Accepts exact OpenRouter slugs such as
-  `deepseek/deepseek-v4-flash`.
+  `provider/model`.
 - Guarantees that `model: local`, the exact local alias, and
   `X-Octoroute-Privacy: local-only` never fall back to cloud.
 - Falls back from an automatic local attempt only before the first response
@@ -68,7 +68,7 @@ cargo run -- config
 cargo run -- config --output config.toml
 ```
 
-The repository configuration targets the live Strix contract:
+The repository configuration provides a generic local-endpoint example:
 
 ```toml
 config_version = 2
@@ -79,10 +79,10 @@ port = 8081
 
 [upstreams.local]
 kind = "llama_cpp"
-name = "strix"
+name = "local-model"
 base_url = "http://127.0.0.1:8080"
-model = "strixtea"
-model_revision = "agents-a1-q8_0"
+model = "local-model"
+model_revision = "example-local-revision"
 context_window = 65536
 max_in_flight = 1
 
@@ -112,7 +112,7 @@ capability boundary; Octoroute—not the model—applies the configured threshol
 and unmatched forecasts, with two steps for unsupported forecasts. Enforced
 mode should be enabled only after its judgment is
 validated against representative labeled traffic. Shadow and enforced modes
-add one local forecasting inference—about 760–1500 ms in the measured Strix
+add one local forecasting inference—about 760–1500 ms in the measured local model
 profile—to compatible `auto` requests.
 
 `shadow_sample_rate` can deterministically sample compatible shadow requests
@@ -128,7 +128,7 @@ cloud for 15 minutes by default. IDs are SHA-256 hashed in memory, storage is
 bounded, and explicit local or `local-only` intent always bypasses the latch.
 
 The forecast prompt includes the versioned
-`octoroute-strix-capability-card/v2`. It identifies the configured local alias
+`octoroute-local-capability-card/v2`. It identifies the configured local alias
 and immutable `model_revision`, lists only capabilities enabled in
 configuration, and records measured local limitations without exposing URLs,
 credentials, prompts, or runtime state. A SHA-256 fingerprint of the exact
@@ -140,11 +140,11 @@ In shadow mode only, explicitly typed and paired tool results can contribute
 closed trajectory evidence; malformed, ordinary, or unsupported tool history
 abstains, and the evidence never selects a route directly.
 
-This profile is for running Octoroute on Strix. The `config.laptop.toml`
+This profile is for running Octoroute beside a local model endpoint. The `config.laptop.toml`
 profile instead binds Octoroute to laptop loopback and uses
-`http://strix.local:8080` as the local upstream.
+`http://local-model.local:8080` as the local upstream.
 
-Start the gateway on Strix:
+Start the gateway beside the local model endpoint:
 
 ```bash
 cargo run --release -- --config config.toml
@@ -156,17 +156,17 @@ Start the gateway on the laptop:
 cargo run --release -- --config config.laptop.toml
 ```
 
-Point an OpenAI-compatible client at `http://strix.local:8081/v1` for the
-Strix deployment or `http://127.0.0.1:8081/v1` for the laptop deployment.
+Point an OpenAI-compatible client at `http://local-model.local:8081/v1` for the
+local model deployment or `http://127.0.0.1:8081/v1` for the laptop deployment.
 Use `OCTOROUTE_API_KEY` as the client API key.
 
 ## Model intent
 
 | `model` value | Behavior | Cloud fallback |
 | --- | --- | --- |
-| `auto` | Capable Strix or stronger cloud | Before commitment |
-| `local` | Force Strix | Never |
-| `strixtea` | Force the exact configured local alias | Never |
+| `auto` | Capable local model or stronger cloud | Before commitment |
+| `local` | Force the local model | Never |
+| `local-model` | Force the exact configured local alias | Never |
 | `cloud` | Force OpenRouter Auto | OpenRouter-managed only |
 | `openrouter/auto` | Force OpenRouter Auto | OpenRouter-managed only |
 | `provider/model` | Force that OpenRouter model | OpenRouter-managed only |
@@ -174,7 +174,7 @@ Use `OCTOROUTE_API_KEY` as the client API key.
 Example:
 
 ```bash
-curl http://strix.local:8081/v1/chat/completions \
+curl http://local-model.local:8081/v1/chat/completions \
   -H "Authorization: Bearer $OCTOROUTE_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -187,7 +187,7 @@ curl http://strix.local:8081/v1/chat/completions \
 For a request that must remain local:
 
 ```bash
-curl http://strix.local:8081/v1/chat/completions \
+curl http://local-model.local:8081/v1/chat/completions \
   -H "Authorization: Bearer $OCTOROUTE_API_KEY" \
   -H "X-Octoroute-Privacy: local-only" \
   -H "Content-Type: application/json" \
@@ -205,7 +205,7 @@ cloud service.
 - `X-Octoroute-Destination: local|cloud`
 - `X-Octoroute-Reason`: bounded route reason such as `local_capable`,
   `cloud_quality`, `local_busy`, or `local_early_failure`
-- `X-Octoroute-Upstream: strix|openrouter`
+- `X-Octoroute-Upstream: local-model|openrouter`
 - `X-Octoroute-Request-Id`: Octoroute-generated correlation UUID
 - `X-Request-Id`
 
@@ -223,7 +223,7 @@ that actually answered.
 | `POST /v1/chat/completions` | Bearer | Routed completion/SSE |
 | `GET /v1/models` | Bearer | Virtual and local model IDs |
 | `GET /health/live` | No | Process liveness |
-| `GET /health/ready` | No | Aggregated Strix/OpenRouter readiness |
+| `GET /health/ready` | No | Aggregated local/OpenRouter readiness |
 | `GET /health` | No | Readiness alias |
 | `GET /metrics` | Bearer | Prometheus exposition |
 

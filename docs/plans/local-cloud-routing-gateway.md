@@ -25,7 +25,7 @@ Client
   |
   v
 Octoroute
-  |-- local --> Strix llama.cpp (`strixtea`)
+  |-- local --> local model llama.cpp (`local-model`)
   |
   `-- cloud --> OpenRouter (`openrouter/auto-beta`)
                      |
@@ -70,12 +70,12 @@ maintenance without improving the local-versus-cloud decision.
 
 ## Evidence gathered
 
-### Current Strix runtime
+### Current local model runtime
 
-The live Strix host was inspected on 2026-07-22:
+The live local model host was inspected on 2026-07-22:
 
-- llama.cpp model alias: `strixtea`
-- Model file at the latest verification: `Agents-A1-Q8_0.gguf`
+- llama.cpp model alias: `local-model`
+- Model file at the latest verification: `local-model.gguf`
 - Context window: 65,536 tokens
 - Parallel slots: 1
 - Slot monitoring: available through `GET /slots`
@@ -87,14 +87,14 @@ The live Strix host was inspected on 2026-07-22:
   attached directly to systemd PID 1
 - Port 3000 is occupied by Gitea
 - Port 8081 is free and selected for Octoroute
-- Octoroute is not currently running on Strix
+- Octoroute is not currently running on the local model endpoint
 
 The single slot makes admission control a first-class routing input. A request
 that is valid for the local model should still spill to cloud immediately
 when the slot is occupied.
 
-The earlier benchmark ledger covered `puzzle-75b`; Strix changed to
-`Agents-A1-Q8_0.gguf` under alias `strixtea` before implementation
+The earlier benchmark ledger covered `example-local-model`; local model changed to
+`local-model.gguf` under alias `local-model` before implementation
 verification. Until the new model has equivalent capability evidence, the
 initial policy remains conservative for tools and complex structured
 automation.
@@ -118,7 +118,7 @@ llama.cpp:
   available.
 - The current server API documents
   `POST /v1/chat/completions/input_tokens` for exact request token counting.
-  Its live Strix response schema must be pinned in a contract fixture before
+  Its live local model response schema must be pinned in a contract fixture before
   it becomes an admission dependency.
 - Supports streaming chat completions, structured output, tool-call parsing,
   and additional llama.cpp-specific fields.
@@ -126,12 +126,12 @@ llama.cpp:
 ## Goals
 
 1. Provide one OpenAI-compatible URL and one client credential.
-2. Route suitable requests to Strix without sending them to a cloud
+2. Route suitable requests to local model without sending them to a cloud
    classifier first.
 3. Route everything else through OpenRouter Auto Beta.
 4. Preserve the request and upstream response schemas with minimal,
    documented mutation.
-5. Spill from Strix to cloud before response commitment when Strix is busy,
+5. Spill from the local model endpoint to cloud before response commitment when local model is busy,
    unhealthy, incompatible, or fails early.
 6. Never violate an explicit local-only privacy request.
 7. Keep cloud cost policy explicit and observable.
@@ -143,14 +143,14 @@ llama.cpp:
 ## Non-goals for v2.0
 
 - Direct adapters for Anthropic, Google, OpenAI, or DeepSeek APIs.
-- Letting OpenRouter route directly to the private Strix model.
+- Letting OpenRouter route directly to the private local model model.
 - The OpenAI Responses API, Anthropic Messages API, embeddings, image
   generation, or audio endpoints.
 - Prompt rewriting, retrieval augmentation, agent execution, or tool
   execution inside Octoroute.
 - A web UI.
 - Persisted billing or conversation history.
-- High availability across a complete Strix host failure.
+- High availability across a complete local model host failure.
 - A cloud semantic-classifier call on every request.
 
 The first release remains focused on
@@ -186,7 +186,7 @@ This work should ship as Octoroute 2.0.0.
   listens on a non-loopback address.
 
 Octoroute should fail startup with an actionable v1-to-v2 migration message.
-It must not silently guess which old tier represents Strix.
+It must not silently guess which old tier represents local model.
 
 ## Request routing contract
 
@@ -197,7 +197,7 @@ It must not silently guess which old tier represents Strix.
 | `auto` | Octoroute chooses local or cloud | Local may spill to cloud |
 | `local` | Force the configured local model | Never cloud |
 | `cloud` | Force OpenRouter Auto Beta | Cloud provider fallbacks only |
-| `strixtea` | Force the exact configured local alias | Never cloud |
+| `local-model` | Force the exact configured local alias | Never cloud |
 | `openrouter/auto-beta` | Force cloud Auto Beta | Provider fallbacks |
 | `provider/model` | Force an OpenRouter model | Provider fallbacks |
 | unknown unqualified name | Invalid request | Return 400 |
@@ -218,13 +218,13 @@ The `auto` policy evaluates these gates in order:
 1. Validate the request envelope and body-size limit.
 2. Apply an authenticated explicit route or local-only privacy directive.
 3. Detect capabilities requested by the body.
-4. Reject local when required capabilities are not enabled for Strix.
+4. Reject local when required capabilities are not enabled for local model.
 5. Reject local when the requested output and exact input-token count cannot
    fit inside the configured context safety limit.
 6. Acquire Octoroute's non-blocking local concurrency permit.
 7. Confirm llama.cpp readiness and free-slot status.
 8. Apply the benchmark-backed workload eligibility policy.
-9. Route eligible work to Strix.
+9. Route eligible work to local model.
 10. Route all other work to OpenRouter Auto Beta.
 
 The policy returns a typed decision:
@@ -253,7 +253,7 @@ bounded.
 The first enforceable policy should be simple and auditable:
 
 - Prefer local for plain-text chat that fits the local context, requests no
-  unsupported feature, and finds Strix ready and idle.
+  unsupported feature, and finds local model ready and idle.
 - Route tool calls, server-side plugins, multimodal input, unsupported
   modalities, and other explicitly unsupported features to cloud.
 - Route unknown or malformed feature combinations to cloud only if the
@@ -262,7 +262,7 @@ The first enforceable policy should be simple and auditable:
 - Keep the capability set in configuration rather than inferring support
   from the model name.
 
-The initial Strix configuration should conservatively enable text chat,
+The initial local model configuration should conservatively enable text chat,
 streaming, and only capabilities verified against the running build and
 model. Tool workloads should start cloud-bound because the current local
 tooling score is materially weaker than its general chat scores.
@@ -270,7 +270,7 @@ tooling score is materially weaker than its general chat scores.
 ### Optional semantic classifier
 
 A fixed, cheap cloud classifier such as
-`deepseek/deepseek-v4-flash` can improve the ambiguous plain-text boundary,
+`provider/model` can improve the ambiguous plain-text boundary,
 but it should not be part of the v2.0 correctness path.
 
 It should be implemented only after the deterministic gateway is stable:
@@ -286,7 +286,7 @@ It should be implemented only after the deterministic gateway is stable:
 7. Make the prompt disclosure and added latency visible in documentation.
 
 Using a cloud classifier before a local response means the prompt is no
-longer private or offline, even if Strix ultimately generates the answer.
+longer private or offline, even if local model ultimately generates the answer.
 That trade-off must be opt-in.
 
 ## Request and response mutation rules
@@ -355,10 +355,10 @@ The response commit point is the first response body byte sent to the client.
 
 Cancellation should be explicit: use a request-scoped cancellation token,
 `tokio::select!`, and a drop guard for the local body stream. Aborting or
-dropping the `reqwest` response future/stream must be verified against Strix
+dropping the `reqwest` response future/stream must be verified against local model
 rather than assumed.
 
-First-byte and total timeouts must be derived from measured Strix prompt
+First-byte and total timeouts must be derived from measured local model prompt
 processing and generation latency. The implementation must not invent a
 timeout that penalizes long prompts without a benchmark.
 
@@ -377,10 +377,10 @@ max_request_bytes = 8388608
 
 [upstreams.local]
 kind = "llama_cpp"
-name = "strix"
+name = "local-model"
 base_url = "http://127.0.0.1:8080"
-model = "strixtea"
-model_revision = "agents-a1-q8_0"
+model = "local-model"
+model_revision = "example-local-revision"
 context_window = 65536
 context_safety_tokens = 1024
 max_in_flight = 1
@@ -408,7 +408,7 @@ families without changing Octoroute code.
 The capability field is a closed enum. Initial valid values are `chat`,
 `stream`, `tools`, `structured_output`, `image_input`, `audio_input`,
 `video_input`, and `reasoning`. Unknown values fail startup. The initial
-Strix example should use `["chat", "stream"]`; additional values are enabled
+local model example should use `["chat", "stream"]`; additional values are enabled
 only after a live contract test.
 
 `app_title` is Octoroute's configuration name for the value emitted in
@@ -443,7 +443,7 @@ gateway. The v2 release must include the following controls:
 - Liveness separated from dependency readiness.
 - Dependency audit and secret-scanning checks in CI.
 
-The Strix deployment should make Octoroute the only normal ingress:
+The local model deployment should make Octoroute the only normal ingress:
 
 - Bind llama.cpp to `127.0.0.1:8080`.
 - Bind Octoroute to the LAN interface.
@@ -527,7 +527,7 @@ new behavior must fail before production code is added.
    benchmarks.
 3. Add characterization tests for request IDs, OpenAI error envelopes, SSE
    framing, and metrics that remain part of v2.
-4. Record Strix latency, first-byte time, token-count latency, slot behavior,
+4. Record local model latency, first-byte time, token-count latency, slot behavior,
    cancellation behavior, and current feature support.
 5. Record a small OpenRouter canary for streaming, actual selected model,
    usage/cost, Auto Beta plugin settings, and an early error.
@@ -618,7 +618,7 @@ RED:
 
 - Cover the complete decision table.
 - Prove local-only can never produce a cloud destination.
-- Prove explicit cloud never probes or calls Strix.
+- Prove explicit cloud never probes or calls local model.
 - Prove unsupported features route cloud.
 - Prove busy and unhealthy local states route cloud for `auto`.
 - Prove the same states return an error for explicit local.
@@ -725,7 +725,7 @@ authoritative spend source. Never use arbitrary client or selected model
 strings as Prometheus labels.
 
 Before enabling the optional future semantic classifier, create a labeled
-evaluation corpus from representative workloads and compare Strix with
+evaluation corpus from representative workloads and compare local model with
 OpenRouter. This corpus is not required while deterministic capability and
 admission policy is the only active routing policy. Track:
 
@@ -751,7 +751,7 @@ admission policy is the only active routing policy. Track:
 
 ### Phase 10: Deployment and release
 
-1. Build and install Octoroute as a systemd service on Strix.
+1. Build and install Octoroute as a systemd service on the local model endpoint.
 2. Replace the abandoned-session llama.cpp process with a durable service.
 3. Move llama.cpp to loopback-only ingress.
 4. Enable llama.cpp `--metrics` and scrape it separately from Octoroute.
@@ -787,7 +787,7 @@ tests/
 ```
 
 Default tests use local wiremock servers and make no live paid calls. Live
-Strix and OpenRouter contract tests are opt-in, credential-gated, and capped
+local model and OpenRouter contract tests are opt-in, credential-gated, and capped
 to a documented cost.
 
 ## Verification gate
@@ -823,8 +823,8 @@ The feature is complete only when:
 
 - One OpenAI client can use `auto`, `local`, `cloud`, a local alias, and an
   explicit OpenRouter model through the same base URL.
-- A compatible idle request reaches Strix with no cloud classifier call.
-- A busy Strix slot causes an `auto` request to reach OpenRouter.
+- A compatible idle request reaches local model with no cloud classifier call.
+- A busy local model slot causes an `auto` request to reach OpenRouter.
 - An explicit local-only request never reaches OpenRouter under any tested
   failure.
 - Tools and unsupported capabilities route cloud without body loss.
@@ -857,7 +857,7 @@ rotate them if any credential exposure is suspected.
 
 ## Risks and mitigations
 
-- **Shared failure domain:** Octoroute on Strix is unavailable if the host
+- **Shared failure domain:** Octoroute on the local model endpoint is unavailable if the host
   fails. Document this and move the gateway to a separate host if HA matters.
 - **Slot race:** Direct llama.cpp callers can race the free-slot check. Make
   Octoroute the only ingress and use an internal semaphore.

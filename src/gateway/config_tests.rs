@@ -15,9 +15,9 @@ max_request_bytes = 8388608
 
 [upstreams.local]
 kind = "llama_cpp"
-name = "strix"
+name = "local"
 base_url = "http://127.0.0.1:8080"
-model = "puzzle-75b"
+model = "example-local-model"
 model_revision = "test-model-revision"
 context_window = 65536
 context_safety_tokens = 1024
@@ -53,7 +53,7 @@ fn valid_v2_config_resolves_secrets_without_exposing_them() {
     assert_eq!(config.server().max_header_bytes(), 32768);
     assert_eq!(config.server().max_in_flight(), 32);
     assert_eq!(config.server().requests_per_minute(), 120);
-    assert_eq!(config.local().model(), "puzzle-75b");
+    assert_eq!(config.local().model(), "example-local-model");
     assert_eq!(config.local().model_revision(), "test-model-revision");
     assert_eq!(config.local().default_max_output_tokens(), 4096);
     assert_eq!(config.local().health_cache_ttl_ms(), 1000);
@@ -329,8 +329,8 @@ fn gateway_and_cloud_limits_must_be_positive() {
 fn configured_outbound_header_values_reject_control_characters() {
     for (needle, replacement, expected_field) in [
         (
-            "name = \"strix\"",
-            r#"name = "strix\nInjected""#,
+            "name = \"local\"",
+            r#"name = "local\nInjected""#,
             "upstreams.local.name",
         ),
         (

@@ -1,7 +1,7 @@
 # Migrating from Octoroute v1 to v2
 
 Octoroute 2.x replaces local size-tier routing with one explicit boundary.
-`auto` uses compatible Strix capacity or OpenRouter Auto. Semantic judgment is
+`auto` uses compatible local model capacity or OpenRouter Auto. Semantic judgment is
 configurable and defaults to non-enforcing shadow observation.
 
 ## Breaking changes
@@ -14,7 +14,7 @@ configurable and defaults to non-enforcing shadow observation.
 - Treat `model: auto` as local-versus-cloud routing.
 
 Octoroute rejects a v1 configuration at startup with a migration error. It
-does not guess which old endpoint should become Strix.
+does not guess which old endpoint should become local model.
 
 ## Configuration mapping
 
@@ -49,10 +49,10 @@ api_key_env = "OCTOROUTE_API_KEY"
 
 [upstreams.local]
 kind = "llama_cpp"
-name = "strix"
+name = "local-model"
 base_url = "http://127.0.0.1:8080"
-model = "strixtea"
-model_revision = "agents-a1-q8_0"
+model = "local-model"
+model_revision = "example-local-revision"
 context_window = 65536
 context_safety_tokens = 1024
 default_max_output_tokens = 4096
@@ -90,7 +90,7 @@ OPENROUTER_API_KEY=<OpenRouter credential>
 | v1 intent | v2 model |
 | --- | --- |
 | Let Octoroute choose | `auto` |
-| Force the local model | `local` or `strixtea` |
+| Force the local model | `local` or `local-model` |
 | Use cloud selection | `cloud` or `openrouter/auto` |
 | Force a cloud model | exact `provider/model` slug |
 
@@ -107,7 +107,7 @@ automatic requests that must stay on the LAN, add:
 X-Octoroute-Privacy: local-only
 ```
 
-If Strix is busy, unhealthy, incompatible, or over context, Octoroute returns
+If local model is busy, unhealthy, incompatible, or over context, Octoroute returns
 an error instead of falling back.
 
 ## Rollout
@@ -117,7 +117,7 @@ an error instead of falling back.
 3. Verify liveness and readiness.
 4. Test explicit `local`, `cloud`, and local-only requests.
 5. Validate one non-streaming and one streaming OpenRouter response.
-6. Occupy Strix and confirm `auto` reports `local_busy` and routes cloud.
+6. Occupy local model and confirm `auto` reports `local_busy` and routes cloud.
 7. Move a controlled client subset to v2.
 8. Move llama.cpp to loopback-only ingress after all clients use Octoroute.
 

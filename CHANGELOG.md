@@ -48,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace binary local-model route selection with a strict local-success
   forecast and deterministic, configurable threshold policy. Shadow remains
   the default while the provisional thresholds await labeled calibration.
-- Add a versioned Strix capability card derived from configured local identity
+- Add a versioned local model capability card derived from configured local identity
   and capabilities, including measured limitations and anti-framing guidance;
   calibration binds rows to a SHA-256 fingerprint of the rendered card.
 - Expose bounded local-success probability histograms by semantic mode and
@@ -136,7 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Restored task-aware `auto` routing: Strix now makes a constrained local
+- Restored task-aware `auto` routing: local model now makes a constrained local
   semantic decision before compatible automatic work is admitted for local
   inference.
 - Route requests that need stronger intelligence to `openrouter/auto`, even
@@ -154,7 +154,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Local-first OpenAI-compatible gateway for Strix llama.cpp and OpenRouter.
+- Local-first OpenAI-compatible gateway for local model llama.cpp and OpenRouter.
 - Deterministic `auto`, `local`, `cloud`, local-alias, and explicit
   `provider/model` routing intent.
 - Exact llama.cpp health, free-slot, input-token, context, and local

@@ -31,19 +31,19 @@ minimal request facts (model, stream, capabilities, privacy)
                     +-- llama.cpp health and free slot
                     `-- exact input tokens + output budget + safety margin
                 |
-                `-- Strix chat completions
+                `-- local model chat completions
 ```
 
-When semantic routing is enabled, Octoroute uses Strix itself for a bounded
+When semantic routing is enabled, Octoroute uses local model itself for a bounded
 success forecast, so a prompt selected for local work has not first been
-disclosed to a cloud classifier. Strix returns a probability, capability
+disclosed to a cloud classifier. local model returns a probability, capability
 boundary, closed rule, and short crux; deterministic Octoroute policy selects
 the destination from that forecast. `shadow` is the default mode and records
 the policy outcome without acting on it; `disabled` skips forecasting;
 `enforced` lets the policy outcome select local or cloud. OpenRouter Auto
 performs cloud model/provider selection only after Octoroute chooses cloud.
 
-The local forecast prompt carries `octoroute-strix-capability-card/v2`, built
+The local forecast prompt carries `octoroute-local-capability-card/v2`, built
 once at gateway construction from the configured upstream name, model alias,
 immutable model revision, and closed enabled-capability set. Its qualitative
 rules include measured limitations and prohibit inferring task difficulty from
@@ -69,7 +69,7 @@ model or capability populations.
 9. In shadow mode, deterministically sample the server-generated request ID at
    `shadow_sample_rate`; skipped requests continue directly to local admission.
    Benchmark and calibration traffic uses `1.0`. Enforced mode is never sampled.
-10. For sampled shadow or enforced mode, reserve an idle Strix slot and request
+10. For sampled shadow or enforced mode, reserve an idle local model slot and request
     a constrained success forecast with thinking disabled, then apply the
     configured deterministic threshold policy. Disabled mode skips forecasting.
 11. In shadow mode, record the bounded outcome and continue local admission.
@@ -105,7 +105,7 @@ messages require the configured local tool capability.
 Forced-local intent is defined by:
 
 - `model: local`;
-- the configured local alias (`strixtea`);
+- the configured local alias (`local-model`);
 - `X-Octoroute-Privacy: local-only`.
 
 Those paths never return a cloud destination. Automatic local attempts may
@@ -150,8 +150,8 @@ After one body byte is client-visible, upstream switching is impossible.
 
 Verified on 2026-07-22:
 
-- Strix alias: `strixtea`
-- model file: `Agents-A1-Q8_0.gguf`
+- local model alias: `local-model`
+- model file: `local-model.gguf`
 - context: 65,536
 - parallel slots: 1
 - `/health`: `{"status":"ok"}`

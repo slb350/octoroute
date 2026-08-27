@@ -6,8 +6,8 @@ Branch: `feat/v3-tiered-inference-fabric`
 
 ## Goal
 
-Turn Octoroute from a one-local-model/OpenRouter gateway into the inference data
-plane for a personal coding cluster:
+Turn Octoroute from a single-local-endpoint/OpenRouter gateway into a reusable
+inference data plane for coding agents and other OpenAI-compatible clients:
 
 ```text
 OpenCode / OpenAI-compatible clients
@@ -18,21 +18,20 @@ OpenCode / OpenAI-compatible clients
        +--------+---------+
        |        |         |
        v        v         v
- worker pool  local     cloud/subscription
- 3x RTX 3080  supervisor  providers
- Qwen3.8-27B  M5 Ultra   Kimi / z.ai /
-                              OpenRouter /
-                              OpenAI / Codex
+ worker pool  optional   cloud/subscription
+ replicas     local      providers
+              supervisor
 ```
 
-The intended steady-state policy is local-first, not local-only. Most bounded
-work should remain on the three Qwen workers. Complex planning and review should
-use the local M5 Ultra supervisor when available. A deliberately small fraction
-of tasks may escalate to a cloud SOTA model when the quality difference matters.
+The intended steady-state policy is local-first, not local-only. Bounded work
+should normally remain on a configurable pool of equivalent local endpoints.
+Complex planning and review can use a higher-capability local supervisor when
+one is available. A deliberately small fraction of work may escalate to a
+configured cloud or subscription model when the quality difference matters.
 
-Before the M5 Ultra arrives, the same `supervisor` virtual model should use a
-configured subscription/API chain. Enabling the Ultra later must be a config
-change, not a client or OpenCode rewrite.
+When no local supervisor is enabled, the same `supervisor` virtual model uses
+its configured provider chain. Adding a local supervisor later is therefore a
+configuration change rather than a client or OpenCode rewrite.
 
 ## Responsibility boundary
 
@@ -64,20 +63,21 @@ Octoroute owns:
 - pre-commit fallback only;
 - bounded route reasons, headers, metrics, and auditability.
 
-This keeps GPU identity and provider credentials out of OpenCode prompts. A
-subagent asks for `model: worker`; it does not need to know which physical GPU
+This keeps endpoint identity and provider credentials out of OpenCode prompts. A
+subagent asks for `model: worker`; it does not need to know which physical endpoint
 is idle.
 
 ## V3 virtual models
 
-The example configuration defines these initial routes:
+The example configuration defines reusable routing roles rather than binding
+clients to physical machines or model releases:
 
 | Client model | Intended behavior |
 | --- | --- |
 | `auto` | Alias for the configured local-first default route |
-| `worker` | Three-card Qwen worker pool, never cloud |
-| `supervisor` | Local Ultra when enabled, then configured cloud/subscription chain |
-| `local` | Worker pool and local supervisor only, never cloud |
+| `worker` | Equivalent local worker endpoints, never cloud |
+| `supervisor` | Optional local supervisor, then configured provider chain |
+| `local` | Local worker and supervisor pools only, never cloud |
 | `cloud-sota` | Deliberate non-local escalation |
 
 OpenCode should normally choose `worker` or `supervisor` explicitly because it
@@ -87,25 +87,26 @@ clients and general prompts.
 ## Local pools
 
 A local pool describes equivalent model servers with a shared model identity,
-context contract, capabilities, and reasoning default. Each physical member has
-its own URL, concurrency limit, enabled state, and priority.
+context contract, capabilities, and reasoning default. Each member has its own
+URL, concurrency limit, enabled state, and priority. Pool size and hardware are
+operator choices rather than part of the client contract.
 
-The initial worker pool is:
+The repository example uses three interchangeable members:
 
 ```text
 pool: workers
-model: Qwen3.8-27B Unsloth UD-Q4_K_M
-context: 131,072
+model: configured coding model
+context: configured per deployment
 reasoning default: Medium
 members:
-  worker-0 -> RTX 3080 20 GB
-  worker-1 -> RTX 3080 20 GB
-  worker-2 -> RTX 3080 20 GB
+  worker-0 -> local model endpoint
+  worker-1 -> local model endpoint
+  worker-2 -> local model endpoint
 ```
 
-Each member remains single-slot. Parallelism comes from three independent model
-replicas rather than multiple concurrent slots competing for one card's KV
-cache and bandwidth.
+Each example member is single-slot. Parallelism comes from independent model
+replicas rather than multiple concurrent requests competing for one endpoint's
+context cache and compute bandwidth.
 
 The initial selector is deterministic:
 
@@ -118,23 +119,21 @@ The initial selector is deterministic:
 7. select the lowest live load;
 8. use configured priority, then a rotating cursor, to break ties.
 
-A future sticky-session policy may prefer an existing member while its KV prefix
-is valuable, but stickiness must never bypass health, capacity, or context gates.
+A future sticky-session policy may prefer an existing member while its cached
+prefix is valuable, but stickiness must never bypass health, capacity, or
+context gates.
 
 ## Reasoning policy
 
-V3 deliberately does not expose Low reasoning as a policy value. Real-world
-Qwen3.8 coding tests showed that Low can consume more total tokens by repeatedly
-iterating toward a complete answer.
+V3 supports Low, Medium, High, and XHigh so Octoroute can preserve the settings
+accepted by different clients and providers. The repository example still uses
+Medium for bounded worker tasks and XHigh for complex supervisor work. Low is
+available for operators who prefer it, even though it is not the default policy
+for this deployment.
 
-The intended policy is:
-
-- Medium for easy and bounded implementation work;
-- XHigh for complex debugging, architecture, unfamiliar code, or a retry after a
-  failed Medium attempt;
-- High remains available for providers whose native contract uses it;
-- Octoroute preserves or supplies the chosen setting but does not classify task
-  complexity itself.
+Octoroute preserves or supplies the selected effort but does not infer task
+complexity from prompt text. Agent runtimes such as OpenCode remain responsible
+for choosing the appropriate reasoning level and escalating failed work.
 
 ## Provider types
 

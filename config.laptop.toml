@@ -1,4 +1,4 @@
-# Octoroute v2 configuration for running the gateway on Steve's laptop.
+# Octoroute v2 example for a gateway running on a client workstation.
 # Secrets are loaded from the ignored `.env` file beside this configuration.
 
 config_version = 2
@@ -14,11 +14,11 @@ requests_per_minute = 120
 
 [upstreams.local]
 kind = "llama_cpp"
-name = "strix"
-base_url = "http://strix.local:8080"
-model = "strixtea"
+name = "local-model"
+base_url = "http://local-model.local:8080"
+model = "local-model"
 # Immutable weights release; change this whenever the file behind the alias changes.
-model_revision = "agents-a1-q8_0"
+model_revision = "example-local-revision"
 context_window = 65536
 context_safety_tokens = 1024
 default_max_output_tokens = 4096

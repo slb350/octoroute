@@ -1,0 +1,50 @@
+[Unit]
+Description=Local llama.cpp inference server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=octoroute
+Group=octoroute
+SupplementaryGroups=render
+WorkingDirectory=/opt/llama.cpp
+Environment=LOCAL_MODEL_PATH=/var/lib/octoroute/models/local-model.gguf
+Environment=LOCAL_MODEL_ALIAS=local-model
+Environment=LOCAL_CONTEXT_SIZE=65536
+Environment=LOCAL_GPU_LAYERS=999
+Environment=LOCAL_THREADS=8
+Environment=LOCAL_BATCH_SIZE=2048
+Environment=LOCAL_PARALLEL=1
+EnvironmentFile=-/etc/octoroute/local-llm.env
+ExecStart=/opt/llama.cpp/build/bin/llama-server \
+    -m ${LOCAL_MODEL_PATH} \
+    --alias ${LOCAL_MODEL_ALIAS} \
+    -c ${LOCAL_CONTEXT_SIZE} \
+    -ngl ${LOCAL_GPU_LAYERS} \
+    -t ${LOCAL_THREADS} \
+    -b ${LOCAL_BATCH_SIZE} \
+    --host 127.0.0.1 \
+    --port 8080 \
+    --parallel ${LOCAL_PARALLEL} \
+    --metrics
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

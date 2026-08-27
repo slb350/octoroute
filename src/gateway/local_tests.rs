@@ -95,7 +95,7 @@ async fn mount_token_count(
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions/input_tokens"))
         .and(body_json(json!({
-            "model": "puzzle-75b",
+            "model": "example-local-model",
             "messages": [{"role": "user", "content": "hello"}],
             "max_completion_tokens": output_tokens
         })))

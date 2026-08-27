@@ -39,9 +39,9 @@ api_key_env = "OCTOROUTE_API_KEY"
 
 [upstreams.local]
 kind = "llama_cpp"
-name = "strix"
+name = "local"
 base_url = "{}"
-model = "puzzle-75b"
+model = "example-local-model"
 model_revision = "test-model-revision"
 context_window = 65536
 context_safety_tokens = 1024
@@ -128,7 +128,7 @@ async fn explicit_local_sse_is_forwarded_opaquely_with_unknown_request_fields() 
         .and(path("/v1/chat/completions"))
         .and(header("content-type", "application/json"))
         .and(body_json(json!({
-            "model": "puzzle-75b",
+            "model": "example-local-model",
             "messages": [{"role": "user", "content": "hello"}],
             "stream": true,
             "future_field": {"preserved": true}
@@ -137,7 +137,7 @@ async fn explicit_local_sse_is_forwarded_opaquely_with_unknown_request_fields() 
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
                 .set_body_bytes(
-                    b": keepalive\n\ndata: {\"model\":\"puzzle-75b\"}\n\ndata: [DONE]\n\n",
+                    b": keepalive\n\ndata: {\"model\":\"example-local-model\"}\n\ndata: [DONE]\n\n",
                 ),
         )
         .expect(1)
@@ -157,7 +157,7 @@ async fn explicit_local_sse_is_forwarded_opaquely_with_unknown_request_fields() 
         to_bytes(response.into_body(), 4096)
             .await
             .expect("SSE body"),
-        ": keepalive\n\ndata: {\"model\":\"puzzle-75b\"}\n\ndata: [DONE]\n\n"
+        ": keepalive\n\ndata: {\"model\":\"example-local-model\"}\n\ndata: [DONE]\n\n"
     );
 }
 

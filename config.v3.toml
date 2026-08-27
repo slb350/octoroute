@@ -14,12 +14,12 @@ max_in_flight = 64
 
 [fabric]
 
-# Three independent Qwen3.8-27B workers, one per RTX 3080 20 GB card.
+# Example pool of equivalent local coding-model endpoints.
 [[fabric.local_pools]]
 name = "workers"
 enabled = true
-model = "qwen3.8-27b"
-model_revision = "unsloth-ud-q4_k_m"
+model = "coding-worker-model"
+model_revision = "example-worker-revision"
 context_window = 131072
 context_safety_tokens = 2048
 default_max_output_tokens = 16384
@@ -29,29 +29,29 @@ default_reasoning_effort = "medium"
 
 [[fabric.local_pools.members]]
 name = "worker-0"
-base_url = "http://gpu-box.local:8001"
+base_url = "http://worker-0.local:8000"
 max_in_flight = 1
 priority = 100
 
 [[fabric.local_pools.members]]
 name = "worker-1"
-base_url = "http://gpu-box.local:8002"
+base_url = "http://worker-1.local:8000"
 max_in_flight = 1
 priority = 100
 
 [[fabric.local_pools.members]]
 name = "worker-2"
-base_url = "http://gpu-box.local:8003"
+base_url = "http://worker-2.local:8000"
 max_in_flight = 1
 priority = 100
 
-# Disabled until the 256 GB M5 Ultra arrives. Enabling this pool should not
+# Optional higher-capability local supervisor pool. Enabling it should not
 # require changing OpenCode or any other client-facing route.
 [[fabric.local_pools]]
 name = "supervisor-local"
 enabled = false
 model = "local-supervisor"
-model_revision = "pending-m5-ultra-model"
+model_revision = "pending-supervisor-0-model"
 context_window = 262144
 context_safety_tokens = 4096
 default_max_output_tokens = 32768
@@ -60,12 +60,14 @@ strategy = "least_loaded"
 default_reasoning_effort = "xhigh"
 
 [[fabric.local_pools.members]]
-name = "m5-ultra"
+name = "supervisor-0"
 enabled = true
-base_url = "http://m5-ultra.local:8000"
+base_url = "http://supervisor-0.local:8000"
 max_in_flight = 1
 priority = 10
 
+# Provider entries below are examples. Operators may replace, disable, or
+# reorder them while retaining the same virtual-model contracts.
 # Moonshot's Kimi for Coding plan. The endpoint speaks the Anthropic protocol,
 # requires max_tokens, and rejects arbitrary temperature values.
 [[fabric.providers]]
@@ -157,8 +159,8 @@ steps = ["pool:workers"]
 default_reasoning_effort = "medium"
 fallback_on = ["busy", "unhealthy", "context_overflow", "incompatible", "precommit_failure"]
 
-# High-level planning/review. It uses the Ultra when available and subscription
-# plans until then. OpenCode chooses this route for complex work.
+# High-level planning and review. It prefers a local supervisor when enabled,
+# then uses the configured cloud or subscription chain.
 [[routing.routes]]
 model = "supervisor"
 privacy = "cloud_allowed"

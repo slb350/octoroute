@@ -129,14 +129,14 @@ fn empty_config_allowlist_removes_caller_override_for_auto_routing() {
 fn explicit_cloud_model_only_patches_model_and_preserves_plugins() {
     let config = gateway_config("http://127.0.0.1:8080", "", "", "");
     let original = json!({
-        "model": "deepseek/deepseek-v4-flash",
+        "model": "provider/model",
         "messages": [{"role": "user", "content": "hello"}],
         "plugins": [{"id": "auto-router", "cost_quality_tradeoff": 2}]
     });
 
     let body = OpenRouterRequest::build(
         gateway_request(original.clone()),
-        &ModelIntent::CloudModel("deepseek/deepseek-v4-flash".to_string()),
+        &ModelIntent::CloudModel("provider/model".to_string()),
         config.openrouter(),
     )
     .expect("OpenRouter body")

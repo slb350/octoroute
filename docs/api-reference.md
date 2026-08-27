@@ -31,7 +31,7 @@ tool calls may omit content or set it to null. Tool-role or assistant
 tool-call history requires the local `tools` capability even when the request
 omits top-level tool definitions. Malformed message/content shapes and
 unsupported typed block names route automatic requests to cloud; forced-local
-requests return `400` rather than sending an incompatible body to Strix.
+requests return `400` rather than sending an incompatible body to local model.
 
 ### Model values
 
@@ -39,7 +39,7 @@ requests return `400` rather than sending an incompatible body to Strix.
 | --- | --- |
 | `auto` | Intelligently choose capable local execution or OpenRouter Auto |
 | `local` | Force local, never cloud |
-| `strixtea` | Exact configured local alias, never cloud |
+| `local-model` | Exact configured local alias, never cloud |
 | `cloud` | Force OpenRouter Auto |
 | `openrouter/auto` | Force OpenRouter Auto |
 | `provider/model` | Force an exact OpenRouter model |

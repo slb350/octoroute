@@ -1,7 +1,7 @@
 # Semantic forecast calibration
 
 Octoroute calibrates semantic routing offline. The command does not start the
-gateway, load `config.toml` or `.env`, resolve credentials, or call Strix or
+gateway, load `config.toml` or `.env`, resolve credentials, or call local model or
 OpenRouter.
 
 ```bash
@@ -21,9 +21,9 @@ Each JSONL line is one labeled challenge:
 ```json
 {
   "challenge_id": "cql-tier-1-004",
-  "model_alias": "strixtea",
-  "model_revision": "agents-a1-q8_0",
-  "capability_card_version": "octoroute-strix-capability-card/v2",
+  "model_alias": "local-model",
+  "model_revision": "example-local-revision",
+  "capability_card_version": "octoroute-local-capability-card/v2",
   "capability_card_fingerprint": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
   "p_local_success": 0.23,
   "capability_boundary": "unsupported",

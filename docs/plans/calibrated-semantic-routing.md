@@ -6,7 +6,7 @@ Decision date: 2026-08-14
 
 Inspiration: NVIDIA NeMo Switchyard capability and stage routing. Octoroute
 borrows the design ideas, not Switchyard source code. Octoroute remains an MIT
-licensed, local-first Strix/OpenRouter gateway rather than becoming a generic
+licensed, local-first local model/OpenRouter gateway rather than becoming a generic
 multi-provider router.
 
 Upstream evidence reviewed on 2026-08-14:
@@ -19,7 +19,7 @@ Upstream evidence reviewed on 2026-08-14:
 
 ## Problem
 
-Octoroute's semantic router currently asks Strix to emit a binary `local` or
+Octoroute's semantic router currently asks local model to emit a binary `local` or
 `cloud` destination. The 2026-07-26 labeled replay found 44% routing accuracy,
 compared with 73% for always-local on the same compatible tasks. It produced
 31 unnecessary escalations and missed 8 tasks that the local model did not
@@ -32,7 +32,7 @@ The binary verdict combines two distinct responsibilities:
 2. decide how much forecasted risk justifies cloud cost and disclosure.
 
 The prompt also describes only "the configured private local model". It does
-not name Strix, state its enabled capabilities, or give the judge a
+not name local model, state its enabled capabilities, or give the judge a
 benchmark-backed capability boundary. Strict JSON proves only that a verdict
 has the expected shape; it does not calibrate the judgment.
 
@@ -42,7 +42,7 @@ has the expected shape; it does not calibrate the judgment.
   a destination directly.
 - Apply routing thresholds in deterministic Rust policy that can be tuned and
   replayed without another model call.
-- Give the judge a versioned, Strix-specific qualitative capability card based
+- Give the judge a versioned, local model-specific qualitative capability card based
   on measured evidence rather than prompt length or technical vocabulary.
 - Preserve the existing disabled/shadow/enforced evidence gate. Shadow remains
   the default.
@@ -89,7 +89,7 @@ The local judge returns a strict object equivalent to:
 }
 ```
 
-`p_local_success` forecasts the probability that the configured Strix model
+`p_local_success` forecasts the probability that the configured local model model
 will complete the whole task successfully in one run under the visible
 request, enabled local capabilities, and normal execution budget. It is not
 confidence in the forecast, a route recommendation, or a cost judgment.
@@ -101,7 +101,7 @@ confidence in the forecast, a route recommendation, or a cost judgment.
 - `unsupported`: the card identifies a material local limitation;
 - `unmatched`: no card rule adequately covers the crux.
 
-`primary_rule` is a closed, versioned enum from the checked-in Strix capability
+`primary_rule` is a closed, versioned enum from the checked-in local model capability
 card. `crux` is required, bounded, and never used as a metric label or routine
 log field.
 
@@ -134,7 +134,7 @@ when saved forecast artifacts are available.
 The first capability-card revision will:
 
 - identify the configured local model alias, immutable model revision, and the
-  Strix deployment role;
+  local model deployment role;
 - describe only capabilities enabled by validated Octoroute configuration;
 - distinguish deterministic verification from merely plausible output;
 - state measured limitations from the existing benchmark, including database
@@ -148,7 +148,7 @@ The first capability-card revision will:
 - be versioned so a rule revision requires explicit review and a new
   evaluation.
 
-The card remains local configuration/code, is sent only to Strix, and contains
+The card remains local configuration/code, is sent only to local model, and contains
 no prompt or credential data.
 
 ## Request context
@@ -180,7 +180,7 @@ out-of-range, or internally inconsistent thresholds.
 
 The classifier output-token limit remains an internal bounded constant during
 the first milestone. It will increase only enough to carry the strict forecast
-object and will be checked against real Strix output before becoming a public
+object and will be checked against real local model output before becoming a public
 configuration surface.
 
 ## Observability and evaluation artifacts
@@ -213,7 +213,7 @@ forecasts.
 
 - [x] Add typed forecast, boundary, rule, and deterministic policy types.
 - [x] Add RED tests for valid threshold decisions and malformed forecasts.
-- [x] Change the Strix response schema and parser from binary destination to the
+- [x] Change the local model response schema and parser from binary destination to the
   forecast object.
 - [x] Preserve mode-specific routing and failure behavior.
 - [x] Add threshold configuration and validation tests.
@@ -221,7 +221,7 @@ forecasts.
 
 ### 2. Capability card and safe observability
 
-- [x] Add the versioned Strix capability card and forecast instructions.
+- [x] Add the versioned local model capability card and forecast instructions.
 - [x] Include configured local alias, immutable revision, and enabled
   capabilities.
 - [x] Add bounded probability/boundary metrics without logging generated text.

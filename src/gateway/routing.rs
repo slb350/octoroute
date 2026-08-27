@@ -91,7 +91,7 @@ pub enum PrivacyDirectiveError {
 /// Current result of local health, context, and slot admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalAdmissionState {
-    /// Strix can accept the request now.
+    /// local model can accept the request now.
     Ready,
     /// All configured local capacity is occupied.
     Busy,

@@ -157,7 +157,7 @@ mod tests {
         let template = generate_config_template();
         let config = GatewayConfig::from_toml(template, &TemplateEnvironment)
             .expect("template must be a valid v2 config");
-        assert_eq!(config.local().model(), "strixtea");
+        assert_eq!(config.local().model(), "local-model");
         assert_eq!(config.openrouter().auto_model(), "openrouter/auto");
         assert_eq!(
             config.routing().semantic_mode(),
