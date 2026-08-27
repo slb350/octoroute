@@ -1,4 +1,4 @@
-name: One-shot refresh yanked chacha20 lock entry
+name: One-shot trace rand 0.10 reverse dependency
 
 on:
   push:
@@ -8,11 +8,10 @@ on:
       - .github/workflows/one-shot-unyank-chacha.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  refresh:
-    if: github.actor != 'github-actions[bot]'
+  trace:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -25,26 +24,11 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Replace the yanked transitive release
+      - name: Show reverse dependency paths
         run: |
-          cargo update -p chacha20 --precise 0.10.0
-          grep -A3 'name = "chacha20"' Cargo.lock | grep 'version = "0.10.0"'
-
-      - name: Run tests
-        run: cargo test --locked --all-targets --all-features
-
-      - name: Audit the refreshed lockfile
-        run: |
-          cargo install cargo-audit --version 0.22.2 --locked
-          cargo audit --deny warnings
-
-      - name: Commit the lockfile refresh
-        shell: bash
-        run: |
-          rm .github/workflows/one-shot-unyank-chacha.yml
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add Cargo.lock .github/workflows/one-shot-unyank-chacha.yml
-          git diff --cached --quiet && exit 0
-          git commit -m "chore(deps): replace yanked chacha20 lock entry"
-          git push origin HEAD:${{ github.ref_name }}
+          echo '=== rand 0.10.2 ==='
+          cargo tree --locked -i rand@0.10.2
+          echo '=== chacha20 0.10.1 ==='
+          cargo tree --locked -i chacha20@0.10.1
+          echo '=== feature path for rand 0.10.2 ==='
+          cargo tree --locked -e features -i rand@0.10.2
