@@ -51,7 +51,7 @@ priority = 100
 name = "supervisor-local"
 enabled = false
 model = "local-supervisor"
-model_revision = "pending-supervisor-0-model"
+model_revision = "example-supervisor-revision"
 context_window = 262144
 context_safety_tokens = 4096
 default_max_output_tokens = 32768
@@ -168,7 +168,7 @@ steps = ["pool:supervisor-local", "provider:kimi", "provider:zai", "provider:ope
 default_reasoning_effort = "xhigh"
 fallback_on = ["busy", "unhealthy", "context_overflow", "incompatible", "rate_limited", "precommit_failure"]
 
-# Force all-local operation while still allowing worker-to-Ultra escalation.
+# Force all-local operation while still allowing worker-to-supervisor escalation.
 [[routing.routes]]
 model = "local"
 privacy = "local_only"
