@@ -108,13 +108,7 @@ impl FabricConfig {
                 continue;
             }
             let rotation = (index + pool_len - (cursor % pool_len)) % pool_len;
-            candidates.push((
-                snapshot.in_flight,
-                member.priority,
-                rotation,
-                index,
-                member,
-            ));
+            candidates.push((snapshot.in_flight, member.priority, rotation, index, member));
         }
 
         if !any_enabled {

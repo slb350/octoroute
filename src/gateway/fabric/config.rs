@@ -89,17 +89,12 @@ pub struct LocalMemberConfig {
 }
 
 /// Selection strategy for a local pool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PoolStrategy {
     /// Prefer the member with the fewest active requests, rotating ties.
+    #[default]
     LeastLoaded,
-}
-
-impl Default for PoolStrategy {
-    fn default() -> Self {
-        Self::LeastLoaded
-    }
 }
 
 /// A cloud API or locally installed subscription-backed executable.
@@ -141,19 +136,14 @@ pub enum ProviderProtocol {
 }
 
 /// Request-shaping profile applied by the eventual provider adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderProfile {
     /// Preserve caller fields except for the destination model.
+    #[default]
     Passthrough,
     /// Apply Octoroute-owned OpenRouter Auto policy fields.
     OpenRouterAuto,
-}
-
-impl Default for ProviderProfile {
-    fn default() -> Self {
-        Self::Passthrough
-    }
 }
 
 /// Supported reasoning settings. Low is deliberately absent from v3 policy.
@@ -417,10 +407,7 @@ impl RawServerConfig {
         }
         validate_env_name("server.api_key_env", &self.api_key_env)?;
         if self.max_in_flight == 0 {
-            return Err(invalid(
-                "server.max_in_flight",
-                "must be greater than zero",
-            ));
+            return Err(invalid("server.max_in_flight", "must be greater than zero"));
         }
         Ok(FabricServerConfig {
             host,
@@ -729,11 +716,7 @@ fn validate_routes(
     Ok(routes)
 }
 
-fn validate_url(
-    field: &str,
-    value: &str,
-    https_only: bool,
-) -> Result<Url, FabricConfigError> {
+fn validate_url(field: &str, value: &str, https_only: bool) -> Result<Url, FabricConfigError> {
     let url = Url::parse(value).map_err(|_| invalid(field, "must be an absolute URL"))?;
     let valid_scheme = if https_only {
         url.scheme() == "https"
@@ -810,10 +793,7 @@ fn validate_env_name(field: &str, value: &str) -> Result<(), FabricConfigError> 
     if !(first.is_ascii_alphabetic() || first == b'_')
         || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
     {
-        return Err(invalid(
-            field,
-            "must be a valid environment variable name",
-        ));
+        return Err(invalid(field, "must be a valid environment variable name"));
     }
     Ok(())
 }

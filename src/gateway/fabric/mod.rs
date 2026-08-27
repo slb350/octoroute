@@ -9,16 +9,16 @@ mod policy;
 mod presets;
 
 pub use config::{
-    FabricConfig, FabricConfigError, FabricObservabilityConfig, FabricServerConfig,
-    FallbackTrigger, LocalMemberConfig, LocalPoolConfig, PoolStrategy, ProviderConfig,
-    ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort, RoutePrivacy, RouteTarget,
-    VirtualRoute, FABRIC_CONFIG_VERSION,
+    FABRIC_CONFIG_VERSION, FabricConfig, FabricConfigError, FabricObservabilityConfig,
+    FabricServerConfig, FallbackTrigger, LocalMemberConfig, LocalPoolConfig, PoolStrategy,
+    ProviderConfig, ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort, RoutePrivacy,
+    RouteTarget, VirtualRoute,
 };
 pub use policy::{
     FabricRouteError, LocalRequirements, LocalSelection, MemberSnapshot, PoolSelectionError,
     RoutePlan,
 };
-pub use presets::{provider_preset, ProviderPreset, PROVIDER_PRESETS};
+pub use presets::{PROVIDER_PRESETS, ProviderPreset, provider_preset};
 
 #[cfg(test)]
 mod tests;

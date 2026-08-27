@@ -3,9 +3,7 @@
 //! These values mirror the provider contracts already exercised by Drep. They are
 //! configuration defaults, not a replacement for live provider/model discovery.
 
-use super::{
-    ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort,
-};
+use super::{ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort};
 
 /// Static provider defaults suitable for rendering into v3 configuration.
 #[derive(Debug, Clone, Copy)]
