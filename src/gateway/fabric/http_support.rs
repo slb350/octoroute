@@ -160,11 +160,7 @@ pub(super) fn error_response(
     response
 }
 
-pub(super) fn rate_limit_response(
-    message: &str,
-    code: &str,
-    request_id: &str,
-) -> Response<Body> {
+pub(super) fn rate_limit_response(message: &str, code: &str, request_id: &str) -> Response<Body> {
     let mut response = error_response(
         StatusCode::TOO_MANY_REQUESTS,
         message,
@@ -185,10 +181,7 @@ pub(super) fn insert_header(headers: &mut HeaderMap, name: &'static str, value: 
     headers.insert(name, value);
 }
 
-pub(super) async fn security_headers(
-    request: Request<Body>,
-    next: Next,
-) -> Response<Body> {
+pub(super) async fn security_headers(request: Request<Body>, next: Next) -> Response<Body> {
     let mut response = next.run(request).await;
     let gateway_request_id = response
         .headers()

@@ -1,21 +1,17 @@
 //! Authenticated v3 orchestration for virtual routes and local inference pools.
 
+use super::http_support::{
+    FixedWindowRateLimiter, MetadataAuthorizationError, OCTOROUTE_REQUEST_ID_HEADER,
+    REQUEST_ID_HEADER, error_response, header_bytes, hold_response_guard, insert_header,
+    metadata_authorization_error, rate_limit_response,
+};
 use super::{
     FabricConfig, FabricRouteError, FabricTransport, FabricTransportError, FabricUpstreamTransport,
     FallbackTrigger, LlamaCppPool, LlamaCppPoolBuildError, PoolAdmissionOutcome,
     PoolAdmissionState, PreparedUpstreamResponse, PrivacyDirective, ProviderAdmissionOutcome,
     ProviderAdmissionState, ProviderRegistry, ProviderRegistryBuildError, RoutePlan, RouteTarget,
 };
-use super::http_support::{
-    FixedWindowRateLimiter, MetadataAuthorizationError, OCTOROUTE_REQUEST_ID_HEADER,
-    REQUEST_ID_HEADER, error_response, header_bytes, hold_response_guard, insert_header,
-    metadata_authorization_error, rate_limit_response,
-};
-use crate::gateway::{
-    auth::BearerAuthenticator,
-    env::Environment,
-    request::GatewayRequest,
-};
+use crate::gateway::{auth::BearerAuthenticator, env::Environment, request::GatewayRequest};
 use axum::{
     body::{Body, Bytes, to_bytes},
     http::{HeaderMap, Request, Response, StatusCode},

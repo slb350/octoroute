@@ -1,6 +1,4 @@
-use super::{
-    env::{DotenvEnvironment, DotenvLoadError, Environment},
-};
+use super::env::{DotenvEnvironment, DotenvLoadError, Environment};
 use std::{collections::BTreeMap, path::Path};
 use tempfile::NamedTempFile;
 

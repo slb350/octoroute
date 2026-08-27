@@ -67,8 +67,7 @@ async fn run_server(config_path: &Path) -> Result<(), Box<dyn std::error::Error>
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join(".env");
-    let environment =
-        DotenvEnvironment::from_optional_path(&dotenv_path, ProcessEnvironment)?;
+    let environment = DotenvEnvironment::from_optional_path(&dotenv_path, ProcessEnvironment)?;
     let service = FabricGatewayService::from_config(config, environment)?;
     let app = fabric_gateway_app(service);
 

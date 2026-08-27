@@ -1,11 +1,11 @@
 //! Axum HTTP surface for the executable v3 inference fabric.
 
-use super::{
-    FabricGatewayService, FabricUpstreamTransport, PoolAdmissionState, ProviderAdmissionState,
-};
 use super::http_support::{
     MetadataAuthorizationError, metadata_authorization_error as build_metadata_authorization_error,
     security_headers,
+};
+use super::{
+    FabricGatewayService, FabricUpstreamTransport, PoolAdmissionState, ProviderAdmissionState,
 };
 use axum::{
     Json, Router,
