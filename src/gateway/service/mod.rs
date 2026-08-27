@@ -31,9 +31,14 @@ mod observability;
 mod responses;
 mod routing;
 
-use limits::{FixedWindowRateLimiter, header_bytes, hold_response_guard, observe_response_body};
-pub(crate) use responses::{authorization_error as metadata_authorization_error, error_response};
-use responses::{authorization_error, insert_header, rate_limit_response, route_error};
+pub(crate) use limits::{
+    FixedWindowRateLimiter, header_bytes, hold_response_guard, observe_response_body,
+};
+pub(crate) use responses::{
+    authorization_error as metadata_authorization_error, error_response, insert_header,
+    rate_limit_response,
+};
+use responses::{authorization_error, route_error};
 
 const DESTINATION_HEADER: &str = "x-octoroute-destination";
 const REASON_HEADER: &str = "x-octoroute-reason";

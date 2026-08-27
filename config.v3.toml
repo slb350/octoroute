@@ -10,7 +10,10 @@ config_version = 3
 host = "0.0.0.0"
 port = 8081
 api_key_env = "OCTOROUTE_API_KEY"
+max_request_bytes = 8388608
+max_header_bytes = 32768
 max_in_flight = 64
+requests_per_minute = 120
 
 [fabric]
 

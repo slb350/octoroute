@@ -99,6 +99,12 @@ impl PoolLease {
     pub fn request_body(&self) -> &Bytes {
         &self.request_body
     }
+
+    pub(crate) fn into_transport_parts(
+        self,
+    ) -> (Url, Option<SecretString>, Bytes, OwnedSemaphorePermit) {
+        (self.chat_url, self.api_key, self.request_body, self._permit)
+    }
 }
 
 /// Build failures detected before the v3 service starts accepting requests.

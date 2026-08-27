@@ -1,13 +1,15 @@
-//! Octoroute v2 local-first HTTP gateway.
+//! Octoroute version-aware local/cloud gateway.
 
 use clap::Parser;
 use octoroute::{
     calibration::{CalibrationError, MAX_ARTIFACT_BYTES, analyze_jsonl},
     cli::{Cli, Command, generate_config_template},
     gateway::{
-        config::{GatewayConfig, ProcessEnvironment},
+        config::ProcessEnvironment,
         env::DotenvEnvironment,
+        fabric::{FabricGatewayService, fabric_gateway_app},
         http::gateway_app,
+        runtime::RuntimeConfig,
         service::GatewayService,
     },
     telemetry,
@@ -108,14 +110,24 @@ async fn run_server(config_path: &Path) -> Result<(), Box<dyn std::error::Error>
         .unwrap_or_else(|| Path::new("."))
         .join(".env");
     let environment = DotenvEnvironment::from_optional_path(&dotenv_path, ProcessEnvironment)?;
-    let config = GatewayConfig::from_toml(&input, &environment)?;
-    telemetry::init(config.observability().log_level().as_str());
 
-    let address = SocketAddr::from((config.server().host(), config.server().port()));
-    let service = GatewayService::from_config(config)?;
-    let app = gateway_app(service);
+    let (address, app, version, log_level) = match RuntimeConfig::from_toml(&input, &environment)? {
+        RuntimeConfig::V2(config) => {
+            let address = SocketAddr::from((config.server().host(), config.server().port()));
+            let log_level = config.observability().log_level().as_str().to_string();
+            let service = GatewayService::from_config(*config)?;
+            (address, gateway_app(service), 2_u8, log_level)
+        }
+        RuntimeConfig::V3(config) => {
+            let address = SocketAddr::from((config.server.host, config.server.port));
+            let log_level = config.observability.log_level.clone();
+            let service = FabricGatewayService::from_config(*config, &environment)?;
+            (address, fabric_gateway_app(service), 3_u8, log_level)
+        }
+    };
+    telemetry::init(&log_level);
 
-    tracing::info!(%address, "starting Octoroute v2 gateway");
+    tracing::info!(%address, config_version = version, "starting Octoroute gateway");
     tracing::info!("POST /v1/chat/completions");
     tracing::info!("GET /v1/models");
     tracing::info!("GET /health/live, /health/ready, /health");

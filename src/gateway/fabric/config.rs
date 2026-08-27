@@ -13,9 +13,16 @@ use thiserror::Error;
 /// The only configuration version accepted by this parser.
 pub const FABRIC_CONFIG_VERSION: i64 = 3;
 
+const DEFAULT_SERVER_MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+const DEFAULT_SERVER_MAX_HEADER_BYTES: usize = 32 * 1024;
 const DEFAULT_SERVER_MAX_IN_FLIGHT: usize = 64;
+const DEFAULT_SERVER_REQUESTS_PER_MINUTE: u32 = 120;
 const DEFAULT_MEMBER_MAX_IN_FLIGHT: usize = 1;
 const DEFAULT_PROVIDER_MAX_IN_FLIGHT: usize = 1;
+const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
+const MAX_HEADER_BYTES: usize = 1024 * 1024;
+const MAX_CONCURRENCY: usize = 10_000;
+const MAX_REQUESTS_PER_MINUTE: u32 = 1_000_000;
 const DEFAULT_CONTEXT_SAFETY_TOKENS: u32 = 2_048;
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_384;
 const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 1_800_000;
@@ -41,7 +48,8 @@ pub struct FabricConfig {
 impl FabricConfig {
     /// Parse and validate a complete v3 configuration document.
     pub fn from_toml(input: &str) -> Result<Self, FabricConfigError> {
-        let raw: RawFabricConfig = toml::from_str(input)?;
+        let raw: RawFabricConfig =
+            toml::from_str(input).map_err(|error| safe_parse_error(input, error))?;
         raw.validate()
     }
 }
@@ -52,7 +60,10 @@ pub struct FabricServerConfig {
     pub host: IpAddr,
     pub port: u16,
     pub api_key_env: String,
+    pub max_request_bytes: usize,
+    pub max_header_bytes: usize,
     pub max_in_flight: usize,
+    pub requests_per_minute: u32,
 }
 
 /// Logging settings for the v3 runtime.
@@ -231,8 +242,8 @@ pub enum FallbackTrigger {
 /// Safe static v3 configuration failures.
 #[derive(Debug, Error)]
 pub enum FabricConfigError {
-    #[error("invalid v3 TOML: {0}")]
-    Parse(#[from] toml::de::Error),
+    #[error("invalid v3 TOML at line {line}, column {column}; values omitted")]
+    Parse { line: usize, column: usize },
     #[error("unsupported Octoroute config version {0}; expected 3")]
     UnsupportedVersion(i64),
     #[error("invalid `{field}`: {message}")]
@@ -256,8 +267,14 @@ struct RawServerConfig {
     host: String,
     port: u16,
     api_key_env: String,
+    #[serde(default = "default_server_max_request_bytes")]
+    max_request_bytes: usize,
+    #[serde(default = "default_server_max_header_bytes")]
+    max_header_bytes: usize,
     #[serde(default = "default_server_max_in_flight")]
     max_in_flight: usize,
+    #[serde(default = "default_server_requests_per_minute")]
+    requests_per_minute: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -407,14 +424,30 @@ impl RawServerConfig {
             return Err(invalid("server.port", "must be greater than zero"));
         }
         validate_env_name("server.api_key_env", &self.api_key_env)?;
-        if self.max_in_flight == 0 {
-            return Err(invalid("server.max_in_flight", "must be greater than zero"));
-        }
+        validate_usize_range(
+            "server.max_request_bytes",
+            self.max_request_bytes,
+            MAX_REQUEST_BYTES,
+        )?;
+        validate_usize_range(
+            "server.max_header_bytes",
+            self.max_header_bytes,
+            MAX_HEADER_BYTES,
+        )?;
+        validate_usize_range("server.max_in_flight", self.max_in_flight, MAX_CONCURRENCY)?;
+        validate_u32_range(
+            "server.requests_per_minute",
+            self.requests_per_minute,
+            MAX_REQUESTS_PER_MINUTE,
+        )?;
         Ok(FabricServerConfig {
             host,
             port: self.port,
             api_key_env: self.api_key_env,
+            max_request_bytes: self.max_request_bytes,
+            max_header_bytes: self.max_header_bytes,
             max_in_flight: self.max_in_flight,
+            requests_per_minute: self.requests_per_minute,
         })
     }
 }
@@ -820,6 +853,43 @@ fn validate_log_level(value: &str) -> Result<(), FabricConfigError> {
     }
 }
 
+fn safe_parse_error(input: &str, error: toml::de::Error) -> FabricConfigError {
+    let (line, column) = error
+        .span()
+        .map(|span| line_column(input, span.start))
+        .unwrap_or((1, 1));
+    FabricConfigError::Parse { line, column }
+}
+
+fn line_column(input: &str, byte_index: usize) -> (usize, usize) {
+    let prefix = &input[..byte_index.min(input.len())];
+    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+    let column = prefix
+        .rsplit_once('\n')
+        .map_or(prefix.len() + 1, |(_, tail)| tail.len() + 1);
+    (line, column)
+}
+
+fn validate_usize_range(
+    field: &str,
+    value: usize,
+    maximum: usize,
+) -> Result<(), FabricConfigError> {
+    if (1..=maximum).contains(&value) {
+        Ok(())
+    } else {
+        Err(invalid(field, format!("must be between 1 and {maximum}")))
+    }
+}
+
+fn validate_u32_range(field: &str, value: u32, maximum: u32) -> Result<(), FabricConfigError> {
+    if (1..=maximum).contains(&value) {
+        Ok(())
+    } else {
+        Err(invalid(field, format!("must be between 1 and {maximum}")))
+    }
+}
+
 fn invalid(field: impl Into<String>, message: impl Into<String>) -> FabricConfigError {
     FabricConfigError::Invalid {
         field: field.into(),
@@ -827,8 +897,20 @@ fn invalid(field: impl Into<String>, message: impl Into<String>) -> FabricConfig
     }
 }
 
+const fn default_server_max_request_bytes() -> usize {
+    DEFAULT_SERVER_MAX_REQUEST_BYTES
+}
+
+const fn default_server_max_header_bytes() -> usize {
+    DEFAULT_SERVER_MAX_HEADER_BYTES
+}
+
 const fn default_server_max_in_flight() -> usize {
     DEFAULT_SERVER_MAX_IN_FLIGHT
+}
+
+const fn default_server_requests_per_minute() -> u32 {
+    DEFAULT_SERVER_REQUESTS_PER_MINUTE
 }
 
 const fn default_member_max_in_flight() -> usize {

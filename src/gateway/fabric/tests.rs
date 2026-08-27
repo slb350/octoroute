@@ -188,6 +188,13 @@ fn provider_presets_cover_the_initial_cloud_options() {
 }
 
 #[test]
+fn malformed_v3_toml_does_not_echo_values() {
+    let input = "config_version = 3\nsecret = \"do-not-echo\"\n[server\n";
+    let error = FabricConfig::from_toml(input).expect_err("malformed TOML");
+    assert!(!error.to_string().contains("do-not-echo"));
+}
+
+#[test]
 fn route_rejects_returning_local_after_cloud() {
     let input = include_str!("../../../config.v3.toml").replace(
         "steps = [\"pool:workers\", \"pool:supervisor-local\", \"provider:kimi\", \"provider:zai\", \"provider:openrouter\"]",

@@ -13,7 +13,7 @@ use std::{
 };
 use tokio::sync::OwnedSemaphorePermit;
 
-pub(super) fn header_bytes(headers: &HeaderMap) -> usize {
+pub(crate) fn header_bytes(headers: &HeaderMap) -> usize {
     headers.iter().fold(0usize, |total, (name, value)| {
         total
             .saturating_add(name.as_str().len())
@@ -22,7 +22,7 @@ pub(super) fn header_bytes(headers: &HeaderMap) -> usize {
     })
 }
 
-pub(super) fn hold_response_guard(
+pub(crate) fn hold_response_guard(
     response: Response<Body>,
     guard: OwnedSemaphorePermit,
 ) -> Response<Body> {
@@ -34,7 +34,7 @@ pub(super) fn hold_response_guard(
     Response::from_parts(parts, Body::from_stream(stream))
 }
 
-pub(super) fn observe_response_body(
+pub(crate) fn observe_response_body(
     response: Response<Body>,
     mid_stream_failures: Option<IntCounter>,
     response_observation: Option<ResponseObservation>,
@@ -84,7 +84,7 @@ impl Stream for GuardedResponseBody {
     }
 }
 
-pub(super) struct FixedWindowRateLimiter {
+pub(crate) struct FixedWindowRateLimiter {
     limit: u32,
     state: Mutex<RateWindow>,
 }
@@ -95,7 +95,7 @@ struct RateWindow {
 }
 
 impl FixedWindowRateLimiter {
-    pub(super) fn new(limit: u32) -> Self {
+    pub(crate) fn new(limit: u32) -> Self {
         Self {
             limit,
             state: Mutex::new(RateWindow {
@@ -105,7 +105,7 @@ impl FixedWindowRateLimiter {
         }
     }
 
-    pub(super) fn allow(&self) -> bool {
+    pub(crate) fn allow(&self) -> bool {
         let mut state = self.state.lock().expect("rate limiter mutex poisoned");
         if state.started.elapsed() >= Duration::from_secs(60) {
             state.started = Instant::now();

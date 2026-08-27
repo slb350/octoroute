@@ -84,7 +84,7 @@ pub(crate) fn error_response(
     response
 }
 
-pub(super) fn rate_limit_response(message: &str, code: &str, request_id: &str) -> Response<Body> {
+pub(crate) fn rate_limit_response(message: &str, code: &str, request_id: &str) -> Response<Body> {
     let mut response = error_response(
         StatusCode::TOO_MANY_REQUESTS,
         message,
@@ -98,7 +98,7 @@ pub(super) fn rate_limit_response(message: &str, code: &str, request_id: &str) -
     response
 }
 
-pub(super) fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) {
+pub(crate) fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) {
     let name = HeaderName::from_static(name);
     let value =
         HeaderValue::from_str(value).expect("configuration produced an invalid HTTP header");

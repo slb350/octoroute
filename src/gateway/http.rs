@@ -38,7 +38,7 @@ where
         .with_state(state)
 }
 
-async fn security_headers(request: Request<Body>, next: Next) -> Response<Body> {
+pub(crate) async fn security_headers(request: Request<Body>, next: Next) -> Response<Body> {
     let mut response = next.run(request).await;
     let gateway_request_id = response
         .headers()

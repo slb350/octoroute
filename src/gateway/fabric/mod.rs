@@ -1,13 +1,15 @@
-//! Octoroute v3 inference-fabric primitives.
+//! Octoroute v3 inference-fabric primitives and executable local runtime.
 //!
-//! The v3 module is deliberately separate from the proven v2 request path while the
-//! multi-pool and multi-provider runtime is built out. It owns the validated schema and
-//! deterministic policy that the v3 service layer will consume.
+//! The v3 module remains separate from the proven v2 request path while provider
+//! adapters and the complete ordered route executor are built out.
 
 mod config;
+mod http;
 mod local_pool;
 mod policy;
 mod presets;
+mod service;
+mod transport;
 
 pub use config::{
     FABRIC_CONFIG_VERSION, FabricConfig, FabricConfigError, FabricObservabilityConfig,
@@ -15,6 +17,7 @@ pub use config::{
     ProviderConfig, ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort, RoutePrivacy,
     RouteTarget, VirtualRoute,
 };
+pub use http::fabric_gateway_app;
 pub use local_pool::{
     LlamaCppPool, LlamaCppPoolBuildError, PoolAdmissionOutcome, PoolAdmissionState, PoolLease,
 };
@@ -23,8 +26,12 @@ pub use policy::{
     RoutePlan,
 };
 pub use presets::{PROVIDER_PRESETS, ProviderPreset, provider_preset};
+pub use service::{FabricGatewayService, FabricGatewayServiceBuildError, FabricReadiness};
+pub use transport::{FabricTransport, FabricUpstreamTransport};
 
 #[cfg(test)]
 mod local_pool_tests;
+#[cfg(test)]
+mod service_tests;
 #[cfg(test)]
 mod tests;

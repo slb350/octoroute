@@ -1,4 +1,4 @@
-//! Octoroute v2 local/cloud gateway and v3 inference-fabric foundations.
+//! Octoroute v2 local/cloud gateway and v3 inference fabric.
 
 pub mod auth;
 pub mod config;
@@ -12,6 +12,7 @@ pub mod metrics;
 pub mod openrouter;
 pub mod request;
 pub mod routing;
+pub mod runtime;
 pub(crate) mod sampling;
 pub mod service;
 pub(crate) mod session_latch;
@@ -40,6 +41,8 @@ mod request_tests;
 mod routing_policy_tests;
 #[cfg(test)]
 mod routing_tests;
+#[cfg(test)]
+mod runtime_tests;
 #[cfg(test)]
 mod sampling_tests;
 #[cfg(test)]

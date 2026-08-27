@@ -242,6 +242,16 @@ pub struct PendingUpstreamResponse {
 }
 
 impl PendingUpstreamResponse {
+    pub(crate) fn from_parts(
+        response: reqwest::Response,
+        local_permit: Option<OwnedSemaphorePermit>,
+    ) -> Self {
+        Self {
+            response,
+            local_permit,
+        }
+    }
+
     /// Upstream HTTP status available before reading a body byte.
     pub fn status(&self) -> StatusCode {
         self.response.status()

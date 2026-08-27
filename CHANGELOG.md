@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Begin the executable v3 runtime with version-aware binary startup, authenticated
+  OpenAI-compatible HTTP endpoints, virtual-model discovery, local-pool readiness,
+  ordered local-pool admission and fallback, and shared pre-commit streaming.
+  Configured provider steps remain fail-closed until their adapters are enabled.
+
+
 ## [2.2.2] - 2026-08-23
 
 ### Security
