@@ -5,6 +5,7 @@ use super::http_support::{
     REQUEST_ID_HEADER, error_response, header_bytes, hold_response_guard, insert_header,
     metadata_authorization_error, rate_limit_response,
 };
+use super::metrics::{FabricMetrics, ProviderResponseOutcome};
 use super::{
     FabricConfig, FabricRouteError, FabricTransport, FabricTransportError, FabricUpstreamTransport,
     FallbackTrigger, LlamaCppPool, LlamaCppPoolBuildError, PoolAdmissionOutcome,
@@ -42,6 +43,7 @@ pub struct FabricGatewayService<T> {
     authenticator: BearerAuthenticator,
     pools: BTreeMap<String, LlamaCppPool>,
     providers: ProviderRegistry,
+    metrics: Arc<FabricMetrics>,
     transport: T,
     inbound_permits: Arc<Semaphore>,
     rate_limiter: FixedWindowRateLimiter,
@@ -106,7 +108,12 @@ where
             })?;
             pools.insert(name.clone(), pool);
         }
-        let providers = ProviderRegistry::new(&config.providers, environment)?;
+        let metrics = Arc::new(FabricMetrics::new(&config));
+        let providers = ProviderRegistry::new(
+            &config.providers,
+            environment,
+            Arc::clone(&metrics),
+        )?;
 
         Ok(Self {
             authenticator: BearerAuthenticator::new(inbound_key),
@@ -115,6 +122,7 @@ where
             config: Arc::new(config),
             pools,
             providers,
+            metrics,
             transport,
         })
     }
@@ -210,36 +218,13 @@ where
         });
         FabricReadiness {
             pools: join_all(probes).await.into_iter().collect(),
-            providers: self.providers.readiness(),
+            providers: self.providers.readiness().await,
         }
     }
 
-    /// Bootstrap Prometheus exposition while detailed v3 metrics are added.
+    /// Render bounded Prometheus exposition for the v3 runtime.
     pub fn metrics_text(&self) -> String {
-        let mut output = String::from(
-            "# HELP octoroute_fabric_runtime_info V3 inference-fabric runtime information.\n\
-                 # TYPE octoroute_fabric_runtime_info gauge\n\
-                 octoroute_fabric_runtime_info{config_version=\"3\",provider_runtime=\"open_ai\"} 1\n\
-                 # HELP octoroute_fabric_pool_enabled Whether a configured local pool is enabled.\n\
-                 # TYPE octoroute_fabric_pool_enabled gauge\n",
-        );
-        for (name, pool) in &self.config.local_pools {
-            let enabled = u8::from(pool.enabled);
-            output.push_str(&format!(
-                "octoroute_fabric_pool_enabled{{pool=\"{name}\"}} {enabled}\n"
-            ));
-        }
-        output.push_str(
-            "# HELP octoroute_fabric_provider_enabled Whether a configured provider is enabled.\n\
-             # TYPE octoroute_fabric_provider_enabled gauge\n",
-        );
-        for (name, provider) in &self.config.providers {
-            let enabled = u8::from(provider.enabled);
-            output.push_str(&format!(
-                "octoroute_fabric_provider_enabled{{provider=\"{name}\"}} {enabled}\n"
-            ));
-        }
-        output
+        self.metrics.render(&self.config)
     }
 
     fn preflight(
@@ -433,6 +418,7 @@ where
                         ProviderAdmissionOutcome::Admitted(lease) => {
                             let provider = lease.provider().to_string();
                             let model = lease.model().to_string();
+                            self.metrics.record_admitted(&provider);
                             match self.transport.provider(*lease).await {
                                 Ok(response)
                                     if response.status() == StatusCode::TOO_MANY_REQUESTS
@@ -441,6 +427,14 @@ where
                                             .fallback_on
                                             .contains(&FallbackTrigger::RateLimited) =>
                                 {
+                                    self.metrics.record_response(
+                                        &provider,
+                                        ProviderResponseOutcome::RateLimited,
+                                    );
+                                    self.metrics.record_fallback(
+                                        &provider,
+                                        FallbackTrigger::RateLimited,
+                                    );
                                     tracing::warn!(
                                         request_id,
                                         route = plan.model.as_str(),
@@ -457,6 +451,14 @@ where
                                             .fallback_on
                                             .contains(&FallbackTrigger::PrecommitFailure) =>
                                 {
+                                    self.metrics.record_response(
+                                        &provider,
+                                        ProviderResponseOutcome::ServerError,
+                                    );
+                                    self.metrics.record_fallback(
+                                        &provider,
+                                        FallbackTrigger::PrecommitFailure,
+                                    );
                                     tracing::warn!(
                                         request_id,
                                         route = plan.model.as_str(),
@@ -468,6 +470,10 @@ where
                                     continue;
                                 }
                                 Ok(response) => {
+                                    self.metrics.record_response(
+                                        &provider,
+                                        provider_response_outcome(response.status()),
+                                    );
                                     return decorate_provider(
                                         response, plan, &provider, &model, request_id,
                                     );
@@ -478,6 +484,14 @@ where
                                             .fallback_on
                                             .contains(&FallbackTrigger::PrecommitFailure) =>
                                 {
+                                    self.metrics.record_response(
+                                        &provider,
+                                        ProviderResponseOutcome::TransportError,
+                                    );
+                                    self.metrics.record_fallback(
+                                        &provider,
+                                        FallbackTrigger::PrecommitFailure,
+                                    );
                                     tracing::warn!(
                                         request_id,
                                         route = plan.model.as_str(),
@@ -488,6 +502,10 @@ where
                                     continue;
                                 }
                                 Err(error) => {
+                                    self.metrics.record_response(
+                                        &provider,
+                                        ProviderResponseOutcome::TransportError,
+                                    );
                                     tracing::warn!(
                                         request_id,
                                         route = plan.model.as_str(),
@@ -506,11 +524,11 @@ where
                             }
                         }
                         ProviderAdmissionOutcome::Rejected(state) => {
-                            let trigger = provider_fallback_trigger(state);
-                            if has_more
-                                && trigger
-                                    .is_some_and(|trigger| plan.fallback_on.contains(&trigger))
-                            {
+                            self.metrics.record_rejected(provider_name, state);
+                            if let Some(trigger) = provider_fallback_trigger(state).filter(
+                                |trigger| has_more && plan.fallback_on.contains(trigger),
+                            ) {
+                                self.metrics.record_fallback(provider_name, trigger);
                                 continue;
                             }
                             return provider_state_error(state, provider_name, request_id);
@@ -604,6 +622,18 @@ fn provider_fallback_trigger(state: ProviderAdmissionState) -> Option<FallbackTr
         }
         ProviderAdmissionState::Incompatible => Some(FallbackTrigger::Incompatible),
         ProviderAdmissionState::Busy => Some(FallbackTrigger::Busy),
+    }
+}
+
+fn provider_response_outcome(status: StatusCode) -> ProviderResponseOutcome {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        ProviderResponseOutcome::RateLimited
+    } else if status.is_server_error() {
+        ProviderResponseOutcome::ServerError
+    } else if status.is_client_error() {
+        ProviderResponseOutcome::ClientError
+    } else {
+        ProviderResponseOutcome::Success
     }
 }
 

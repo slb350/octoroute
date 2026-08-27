@@ -108,7 +108,7 @@ where
             "config_version": 3,
             "pools": pools,
             "providers": providers,
-            "provider_runtime": "open_ai"
+            "provider_runtime": "complete"
         })),
     )
         .into_response()

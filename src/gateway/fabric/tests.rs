@@ -224,3 +224,33 @@ fn http_provider_requires_exactly_one_credential_source() {
     let error = FabricConfig::from_toml(&input).expect_err("two credential sources are invalid");
     assert!(error.to_string().contains("exactly one"));
 }
+
+#[test]
+fn anthropic_provider_requires_a_bounded_default_max_tokens() {
+    let input = include_str!("../../../config.toml").replace("max_tokens = 200000\n", "");
+    let error = FabricConfig::from_toml(&input).expect_err("Anthropic max_tokens is required");
+    assert!(error.to_string().contains("max_tokens"));
+}
+
+#[test]
+fn codex_provider_accepts_only_an_executable_override() {
+    let config = example();
+    assert_eq!(config.providers["codex"].executable.as_deref(), Some("codex"));
+
+    let input = include_str!("../../../config.toml").replace(
+        "executable = \"codex\"",
+        "executable = \"codex\"\napi_key_env = \"OPENAI_API_KEY\"",
+    );
+    let error = FabricConfig::from_toml(&input).expect_err("Codex credentials are forbidden");
+    assert!(error.to_string().contains("codex_cli"));
+}
+
+#[test]
+fn provider_readiness_windows_are_bounded() {
+    let input = include_str!("../../../config.toml").replace(
+        "timeout_ms = 1800000",
+        "timeout_ms = 1800000\nreadiness_ttl_ms = 3600001",
+    );
+    let error = FabricConfig::from_toml(&input).expect_err("probe TTL exceeds its bound");
+    assert!(error.to_string().contains("readiness_ttl_ms"));
+}

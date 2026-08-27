@@ -25,7 +25,12 @@ const MAX_REQUESTS_PER_MINUTE: u32 = 1_000_000;
 const DEFAULT_CONTEXT_SAFETY_TOKENS: u32 = 2_048;
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_384;
 const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 1_800_000;
+const DEFAULT_PROVIDER_READINESS_TTL_MS: u64 = 30_000;
+const DEFAULT_PROVIDER_READINESS_TIMEOUT_MS: u64 = 30_000;
+const MAX_PROVIDER_READINESS_TTL_MS: u64 = 3_600_000;
+const MAX_PROVIDER_READINESS_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_PRIORITY: u16 = 100;
+const DEFAULT_CODEX_EXECUTABLE: &str = "codex";
 
 /// Capabilities which may be admitted to a local inference pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
@@ -142,11 +147,14 @@ pub struct ProviderConfig {
     pub api_key_command: Option<Vec<String>>,
     pub max_in_flight: usize,
     pub timeout_ms: u64,
+    pub readiness_ttl_ms: u64,
+    pub readiness_timeout_ms: u64,
     pub priority: u16,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
     pub profile: ProviderProfile,
+    pub executable: Option<String>,
 }
 
 /// Concrete execution path for a provider.
@@ -359,6 +367,10 @@ struct RawProviderConfig {
     max_in_flight: usize,
     #[serde(default = "default_provider_timeout_ms")]
     timeout_ms: u64,
+    #[serde(default = "default_provider_readiness_ttl_ms")]
+    readiness_ttl_ms: u64,
+    #[serde(default = "default_provider_readiness_timeout_ms")]
+    readiness_timeout_ms: u64,
     #[serde(default = "default_priority")]
     priority: u16,
     reasoning_effort: Option<ReasoningEffort>,
@@ -366,6 +378,7 @@ struct RawProviderConfig {
     max_tokens: Option<u32>,
     #[serde(default)]
     profile: ProviderProfile,
+    executable: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -589,6 +602,16 @@ fn validate_providers(
                 "must be greater than zero",
             ));
         }
+        validate_u64_range(
+            "fabric.providers.readiness_ttl_ms",
+            raw.readiness_ttl_ms,
+            MAX_PROVIDER_READINESS_TTL_MS,
+        )?;
+        validate_u64_range(
+            "fabric.providers.readiness_timeout_ms",
+            raw.readiness_timeout_ms,
+            MAX_PROVIDER_READINESS_TIMEOUT_MS,
+        )?;
         if raw
             .temperature
             .is_some_and(|temperature| !temperature.is_finite())
@@ -607,6 +630,12 @@ fn validate_providers(
 
         let (endpoint, protocol) = match raw.kind {
             ProviderKind::Http => {
+                if raw.executable.is_some() {
+                    return Err(invalid(
+                        "fabric.providers.executable",
+                        "is accepted only for codex_cli providers",
+                    ));
+                }
                 let endpoint = raw.endpoint.as_deref().ok_or_else(|| {
                     invalid(
                         "fabric.providers.endpoint",
@@ -641,6 +670,12 @@ fn validate_providers(
                         "openrouter_auto requires the OpenAI protocol",
                     ));
                 }
+                if protocol == ProviderProtocol::Anthropic && raw.max_tokens.is_none() {
+                    return Err(invalid(
+                        "fabric.providers.max_tokens",
+                        "is required for Anthropic-compatible providers",
+                    ));
+                }
                 (
                     Some(validate_url("fabric.providers.endpoint", endpoint, true)?),
                     Some(protocol),
@@ -660,6 +695,12 @@ fn validate_providers(
                         "codex_cli does not accept endpoint, protocol, credential, sampling, token, or profile fields",
                     ));
                 }
+                validate_executable(
+                    "fabric.providers.executable",
+                    raw.executable
+                        .as_deref()
+                        .unwrap_or(DEFAULT_CODEX_EXECUTABLE),
+                )?;
                 (None, None)
             }
         };
@@ -676,11 +717,17 @@ fn validate_providers(
             api_key_command: raw.api_key_command,
             max_in_flight: raw.max_in_flight,
             timeout_ms: raw.timeout_ms,
+            readiness_ttl_ms: raw.readiness_ttl_ms,
+            readiness_timeout_ms: raw.readiness_timeout_ms,
             priority: raw.priority,
             reasoning_effort: raw.reasoning_effort,
             temperature: raw.temperature,
             max_tokens: raw.max_tokens,
             profile: raw.profile,
+            executable: (raw.kind == ProviderKind::CodexCli).then(|| {
+                raw.executable
+                    .unwrap_or_else(|| DEFAULT_CODEX_EXECUTABLE.to_string())
+            }),
         };
         if providers.insert(name.clone(), provider).is_some() {
             return Err(invalid(
@@ -867,6 +914,19 @@ fn validate_command(field: &str, command: &[String]) -> Result<(), FabricConfigE
     Ok(())
 }
 
+fn validate_executable(field: &str, executable: &str) -> Result<(), FabricConfigError> {
+    if executable.trim().is_empty()
+        || executable.len() > 4096
+        || executable.chars().any(char::is_control)
+    {
+        return Err(invalid(
+            field,
+            "must be a non-empty path of at most 4096 bytes without control characters",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_log_level(value: &str) -> Result<(), FabricConfigError> {
     if matches!(value, "trace" | "debug" | "info" | "warn" | "error") {
         Ok(())
@@ -915,6 +975,14 @@ fn validate_u32_range(field: &str, value: u32, maximum: u32) -> Result<(), Fabri
     }
 }
 
+fn validate_u64_range(field: &str, value: u64, maximum: u64) -> Result<(), FabricConfigError> {
+    if (1..=maximum).contains(&value) {
+        Ok(())
+    } else {
+        Err(invalid(field, format!("must be between 1 and {maximum}")))
+    }
+}
+
 fn invalid(field: impl Into<String>, message: impl Into<String>) -> FabricConfigError {
     FabricConfigError::Invalid {
         field: field.into(),
@@ -956,6 +1024,14 @@ const fn default_max_output_tokens() -> u32 {
 
 const fn default_provider_timeout_ms() -> u64 {
     DEFAULT_PROVIDER_TIMEOUT_MS
+}
+
+const fn default_provider_readiness_ttl_ms() -> u64 {
+    DEFAULT_PROVIDER_READINESS_TTL_MS
+}
+
+const fn default_provider_readiness_timeout_ms() -> u64 {
+    DEFAULT_PROVIDER_READINESS_TIMEOUT_MS
 }
 
 const fn default_priority() -> u16 {

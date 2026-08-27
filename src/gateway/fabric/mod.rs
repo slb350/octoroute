@@ -1,9 +1,12 @@
 //! Octoroute v3 inference-fabric primitives and executable runtime.
 
+mod anthropic;
+mod codex;
 mod config;
 mod http;
 mod http_support;
 mod local_pool;
+mod metrics;
 mod policy;
 mod presets;
 mod provider;

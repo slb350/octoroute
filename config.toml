@@ -135,6 +135,7 @@ name = "codex"
 enabled = true
 kind = "codex_cli"
 model = "gpt-5.6-sol"
+executable = "codex"
 max_in_flight = 1
 timeout_ms = 1800000
 priority = 50

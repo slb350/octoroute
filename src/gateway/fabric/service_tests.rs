@@ -1,4 +1,6 @@
-use super::{FabricConfig, FabricGatewayService, RouteTarget};
+use super::{
+    FabricConfig, FabricGatewayService, ProviderAdmissionState, RouteTarget,
+};
 use crate::gateway::env::Environment;
 use axum::{
     body::{Bytes, to_bytes},
@@ -210,7 +212,7 @@ async fn local_only_failure_never_resolves_or_contacts_a_provider() {
 }
 
 #[tokio::test]
-async fn unsupported_provider_kind_fails_closed_without_resolving_cloud_credentials() {
+async fn incompatible_codex_request_fails_closed_without_launching_the_cli() {
     let server = MockServer::start().await;
     let environment = TestEnvironment::default()
         .with("OCTOROUTE_API_KEY", "inbound-test-key")
@@ -221,7 +223,13 @@ async fn unsupported_provider_kind_fails_closed_without_resolving_cloud_credenti
     let body = Bytes::from(
         serde_json::to_vec(&json!({
             "model": "cloud-sota",
-            "messages": [{"role": "user", "content": "review the architecture"}]
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AA=="}
+                }]
+            }]
         }))
         .expect("JSON"),
     );
@@ -389,6 +397,16 @@ async fn missing_provider_credential_falls_forward_before_prompt_disclosure() {
         environment_audit.reads(),
         vec!["OCTOROUTE_API_KEY", "ZAI_API_KEY", "OPENROUTER_API_KEY"]
     );
+    let metrics = service.metrics_text();
+    assert!(metrics.contains(
+        "octoroute_fabric_provider_admissions_total{provider=\"zai\",state=\"unavailable\"} 1"
+    ));
+    assert!(metrics.contains(
+        "octoroute_fabric_provider_fallbacks_total{provider=\"zai\",trigger=\"unhealthy\"} 1"
+    ));
+    assert!(metrics.contains(
+        "octoroute_fabric_provider_responses_total{provider=\"openrouter\",outcome=\"success\"} 1"
+    ));
 }
 
 #[tokio::test]
@@ -457,4 +475,223 @@ async fn v3_models_include_auto_and_all_virtual_routes() {
     for model in ["auto-route", "worker", "supervisor", "local", "cloud-sota"] {
         assert!(models.contains(&model.to_string()), "missing {model}");
     }
+}
+
+#[tokio::test]
+async fn provider_readiness_probes_auth_once_per_cache_window() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .and(header("authorization", "Bearer zai-test-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut config = single_provider_config(&server, "zai");
+    for pool in config.local_pools.values_mut() {
+        pool.enabled = false;
+    }
+    for (name, provider) in &mut config.providers {
+        provider.enabled = name == "zai";
+    }
+    let environment = TestEnvironment::default()
+        .with("OCTOROUTE_API_KEY", "inbound-test-key")
+        .with("ZAI_API_KEY", "zai-test-key");
+    let environment_audit = environment.clone();
+    let service = FabricGatewayService::from_config(config, environment).expect("service");
+
+    for _ in 0..2 {
+        let readiness = service.readiness().await;
+        assert_eq!(
+            readiness.providers().get("zai"),
+            Some(&ProviderAdmissionState::Ready)
+        );
+    }
+    assert_eq!(
+        environment_audit.reads(),
+        vec!["OCTOROUTE_API_KEY", "ZAI_API_KEY"]
+    );
+    assert!(service.metrics_text().contains(
+        "octoroute_fabric_provider_probes_total{provider=\"zai\",state=\"ready\"} 1"
+    ));
+}
+
+#[tokio::test]
+async fn opencode_style_anthropic_tools_stream_as_open_ai_chunks() {
+    let server = MockServer::start().await;
+    let expected_request = json!({
+        "model": "k3",
+        "messages": [{
+            "role": "user",
+            "content": [{"type": "text", "text": "inspect the repository"}]
+        }],
+        "max_tokens": 200000,
+        "stream": true,
+        "thinking": {"type": "enabled", "budget_tokens": 16384},
+        "tools": [{
+            "name": "read_file",
+            "description": "Read one repository file",
+            "input_schema": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }
+        }],
+        "tool_choice": {"type": "auto"}
+    });
+    let sse = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-kimi\",\"model\":\"k3\"}}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call-1\",\"name\":\"read_file\",\"input\":{}}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"src/main.rs\\\"}\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":12}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n"
+    );
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .and(header("x-api-key", "kimi-test-key"))
+        .and(header("anthropic-version", "2023-06-01"))
+        .and(body_json(expected_request))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(sse, "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let service = FabricGatewayService::from_config(
+        single_provider_config(&server, "kimi"),
+        TestEnvironment::default()
+            .with("OCTOROUTE_API_KEY", "inbound-test-key")
+            .with("KIMI_API_KEY", "kimi-test-key"),
+    )
+    .expect("service");
+    let body = Bytes::from(
+        serde_json::to_vec(&json!({
+            "model": "cloud-sota",
+            "messages": [{"role": "user", "content": "inspect the repository"}],
+            "stream": true,
+            "reasoning_effort": "high",
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read one repository file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"]
+                    }
+                }
+            }],
+            "tool_choice": "auto"
+        }))
+        .expect("JSON"),
+    );
+
+    let response = service.handle_chat(&headers(), body).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-octoroute-provider")
+            .and_then(|value| value.to_str().ok()),
+        Some("kimi")
+    );
+    let body = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("translated stream");
+    let body = std::str::from_utf8(&body).expect("UTF-8");
+    assert!(body.contains("chat.completion.chunk"), "{body}");
+    assert!(body.contains("tool_calls"), "{body}");
+    assert!(body.contains("src/main.rs"), "{body}");
+    assert!(body.contains("data: [DONE]"), "{body}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_cli_dispatch_is_ephemeral_filtered_and_open_ai_compatible() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let server = MockServer::start().await;
+    let directory = tempfile::tempdir().expect("temporary Codex fixture");
+    let executable = directory.path().join("fake-codex");
+    std::fs::write(
+        &executable,
+        concat!(
+            "#!/bin/sh\n",
+            "if [ \"${1:-}\" = doctor ]; then\n",
+            "  printf '%s' '{\"schemaVersion\":1,\"codexVersion\":\"0.148.0\",\"checks\":{\"auth.credentials\":{\"details\":{\"stored ChatGPT tokens\":\"true\",\"stored auth mode\":\"chatgpt\"}}}}'\n",
+            "  exit 0\n",
+            "fi\n",
+            "sed -n '1,$p' >/dev/null\n",
+            "printf '%s\\n' \\\n",
+            "  '{\"type\":\"thread.started\",\"thread_id\":\"redacted\"}' \\\n",
+            "  '{\"type\":\"turn.started\"}' \\\n",
+            "  '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"content\\\":\\\"Codex answer\\\",\\\"reasoning_content\\\":null,\\\"tool_calls\\\":[],\\\"finish_reason\\\":\\\"stop\\\"}\"}}' \\\n",
+            "  '{\"type\":\"turn.completed\"}'\n"
+        ),
+    )
+    .expect("fake Codex executable");
+    let mut permissions = std::fs::metadata(&executable)
+        .expect("fake Codex metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&executable, permissions).expect("fake Codex permissions");
+
+    let mut config = local_config(&server);
+    for provider in config.providers.values_mut() {
+        provider.enabled = false;
+    }
+    let codex = config.providers.get_mut("codex").expect("codex provider");
+    codex.enabled = true;
+    codex.executable = Some(executable.to_string_lossy().into_owned());
+    config
+        .routes
+        .get_mut("cloud-sota")
+        .expect("cloud route")
+        .steps = vec![RouteTarget::Provider("codex".to_string())];
+    let service = FabricGatewayService::from_config(
+        config,
+        TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
+    )
+    .expect("service");
+    let body = Bytes::from(
+        serde_json::to_vec(&json!({
+            "model": "cloud-sota",
+            "messages": [{"role": "user", "content": "review this change"}]
+        }))
+        .expect("JSON"),
+    );
+
+    let response = service.handle_chat(&headers(), body).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-octoroute-provider")
+            .and_then(|value| value.to_str().ok()),
+        Some("codex")
+    );
+    let body = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("Codex response");
+    let body: serde_json::Value = serde_json::from_slice(&body).expect("OpenAI JSON response");
+    assert_eq!(body["object"], "chat.completion");
+    assert_eq!(body["choices"][0]["message"]["content"], "Codex answer");
+
+    let readiness = service.readiness().await;
+    assert_eq!(
+        readiness.providers().get("codex"),
+        Some(&ProviderAdmissionState::Ready)
+    );
 }
