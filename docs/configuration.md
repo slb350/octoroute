@@ -73,9 +73,10 @@ session_latch_evidence_threshold = 2
 log_level = "info"
 ```
 
-This is the local model deployment profile. Port 8081 is used because local model already
-serves Gitea on port 3000. For development from another LAN host, change the
-local base URL to `http://local-model.local:8080`.
+This example binds Octoroute to port 8081 and expects a local llama.cpp service
+on loopback port 8080. Change the listener, local base URL, ports, model alias,
+revision, context window, capabilities, and concurrency limits to match the
+deployment.
 
 ## Server
 
@@ -83,7 +84,7 @@ local base URL to `http://local-model.local:8080`.
 - `port` must be nonzero.
 - `api_key_env` is required even on loopback because cloud routing can spend
   money.
-- `max_request_bytes` is 1–64 MiB.
+- `max_request_bytes` is 1-64 MiB.
 - `max_header_bytes`, `max_in_flight`, and `requests_per_minute` must be
   positive and bounded.
 
@@ -98,12 +99,12 @@ local base URL to `http://local-model.local:8080`.
   the capability-card fingerprint and calibration dataset identity.
 - `context_safety_tokens + default_max_output_tokens` must leave input
   capacity.
-- `max_in_flight` is Octoroute’s non-blocking semaphore. Match it to safe
+- `max_in_flight` is Octoroute's non-blocking semaphore. Match it to safe
   llama.cpp parallel capacity.
 - Probe paths must be same-origin absolute paths.
 - `health_cache_ttl_ms` and `probe_timeout_ms` must be positive.
 - `first_byte_timeout_ms`, when set, must be positive. Configure it only from
-  measured local model prompt-processing behavior; omission means no invented local
+  measured prompt-processing behavior; omission means no invented local
   first-byte deadline.
 
 Capabilities are a closed enum:
@@ -131,7 +132,7 @@ OpenRouter-only plugins and non-text output always route cloud.
 - `cost_quality_tradeoff` is an integer from 0 through 10.
 - `allowed_models` accepts OpenRouter wildcard patterns. Empty means the
   configured Auto Router pool is unrestricted.
-- Octoroute’s Auto Router fields override conflicting client fields while
+- Octoroute's Auto Router fields override conflicting client fields while
   preserving unrelated plugins and unknown options.
 - `max_in_flight` is the global cloud concurrency ceiling.
 - Readiness uses authenticated `GET /api/v1/key` with a cached result.
