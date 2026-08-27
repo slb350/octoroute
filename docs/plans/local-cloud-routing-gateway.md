@@ -17,8 +17,8 @@
 
 ## Executive decision
 
-Octoroute will become the single OpenAI-compatible gateway for the user's
-personal AI traffic:
+Octoroute will become a single OpenAI-compatible gateway for local-first
+AI traffic:
 
 ```text
 Client
@@ -70,34 +70,33 @@ maintenance without improving the local-versus-cloud decision.
 
 ## Evidence gathered
 
-### Current local model runtime
+### Reference local model runtime
 
-The live local model host was inspected on 2026-07-22:
+The initial implementation was validated against a llama.cpp endpoint with the
+following observable contract:
 
-- llama.cpp model alias: `local-model`
-- Model file at the latest verification: `local-model.gguf`
-- Context window: 65,536 tokens
-- Parallel slots: 1
-- Slot monitoring: available through `GET /slots`
-- Health monitoring: available through `GET /health`
-- Metrics endpoint: disabled because llama.cpp is not started with
-  `--metrics`
-- Server bind: `0.0.0.0:8080`
-- Process manager: none; the current server is an abandoned SSH session
-  attached directly to systemd PID 1
-- Port 3000 is occupied by Gitea
-- Port 8081 is free and selected for Octoroute
-- Octoroute is not currently running on the local model endpoint
+- a configured model alias and immutable model revision;
+- a configured context window and output reserve;
+- one or more parallel request slots;
+- slot monitoring through `GET /slots`;
+- health monitoring through `GET /health`;
+- exact request token counting through
+  `POST /v1/chat/completions/input_tokens`;
+- optional Prometheus metrics when the server enables them;
+- an explicitly configured listener and process manager.
 
-The single slot makes admission control a first-class routing input. A request
-that is valid for the local model should still spill to cloud immediately
-when the slot is occupied.
+These are deployment inputs rather than Octoroute product constants. The
+routing and admission design must work across model releases, context sizes,
+hardware classes, slot counts, network layouts, and service managers.
 
-The earlier benchmark ledger covered `example-local-model`; local model changed to
-`local-model.gguf` under alias `local-model` before implementation
-verification. Until the new model has equivalent capability evidence, the
-initial policy remains conservative for tools and complex structured
-automation.
+Admission control remains a first-class routing input. A request that is valid
+for a local model may still spill to cloud immediately when all configured local
+capacity is occupied, unless caller privacy forbids cloud disclosure.
+
+Benchmark and calibration evidence is scoped to the configured
+`model_revision`. Changing weights under the same model alias requires a new
+revision identity and fresh evidence before previously measured capability
+assumptions are enforced.
 
 ### Relevant upstream behavior
 
@@ -118,8 +117,8 @@ llama.cpp:
   available.
 - The current server API documents
   `POST /v1/chat/completions/input_tokens` for exact request token counting.
-  Its live local model response schema must be pinned in a contract fixture before
-  it becomes an admission dependency.
+  The configured endpoint's response schema must be pinned in a contract
+  fixture before it becomes an admission dependency.
 - Supports streaming chat completions, structured output, tool-call parsing,
   and additional llama.cpp-specific fields.
 
@@ -131,8 +130,8 @@ llama.cpp:
 3. Route everything else through OpenRouter Auto Beta.
 4. Preserve the request and upstream response schemas with minimal,
    documented mutation.
-5. Spill from the local model endpoint to cloud before response commitment when local model is busy,
-   unhealthy, incompatible, or fails early.
+5. Spill from a local endpoint to cloud before response commitment when local
+   capacity is busy, unhealthy, incompatible, or fails early.
 6. Never violate an explicit local-only privacy request.
 7. Keep cloud cost policy explicit and observable.
 8. Preserve constant-memory streaming and backpressure.
@@ -143,14 +142,14 @@ llama.cpp:
 ## Non-goals for v2.0
 
 - Direct adapters for Anthropic, Google, OpenAI, or DeepSeek APIs.
-- Letting OpenRouter route directly to the private local model model.
+- Letting OpenRouter route directly to a private local model endpoint.
 - The OpenAI Responses API, Anthropic Messages API, embeddings, image
   generation, or audio endpoints.
 - Prompt rewriting, retrieval augmentation, agent execution, or tool
   execution inside Octoroute.
 - A web UI.
 - Persisted billing or conversation history.
-- High availability across a complete local model host failure.
+- High availability across a complete local endpoint failure.
 - A cloud semantic-classifier call on every request.
 
 The first release remains focused on
@@ -186,7 +185,7 @@ This work should ship as Octoroute 2.0.0.
   listens on a non-loopback address.
 
 Octoroute should fail startup with an actionable v1-to-v2 migration message.
-It must not silently guess which old tier represents local model.
+It must not silently guess which old tier represents the local model.
 
 ## Request routing contract
 
@@ -276,7 +275,7 @@ but it should not be part of the v2.0 correctness path.
 It should be implemented only after the deterministic gateway is stable:
 
 1. Add a `SemanticClassifier` trait behind explicit configuration.
-2. Evaluate it against a labeled corpus of representative personal requests.
+2. Evaluate it against a labeled corpus of representative workloads.
 3. Run it in shadow mode and compare its decisions with human judgments and
    local-versus-cloud output quality.
 4. Require high precision for local decisions; uncertainty routes cloud.
@@ -402,7 +401,7 @@ fallback_before_commit = true
 ```
 
 `allowed_models` is optional. An empty value allows the current Auto Beta
-pool. A personal deployment can restrict it to selected providers or model
+pool. An operator can restrict it to selected providers or model
 families without changing Octoroute code.
 
 The capability field is a closed enum. Initial valid values are `chat`,
@@ -751,17 +750,18 @@ admission policy is the only active routing policy. Track:
 
 ### Phase 10: Deployment and release
 
-1. Build and install Octoroute as a systemd service on the local model endpoint.
-2. Replace the abandoned-session llama.cpp process with a durable service.
-3. Move llama.cpp to loopback-only ingress.
-4. Enable llama.cpp `--metrics` and scrape it separately from Octoroute.
-5. Bind Octoroute to port 8081; port 3000 belongs to Gitea.
-6. Point clients at Octoroute, not port 8080.
-7. Start in observation mode with explicit local/cloud requests.
+1. Build and install Octoroute as a managed service.
+2. Run each local model endpoint under a durable process manager.
+3. Restrict local model ingress to the gateway host or trusted network.
+4. Enable and scrape upstream metrics where supported.
+5. Choose non-conflicting listener addresses and ports through configuration.
+6. Point clients at Octoroute rather than directly at model endpoints.
+7. Start in observation mode with explicit local and cloud requests.
 8. Enable `auto` for a controlled client subset.
-9. Validate metrics, logs, costs, and fallback behavior.
-10. Run fault drills for a busy slot, stopped llama.cpp, unavailable
-    OpenRouter, client disconnect, invalid credential, and context overflow.
+9. Validate metrics, logs, costs, privacy, and fallback behavior.
+10. Run fault drills for exhausted local capacity, stopped local endpoints,
+    unavailable cloud providers, client disconnects, invalid credentials, and
+    context overflow.
 11. Complete the security hardening checklist.
 12. Verify stable and the `1.90` toolchain channel, which CI pins as
     `1.90.0`.
@@ -815,7 +815,7 @@ cargo bench --no-run
 
 Run the full suite on stable and Rust 1.90.0. Build release artifacts for all
 supported targets. Verify the generated package does not contain secrets,
-local benchmark prompts, or personal configuration.
+local benchmark prompts, or operator-specific configuration.
 
 ## Acceptance criteria
 
