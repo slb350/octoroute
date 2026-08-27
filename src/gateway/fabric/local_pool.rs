@@ -30,7 +30,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Fail-closed result of trying to admit one request to a local pool.
 #[derive(Debug)]
 pub enum PoolAdmissionOutcome {
-    Admitted(PoolLease),
+    Admitted(Box<PoolLease>),
     Rejected(PoolAdmissionState),
 }
 
@@ -46,7 +46,7 @@ impl PoolAdmissionOutcome {
     /// Consume an admitted outcome and return its lease.
     pub fn into_lease(self) -> Option<PoolLease> {
         match self {
-            Self::Admitted(lease) => Some(lease),
+            Self::Admitted(lease) => Some(*lease),
             Self::Rejected(_) => None,
         }
     }
@@ -106,7 +106,9 @@ impl PoolLease {
 pub enum LlamaCppPoolBuildError {
     #[error("local pool `{pool}` has no enabled members")]
     NoEnabledMembers { pool: String },
-    #[error("environment variable `{name}` required by local member `{member}` is missing or empty")]
+    #[error(
+        "environment variable `{name}` required by local member `{member}` is missing or empty"
+    )]
     MissingEnvironmentVariable { member: String, name: String },
     #[error("could not resolve `{path}` for local member `{member}`")]
     InvalidPath { member: String, path: String },
@@ -187,12 +189,13 @@ impl LlamaCppPool {
         for member in config.members.iter().filter(|member| member.enabled) {
             let api_key = match member.api_key_env.as_deref() {
                 Some(name) => {
-                    let value = environment.get(name).filter(|value| !value.is_empty()).ok_or_else(
-                        || LlamaCppPoolBuildError::MissingEnvironmentVariable {
+                    let value = environment
+                        .get(name)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| LlamaCppPoolBuildError::MissingEnvironmentVariable {
                             member: member.name.clone(),
                             name: name.to_string(),
-                        },
-                    )?;
+                        })?;
                     Some(SecretString::from(value))
                 }
                 None => None,
@@ -205,11 +208,7 @@ impl LlamaCppPool {
                 health_url: resolve(&member.base_url, HEALTH_PATH, &member.name)?,
                 slots_url: resolve(&member.base_url, SLOTS_PATH, &member.name)?,
                 input_tokens_url: resolve(&member.base_url, INPUT_TOKENS_PATH, &member.name)?,
-                chat_url: resolve(
-                    &member.base_url,
-                    LOCAL_CHAT_COMPLETIONS_PATH,
-                    &member.name,
-                )?,
+                chat_url: resolve(&member.base_url, LOCAL_CHAT_COMPLETIONS_PATH, &member.name)?,
                 permits: Arc::new(Semaphore::new(member.max_in_flight)),
                 max_in_flight: member.max_in_flight,
                 cached_health: Mutex::new(None),
@@ -235,9 +234,7 @@ impl LlamaCppPool {
         request: &GatewayRequest,
     ) -> Result<PoolAdmissionOutcome, GatewayRequestError> {
         if !self.inner.config.enabled {
-            return Ok(PoolAdmissionOutcome::Rejected(
-                PoolAdmissionState::Disabled,
-            ));
+            return Ok(PoolAdmissionOutcome::Rejected(PoolAdmissionState::Disabled));
         }
         let capabilities = match request_capabilities(request) {
             Ok(capabilities) => capabilities,
@@ -252,8 +249,8 @@ impl LlamaCppPool {
             ));
         }
 
-        let output_tokens = request
-            .output_token_budget(self.inner.config.default_max_output_tokens)?;
+        let output_tokens =
+            request.output_token_budget(self.inner.config.default_max_output_tokens)?;
         let request_body = request.body_bytes_for_model(&self.inner.config.model)?;
         let candidates = self.candidates();
         if candidates.is_empty() {
@@ -292,7 +289,7 @@ impl LlamaCppPool {
             self.inner
                 .cursor
                 .store((index + 1) % self.inner.members.len(), Ordering::Relaxed);
-            return Ok(PoolAdmissionOutcome::Admitted(PoolLease {
+            return Ok(PoolAdmissionOutcome::Admitted(Box::new(PoolLease {
                 pool: self.inner.config.name.clone(),
                 member: member.name.clone(),
                 model_revision: self.inner.config.model_revision.clone(),
@@ -300,7 +297,7 @@ impl LlamaCppPool {
                 api_key: member.api_key.clone(),
                 request_body,
                 _permit: permit,
-            }));
+            })));
         }
 
         Ok(PoolAdmissionOutcome::Rejected(if saw_busy {

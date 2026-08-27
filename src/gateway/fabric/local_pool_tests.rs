@@ -1,6 +1,4 @@
-use super::{
-    FabricConfig, LlamaCppPool, LlamaCppPoolBuildError, PoolAdmissionState, PoolLease,
-};
+use super::{FabricConfig, LlamaCppPool, LlamaCppPoolBuildError, PoolAdmissionState, PoolLease};
 use crate::gateway::{config::Environment, request::GatewayRequest};
 use reqwest::Url;
 use serde_json::json;
@@ -20,8 +18,7 @@ impl Environment for EmptyEnvironment {
 }
 
 fn example() -> FabricConfig {
-    FabricConfig::from_toml(include_str!("../../../config.v3.toml"))
-        .expect("repository example")
+    FabricConfig::from_toml(include_str!("../../../config.v3.toml")).expect("repository example")
 }
 
 fn request(output_tokens: u32) -> GatewayRequest {
@@ -73,9 +70,7 @@ async fn mount_ready(server: &MockServer, input_tokens: u32, output_tokens: u32)
     Mock::given(method("GET"))
         .and(path("/slots"))
         .and(query_param("fail_on_no_slot", "1"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])))
         .expect(1)
         .mount(server)
         .await;
@@ -161,9 +156,7 @@ async fn unhealthy_member_is_skipped_before_disclosing_to_next_local_member() {
         .await;
     Mock::given(method("GET"))
         .and(path("/slots"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])))
         .expect(1)
         .mount(&servers[0])
         .await;
