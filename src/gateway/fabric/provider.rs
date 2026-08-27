@@ -1,8 +1,7 @@
 //! Lazy, credential-isolated runtime registry for configured inference providers.
 
 use super::{
-    ProviderConfig, ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort,
-    anthropic,
+    ProviderConfig, ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort, anthropic,
     codex::{self, ChildEnvironment, CodexRequest},
     metrics::FabricMetrics,
 };
@@ -72,29 +71,27 @@ impl ProviderLease {
         &self.model
     }
 
-    pub(crate) fn into_transport_parts(
-        self,
-    ) -> (ProviderDispatch, Duration, OwnedSemaphorePermit) {
+    pub(crate) fn into_transport_parts(self) -> (ProviderDispatch, Duration, OwnedSemaphorePermit) {
         (self.dispatch, self.timeout, self._permit)
     }
 }
 
-pub(crate) enum ProviderDispatch {
+pub(super) enum ProviderDispatch {
     Http(HttpProviderDispatch),
     Codex(CodexRequest),
 }
 
-pub(crate) struct HttpProviderDispatch {
-    pub(crate) url: Url,
-    pub(crate) model: String,
-    pub(crate) api_key: SecretString,
-    pub(crate) body: Bytes,
-    pub(crate) adapter: ProviderHttpAdapter,
-    pub(crate) openrouter_profile: bool,
+pub(super) struct HttpProviderDispatch {
+    pub(super) url: Url,
+    pub(super) model: String,
+    pub(super) api_key: SecretString,
+    pub(super) body: Bytes,
+    pub(super) adapter: ProviderHttpAdapter,
+    pub(super) openrouter_profile: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum ProviderHttpAdapter {
+pub(super) enum ProviderHttpAdapter {
     OpenAi,
     Anthropic { stream: bool },
 }
@@ -176,13 +173,11 @@ impl ProviderRegistry {
                         client.clone(),
                         Arc::clone(&metrics),
                     )?)),
-                    ProviderKind::CodexCli => {
-                        ProviderRuntime::Codex(Arc::new(CodexProvider::new(
-                            config,
-                            codex_environment.clone(),
-                            Arc::clone(&metrics),
-                        )))
-                    }
+                    ProviderKind::CodexCli => ProviderRuntime::Codex(Arc::new(CodexProvider::new(
+                        config,
+                        codex_environment.clone(),
+                        Arc::clone(&metrics),
+                    ))),
                 }
             };
             providers.insert(name.clone(), runtime);
@@ -231,7 +226,10 @@ impl ProviderRegistry {
                 (name, state)
             }
         });
-        futures::future::join_all(probes).await.into_iter().collect()
+        futures::future::join_all(probes)
+            .await
+            .into_iter()
+            .collect()
     }
 }
 
@@ -252,7 +250,8 @@ impl HttpProvider {
             ProviderProtocol::Anthropic => ANTHROPIC_MESSAGES_PATH,
         };
         let request_url = endpoint_url(endpoint, path).ok_or_else(|| invalid_provider(config))?;
-        let models_url = endpoint_url(endpoint, MODELS_PATH).ok_or_else(|| invalid_provider(config))?;
+        let models_url =
+            endpoint_url(endpoint, MODELS_PATH).ok_or_else(|| invalid_provider(config))?;
         let credential = match (&config.api_key_env, &config.api_key_command) {
             (Some(name), None) => ProviderCredentialSource::Environment {
                 name: name.clone(),
@@ -329,20 +328,22 @@ impl HttpProvider {
                 ));
             }
         };
-        Ok(ProviderAdmissionOutcome::Admitted(Box::new(ProviderLease {
-            provider: self.config.name.clone(),
-            model: self.config.model.clone(),
-            dispatch: ProviderDispatch::Http(HttpProviderDispatch {
-                url: self.request_url.clone(),
+        Ok(ProviderAdmissionOutcome::Admitted(Box::new(
+            ProviderLease {
+                provider: self.config.name.clone(),
                 model: self.config.model.clone(),
-                api_key,
-                body,
-                adapter,
-                openrouter_profile: self.config.profile == ProviderProfile::OpenRouterAuto,
-            }),
-            timeout: Duration::from_millis(self.config.timeout_ms),
-            _permit: permit,
-        })))
+                dispatch: ProviderDispatch::Http(HttpProviderDispatch {
+                    url: self.request_url.clone(),
+                    model: self.config.model.clone(),
+                    api_key,
+                    body,
+                    adapter,
+                    openrouter_profile: self.config.profile == ProviderProfile::OpenRouterAuto,
+                }),
+                timeout: Duration::from_millis(self.config.timeout_ms),
+                _permit: permit,
+            },
+        )))
     }
 
     async fn readiness(&self) -> ProviderAdmissionState {
@@ -363,7 +364,8 @@ impl HttpProvider {
                     .config
                     .protocol
                     .expect("validated HTTP providers have a protocol");
-                let request = authorize_http(self.client.get(self.models_url.clone()), &api_key, protocol);
+                let request =
+                    authorize_http(self.client.get(self.models_url.clone()), &api_key, protocol);
                 match tokio::time::timeout(
                     Duration::from_millis(self.config.readiness_timeout_ms),
                     request.send(),
@@ -440,13 +442,15 @@ impl CodexProvider {
             }
             Err(_) => return Err(ProviderRequestError::Codex),
         };
-        Ok(ProviderAdmissionOutcome::Admitted(Box::new(ProviderLease {
-            provider: self.config.name.clone(),
-            model: self.config.model.clone(),
-            dispatch: ProviderDispatch::Codex(request),
-            timeout: Duration::from_millis(self.config.timeout_ms),
-            _permit: permit,
-        })))
+        Ok(ProviderAdmissionOutcome::Admitted(Box::new(
+            ProviderLease {
+                provider: self.config.name.clone(),
+                model: self.config.model.clone(),
+                dispatch: ProviderDispatch::Codex(request),
+                timeout: Duration::from_millis(self.config.timeout_ms),
+                _permit: permit,
+            },
+        )))
     }
 
     async fn readiness(&self) -> ProviderAdmissionState {

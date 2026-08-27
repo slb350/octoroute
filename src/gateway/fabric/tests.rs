@@ -235,7 +235,10 @@ fn anthropic_provider_requires_a_bounded_default_max_tokens() {
 #[test]
 fn codex_provider_accepts_only_an_executable_override() {
     let config = example();
-    assert_eq!(config.providers["codex"].executable.as_deref(), Some("codex"));
+    assert_eq!(
+        config.providers["codex"].executable.as_deref(),
+        Some("codex")
+    );
 
     let input = include_str!("../../../config.toml").replace(
         "executable = \"codex\"",

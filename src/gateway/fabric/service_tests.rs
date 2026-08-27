@@ -1,6 +1,4 @@
-use super::{
-    FabricConfig, FabricGatewayService, ProviderAdmissionState, RouteTarget,
-};
+use super::{FabricConfig, FabricGatewayService, ProviderAdmissionState, RouteTarget};
 use crate::gateway::env::Environment;
 use axum::{
     body::{Bytes, to_bytes},
@@ -512,9 +510,11 @@ async fn provider_readiness_probes_auth_once_per_cache_window() {
         environment_audit.reads(),
         vec!["OCTOROUTE_API_KEY", "ZAI_API_KEY"]
     );
-    assert!(service.metrics_text().contains(
-        "octoroute_fabric_provider_probes_total{provider=\"zai\",state=\"ready\"} 1"
-    ));
+    assert!(
+        service
+            .metrics_text()
+            .contains("octoroute_fabric_provider_probes_total{provider=\"zai\",state=\"ready\"} 1")
+    );
 }
 
 #[tokio::test]

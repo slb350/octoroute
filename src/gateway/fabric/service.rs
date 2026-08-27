@@ -109,11 +109,8 @@ where
             pools.insert(name.clone(), pool);
         }
         let metrics = Arc::new(FabricMetrics::new(&config));
-        let providers = ProviderRegistry::new(
-            &config.providers,
-            environment,
-            Arc::clone(&metrics),
-        )?;
+        let providers =
+            ProviderRegistry::new(&config.providers, environment, Arc::clone(&metrics))?;
 
         Ok(Self {
             authenticator: BearerAuthenticator::new(inbound_key),
@@ -431,10 +428,8 @@ where
                                         &provider,
                                         ProviderResponseOutcome::RateLimited,
                                     );
-                                    self.metrics.record_fallback(
-                                        &provider,
-                                        FallbackTrigger::RateLimited,
-                                    );
+                                    self.metrics
+                                        .record_fallback(&provider, FallbackTrigger::RateLimited);
                                     tracing::warn!(
                                         request_id,
                                         route = plan.model.as_str(),
@@ -525,9 +520,9 @@ where
                         }
                         ProviderAdmissionOutcome::Rejected(state) => {
                             self.metrics.record_rejected(provider_name, state);
-                            if let Some(trigger) = provider_fallback_trigger(state).filter(
-                                |trigger| has_more && plan.fallback_on.contains(trigger),
-                            ) {
+                            if let Some(trigger) = provider_fallback_trigger(state)
+                                .filter(|trigger| has_more && plan.fallback_on.contains(trigger))
+                            {
                                 self.metrics.record_fallback(provider_name, trigger);
                                 continue;
                             }

@@ -43,10 +43,8 @@ pub trait FabricUpstreamTransport: Send + Sync {
     async fn local(&self, lease: PoolLease) -> Result<PreparedUpstreamResponse, Self::Error>;
 
     /// Dispatch one selected provider and stop before client commitment.
-    async fn provider(
-        &self,
-        lease: ProviderLease,
-    ) -> Result<PreparedUpstreamResponse, Self::Error>;
+    async fn provider(&self, lease: ProviderLease)
+    -> Result<PreparedUpstreamResponse, Self::Error>;
 }
 
 /// Production v3 transport with held-first-byte semantics for every backend.
@@ -280,9 +278,7 @@ impl AnthropicStreamState {
                     Ok(output) => self.queued.extend(output),
                     Err(_) => {
                         self.finished = true;
-                        return Some(Err(io::Error::other(
-                            "invalid translated provider stream",
-                        )));
+                        return Some(Err(io::Error::other("invalid translated provider stream")));
                     }
                 },
                 Some(Err(_)) => {

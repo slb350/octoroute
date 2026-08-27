@@ -33,9 +33,7 @@ impl ChildEnvironment {
         Self::from_iter(std::env::vars_os())
     }
 
-    pub(super) fn from_iter(
-        values: impl IntoIterator<Item = (OsString, OsString)>,
-    ) -> Self {
+    pub(super) fn from_iter(values: impl IntoIterator<Item = (OsString, OsString)>) -> Self {
         Self {
             values: values
                 .into_iter()
@@ -88,10 +86,7 @@ pub(super) fn build_request(
         return Err(CodexAdapterError::Incompatible);
     }
     let body = request.body_value_for_model(&config.model)?;
-    let stream = body
-        .get("stream")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let input = serde_json::to_string(&json!({
         "contract": "openai_chat_completion",
         "request": body
@@ -146,13 +141,7 @@ pub(super) async fn execute(request: CodexRequest) -> Result<Bytes, CodexAdapter
     std::fs::create_dir(&cwd).map_err(|_| CodexAdapterError::Workspace)?;
     std::fs::write(&instructions, instructions_text()).map_err(|_| CodexAdapterError::Workspace)?;
     std::fs::write(&schema, output_schema()).map_err(|_| CodexAdapterError::Workspace)?;
-    let args = invocation_args(
-        &request.model,
-        request.effort,
-        &instructions,
-        &schema,
-        &cwd,
-    )?;
+    let args = invocation_args(&request.model, request.effort, &instructions, &schema, &cwd)?;
     let output = run_process(
         &request.executable,
         &args,
@@ -177,9 +166,7 @@ fn invocation_args(
     schema: &Path,
     cwd: &Path,
 ) -> Result<Vec<OsString>, CodexAdapterError> {
-    let instructions = instructions
-        .to_str()
-        .ok_or(CodexAdapterError::Workspace)?;
+    let instructions = instructions.to_str().ok_or(CodexAdapterError::Workspace)?;
     Ok(vec![
         OsString::from("-c"),
         OsString::from(toml_override("forced_login_method", "chatgpt")),
@@ -285,8 +272,16 @@ async fn run_process(
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::piped())
-        .stdout(stdout.child_stdio().map_err(|_| CodexAdapterError::Workspace)?)
-        .stderr(stderr.child_stdio().map_err(|_| CodexAdapterError::Workspace)?)
+        .stdout(
+            stdout
+                .child_stdio()
+                .map_err(|_| CodexAdapterError::Workspace)?,
+        )
+        .stderr(
+            stderr
+                .child_stdio()
+                .map_err(|_| CodexAdapterError::Workspace)?,
+        )
         .kill_on_drop(true);
     environment.apply(&mut command);
     let mut child = command.spawn().map_err(|error| {
@@ -363,7 +358,9 @@ impl BoundedCapture {
     }
 
     fn exceeds(&self, limit: usize) -> std::io::Result<bool> {
-        self.file.metadata().map(|metadata| metadata.len() > limit as u64)
+        self.file
+            .metadata()
+            .map(|metadata| metadata.len() > limit as u64)
     }
 
     fn read_bounded(&mut self, limit: usize) -> std::io::Result<Vec<u8>> {
@@ -383,9 +380,7 @@ impl BoundedCapture {
 fn parse_diagnostic(input: &[u8]) -> Result<(), CodexAdapterError> {
     let diagnostic: Diagnostic<'_> =
         serde_json::from_slice(input).map_err(|_| CodexAdapterError::Diagnostic)?;
-    if diagnostic.schema_version != Some(1)
-        || diagnostic.codex_version.is_none_or(str::is_empty)
-    {
+    if diagnostic.schema_version != Some(1) || diagnostic.codex_version.is_none_or(str::is_empty) {
         return Err(CodexAdapterError::Diagnostic);
     }
     let details = diagnostic
@@ -393,8 +388,7 @@ fn parse_diagnostic(input: &[u8]) -> Result<(), CodexAdapterError> {
         .and_then(|checks| checks.auth_credentials)
         .and_then(|check| check.details)
         .ok_or(CodexAdapterError::Diagnostic)?;
-    if details.stored_chatgpt_tokens == Some("true")
-        && details.stored_auth_mode == Some("chatgpt")
+    if details.stored_chatgpt_tokens == Some("true") && details.stored_auth_mode == Some("chatgpt")
     {
         Ok(())
     } else {
@@ -472,12 +466,9 @@ fn parse_events(input: &[u8]) -> Result<CodexReply, CodexAdapterError> {
     if !completed {
         return Err(CodexAdapterError::Contract);
     }
-    let reply: CodexReply = serde_json::from_str(
-        final_message
-            .ok_or(CodexAdapterError::Contract)?
-            .as_ref(),
-    )
-    .map_err(|_| CodexAdapterError::Contract)?;
+    let reply: CodexReply =
+        serde_json::from_str(final_message.ok_or(CodexAdapterError::Contract)?.as_ref())
+            .map_err(|_| CodexAdapterError::Contract)?;
     reply.validate()?;
     Ok(reply)
 }
@@ -508,8 +499,10 @@ struct CodexReply {
 
 impl CodexReply {
     fn validate(&self) -> Result<(), CodexAdapterError> {
-        if !matches!(self.finish_reason.as_str(), "stop" | "tool_calls" | "length")
-            || (self.finish_reason == "tool_calls") != !self.tool_calls.is_empty()
+        if !matches!(
+            self.finish_reason.as_str(),
+            "stop" | "tool_calls" | "length"
+        ) || (self.finish_reason == "tool_calls") != !self.tool_calls.is_empty()
             || (self.content.is_none() && self.tool_calls.is_empty())
         {
             return Err(CodexAdapterError::Contract);

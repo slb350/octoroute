@@ -4,15 +4,18 @@ use super::{ProviderConfig, ReasoningEffort};
 use crate::gateway::request::GatewayRequest;
 use bytes::Bytes;
 use serde_json::{Map, Number, Value, json};
-use std::{collections::BTreeMap, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::BTreeMap,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use thiserror::Error;
 use uuid::Uuid;
 
 const MAX_SSE_EVENT_BYTES: usize = 1024 * 1024;
 
+#[derive(Debug)]
 pub(super) struct AnthropicRequest {
     pub(super) body: Bytes,
-    pub(super) stream: bool,
 }
 
 pub(super) fn build_request(
@@ -82,11 +85,13 @@ pub(super) fn build_request(
 
     serde_json::to_vec(&Value::Object(body))
         .map(Bytes::from)
-        .map(|body| AnthropicRequest { body, stream })
+        .map(|body| AnthropicRequest { body })
         .map_err(|_| AnthropicAdapterError::Serialization)
 }
 
-fn reject_unsupported_request_fields(source: &Map<String, Value>) -> Result<(), AnthropicAdapterError> {
+fn reject_unsupported_request_fields(
+    source: &Map<String, Value>,
+) -> Result<(), AnthropicAdapterError> {
     if source
         .get("n")
         .and_then(Value::as_u64)
@@ -197,7 +202,10 @@ fn translate_message(
 
 fn text_blocks(content: Option<&Value>) -> Result<Vec<Value>, AnthropicAdapterError> {
     let blocks = content_blocks(content)?;
-    if blocks.iter().any(|block| block.get("type").and_then(Value::as_str) != Some("text")) {
+    if blocks
+        .iter()
+        .any(|block| block.get("type").and_then(Value::as_str) != Some("text"))
+    {
         return Err(AnthropicAdapterError::Incompatible("system content"));
     }
     Ok(blocks)
@@ -396,10 +404,9 @@ pub(super) fn translate_message_response(
     input: &[u8],
     fallback_model: &str,
 ) -> Result<Bytes, AnthropicAdapterError> {
-    let value: Value = serde_json::from_slice(input).map_err(|_| AnthropicAdapterError::Response)?;
-    let message = value
-        .as_object()
-        .ok_or(AnthropicAdapterError::Response)?;
+    let value: Value =
+        serde_json::from_slice(input).map_err(|_| AnthropicAdapterError::Response)?;
+    let message = value.as_object().ok_or(AnthropicAdapterError::Response)?;
     if message.get("type").and_then(Value::as_str) != Some("message") {
         return Err(AnthropicAdapterError::Response);
     }
@@ -419,9 +426,7 @@ pub(super) fn translate_message_response(
     let mut reasoning = String::new();
     let mut tool_calls = Vec::new();
     for block in content {
-        let block = block
-            .as_object()
-            .ok_or(AnthropicAdapterError::Response)?;
+        let block = block.as_object().ok_or(AnthropicAdapterError::Response)?;
         match block.get("type").and_then(Value::as_str) {
             Some("text") => text.push_str(
                 block
@@ -436,9 +441,7 @@ pub(super) fn translate_message_response(
                     .ok_or(AnthropicAdapterError::Response)?,
             ),
             Some("tool_use") => {
-                let input = block
-                    .get("input")
-                    .ok_or(AnthropicAdapterError::Response)?;
+                let input = block.get("input").ok_or(AnthropicAdapterError::Response)?;
                 let arguments = serde_json::to_string(input)
                     .map_err(|_| AnthropicAdapterError::Serialization)?;
                 tool_calls.push(json!({
@@ -551,7 +554,8 @@ impl AnthropicSseTranslator {
         if data.is_empty() {
             return Ok(None);
         }
-        let value: Value = serde_json::from_slice(&data).map_err(|_| AnthropicAdapterError::Response)?;
+        let value: Value =
+            serde_json::from_slice(&data).map_err(|_| AnthropicAdapterError::Response)?;
         let kind = value
             .get("type")
             .and_then(Value::as_str)
@@ -567,7 +571,11 @@ impl AnthropicSseTranslator {
                         self.model = model.to_string();
                     }
                 }
-                Ok(Some(self.chunk(json!({"role": "assistant"}), Value::Null, None)?))
+                Ok(Some(self.chunk(
+                    json!({"role": "assistant"}),
+                    Value::Null,
+                    None,
+                )?))
             }
             "content_block_start" => self.content_block_start(&value),
             "content_block_delta" => self.content_block_delta(&value),
@@ -578,7 +586,11 @@ impl AnthropicSseTranslator {
                     .and_then(|delta| delta.get("stop_reason"))
                     .and_then(Value::as_str);
                 let usage = translate_usage(value.get("usage"));
-                Ok(Some(self.chunk(json!({}), finish_reason(stop_reason), Some(usage))?))
+                Ok(Some(self.chunk(
+                    json!({}),
+                    finish_reason(stop_reason),
+                    Some(usage),
+                )?))
             }
             "message_stop" => {
                 self.done = true;
@@ -589,7 +601,10 @@ impl AnthropicSseTranslator {
         }
     }
 
-    fn content_block_start(&mut self, value: &Value) -> Result<Option<Bytes>, AnthropicAdapterError> {
+    fn content_block_start(
+        &mut self,
+        value: &Value,
+    ) -> Result<Option<Bytes>, AnthropicAdapterError> {
         let index = value
             .get("index")
             .and_then(Value::as_u64)
@@ -600,7 +615,10 @@ impl AnthropicSseTranslator {
             .ok_or(AnthropicAdapterError::Response)?;
         match block.get("type").and_then(Value::as_str) {
             Some("text") => {
-                let text = block.get("text").and_then(Value::as_str).unwrap_or_default();
+                let text = block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 (!text.is_empty())
                     .then(|| self.chunk(json!({"content": text}), Value::Null, None))
                     .transpose()
@@ -643,7 +661,10 @@ impl AnthropicSseTranslator {
         }
     }
 
-    fn content_block_delta(&mut self, value: &Value) -> Result<Option<Bytes>, AnthropicAdapterError> {
+    fn content_block_delta(
+        &mut self,
+        value: &Value,
+    ) -> Result<Option<Bytes>, AnthropicAdapterError> {
         let index = value
             .get("index")
             .and_then(Value::as_u64)
@@ -706,7 +727,8 @@ impl AnthropicSseTranslator {
             chunk["usage"] = usage;
         }
         let mut bytes = Vec::from(&b"data: "[..]);
-        serde_json::to_writer(&mut bytes, &chunk).map_err(|_| AnthropicAdapterError::Serialization)?;
+        serde_json::to_writer(&mut bytes, &chunk)
+            .map_err(|_| AnthropicAdapterError::Serialization)?;
         bytes.extend_from_slice(b"\n\n");
         Ok(Bytes::from(bytes))
     }
@@ -833,9 +855,8 @@ mod tests {
             }]
         }));
 
-        let translated = build_request(provider, &request, ReasoningEffort::High)
-            .expect("Anthropic request");
-        assert!(translated.stream);
+        let translated =
+            build_request(provider, &request, ReasoningEffort::High).expect("Anthropic request");
         let body: Value = serde_json::from_slice(&translated.body).expect("translated JSON");
         assert_eq!(body["model"], "k3");
         assert_eq!(body["max_tokens"], 8192);
@@ -900,7 +921,10 @@ mod tests {
             .collect::<Vec<_>>();
         let output = std::str::from_utf8(&output).expect("UTF-8");
         assert!(output.contains("chat.completion.chunk"), "{output}");
-        assert!(output.contains("\\\"content\\\":\\\"Hi\\\"") || output.contains("\"content\":\"Hi\""), "{output}");
+        assert!(
+            output.contains("\\\"content\\\":\\\"Hi\\\"") || output.contains("\"content\":\"Hi\""),
+            "{output}"
+        );
         assert!(output.contains("data: [DONE]"), "{output}");
     }
 

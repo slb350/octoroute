@@ -169,9 +169,7 @@ impl FabricMetrics {
         &self,
         provider: &str,
         value: &'static str,
-        family: impl FnOnce(
-            &mut MetricCounters,
-        ) -> &mut BTreeMap<(String, &'static str), u64>,
+        family: impl FnOnce(&mut MetricCounters) -> &mut BTreeMap<(String, &'static str), u64>,
     ) {
         if !self.providers.contains(provider) {
             return;
@@ -184,9 +182,7 @@ impl FabricMetrics {
     }
 
     fn lock(&self) -> MutexGuard<'_, MetricCounters> {
-        self.counters
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.counters.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -199,7 +195,9 @@ fn render_family(
     providers: &BTreeSet<String>,
     counters: &BTreeMap<(String, &'static str), u64>,
 ) {
-    output.push_str(&format!("# HELP {metric} {help}\n# TYPE {metric} counter\n"));
+    output.push_str(&format!(
+        "# HELP {metric} {help}\n# TYPE {metric} counter\n"
+    ));
     for provider in providers {
         for value in values {
             let count = counters
