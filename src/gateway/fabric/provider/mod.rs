@@ -1,4 +1,13 @@
 //! Lazy, credential-isolated runtime registry for configured inference providers.
+//!
+//! [`credential`] resolves and caches provider credentials; [`body`] builds the
+//! OpenAI-protocol request body.
+
+mod body;
+mod credential;
+
+use body::build_open_ai_body;
+use credential::{CachedCredential, ProviderCredentialSource};
 
 use super::{
     ProviderConfig, ProviderCredentialConfig, ProviderProfile, ProviderProtocol,
@@ -16,29 +25,20 @@ use axum::http::StatusCode;
 use bytes::Bytes;
 use reqwest::{Client, RequestBuilder, Url};
 use secrecy::{ExposeSecret, SecretString};
-use serde_json::{Map, Number, Value};
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
-    process::Stdio,
     sync::Arc,
     time::{Duration, Instant},
 };
 use thiserror::Error;
-use tokio::{
-    io::AsyncReadExt,
-    process::{Child, Command},
-    sync::{Mutex, OwnedSemaphorePermit, Semaphore},
-};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 const CHAT_COMPLETIONS_PATH: &str = "chat/completions";
 const ANTHROPIC_MESSAGES_PATH: &str = "messages";
 const MODELS_PATH: &str = "models";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-const OPENROUTER_AUTO_PLUGIN: &str = "auto-router";
-const OPENROUTER_COST_QUALITY_TRADEOFF: u64 = 9;
-const MAX_CREDENTIAL_BYTES: usize = 4 * 1024;
-const CREDENTIAL_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Bounded provider state used by readiness, fallback policy, and error mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,47 +132,6 @@ struct HttpProvider {
     metrics: Arc<FabricMetrics>,
 }
 
-/// Longest a resolved provider credential is reused before being re-resolved.
-const CREDENTIAL_CACHE_TTL: Duration = Duration::from_secs(300);
-
-/// A resolved credential held for a bounded time.
-///
-/// Without this, `api_key_command` spawns a subprocess on every request and
-/// again on every readiness refresh. The cache is invalidated whenever the
-/// provider answers 401 or 403, so a rotated key is picked up without a restart.
-struct CachedCredential {
-    source: ProviderCredentialSource,
-    cached: Mutex<Option<(Instant, SecretString)>>,
-}
-
-impl CachedCredential {
-    fn new(source: ProviderCredentialSource) -> Self {
-        Self {
-            source,
-            cached: Mutex::new(None),
-        }
-    }
-
-    async fn resolve(&self) -> Result<SecretString, ProviderCredentialError> {
-        {
-            let cached = self.cached.lock().await;
-            if let Some((resolved_at, value)) = cached.as_ref()
-                && resolved_at.elapsed() < CREDENTIAL_CACHE_TTL
-            {
-                return Ok(value.clone());
-            }
-        }
-        let value = self.source.resolve().await?;
-        *self.cached.lock().await = Some((Instant::now(), value.clone()));
-        Ok(value)
-    }
-
-    /// Discard the cached credential after the provider rejected it.
-    async fn invalidate(&self) {
-        self.cached.lock().await.take();
-    }
-}
-
 struct CodexProvider {
     config: ProviderConfig,
     executable: PathBuf,
@@ -195,17 +154,6 @@ impl Default for CachedReadiness {
             state: ProviderAdmissionState::Unavailable,
         }
     }
-}
-
-enum ProviderCredentialSource {
-    Environment {
-        name: String,
-        environment: Arc<dyn Environment + Send + Sync>,
-    },
-    Command {
-        command: Vec<String>,
-        environment: ChildEnvironment,
-    },
 }
 
 impl ProviderRegistry {
@@ -599,203 +547,6 @@ fn authorize_http(
     }
 }
 
-impl ProviderCredentialSource {
-    async fn resolve(&self) -> Result<SecretString, ProviderCredentialError> {
-        match self {
-            Self::Environment { name, environment } => environment
-                .get(name)
-                .ok_or(ProviderCredentialError::Missing)
-                .and_then(validate_credential),
-            Self::Command {
-                command,
-                environment,
-            } => resolve_command_credential(command, environment).await,
-        }
-    }
-}
-
-fn build_open_ai_body(
-    config: &ProviderConfig,
-    request: &GatewayRequest,
-) -> Result<Bytes, ProviderRequestError> {
-    let mut body = request.body_value_for_model(&config.model)?;
-    let object = body
-        .as_object_mut()
-        .expect("gateway request bodies are validated objects");
-
-    // Only a provider explicitly configured for reasoning receives the field.
-    // A route-wide default would send `reasoning_effort` to every OpenAI-protocol
-    // model whether or not it accepts one, which mutates more than the model and
-    // server-owned Auto policy.
-    if let Some(effort) = config.reasoning_effort
-        && !present(object, "reasoning_effort")
-        && !present(object, "reasoning")
-    {
-        object.insert(
-            "reasoning_effort".to_string(),
-            Value::String(effort.as_str().to_string()),
-        );
-    }
-    if let Some(temperature) = config.temperature
-        && !present(object, "temperature")
-    {
-        let number = Number::from_f64(temperature).ok_or(ProviderRequestError::Serialization)?;
-        object.insert("temperature".to_string(), Value::Number(number));
-    }
-    if let Some(max_tokens) = config.max_tokens
-        && !present(object, "max_tokens")
-        && !present(object, "max_completion_tokens")
-    {
-        object.insert(
-            "max_tokens".to_string(),
-            Value::Number(Number::from(max_tokens)),
-        );
-    }
-    if config.profile == ProviderProfile::OpenRouterAuto {
-        apply_openrouter_auto_profile(object)?;
-    }
-
-    serde_json::to_vec(&body)
-        .map(Bytes::from)
-        .map_err(|_| ProviderRequestError::Serialization)
-}
-
-fn apply_openrouter_auto_profile(
-    body: &mut Map<String, Value>,
-) -> Result<(), ProviderRequestError> {
-    let plugins = body
-        .entry("plugins")
-        .or_insert_with(|| Value::Array(Vec::new()));
-    if plugins.is_null() {
-        *plugins = Value::Array(Vec::new());
-    }
-    let Value::Array(plugins) = plugins else {
-        return Err(ProviderRequestError::InvalidOpenRouterPlugins);
-    };
-
-    let matching_index = {
-        let mut matching = plugins.iter().enumerate().filter_map(|(index, plugin)| {
-            plugin
-                .as_object()
-                .and_then(|plugin| plugin.get("id"))
-                .and_then(Value::as_str)
-                .filter(|id| *id == OPENROUTER_AUTO_PLUGIN)
-                .map(|_| index)
-        });
-        let first = matching.next();
-        if matching.next().is_some() {
-            return Err(ProviderRequestError::InvalidOpenRouterPlugins);
-        }
-        first
-    };
-
-    let plugin = if let Some(index) = matching_index {
-        plugins[index]
-            .as_object_mut()
-            .ok_or(ProviderRequestError::InvalidOpenRouterPlugins)?
-    } else {
-        plugins.push(Value::Object(Map::new()));
-        plugins
-            .last_mut()
-            .and_then(Value::as_object_mut)
-            .expect("the appended OpenRouter profile is an object")
-    };
-    plugin.insert(
-        "id".to_string(),
-        Value::String(OPENROUTER_AUTO_PLUGIN.to_string()),
-    );
-    plugin.insert(
-        "cost_quality_tradeoff".to_string(),
-        Value::Number(Number::from(OPENROUTER_COST_QUALITY_TRADEOFF)),
-    );
-    plugin.remove("allowed_models");
-    Ok(())
-}
-
-fn present(body: &Map<String, Value>, field: &str) -> bool {
-    body.get(field).is_some_and(|value| !value.is_null())
-}
-
-async fn resolve_command_credential(
-    arguments: &[String],
-    environment: &ChildEnvironment,
-) -> Result<SecretString, ProviderCredentialError> {
-    let (program, arguments) = arguments
-        .split_first()
-        .ok_or(ProviderCredentialError::CommandFailed)?;
-    let mut command = Command::new(program);
-    command
-        .args(arguments)
-        .env_clear()
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    // `op`, `security`, `pass`, `gcloud`, and `aws` all read HOME, and several
-    // need TMPDIR and locale. Restoring PATH alone makes every one of them fail
-    // as an indistinguishable provider outage.
-    environment.apply(&mut command);
-    let mut child = command
-        .spawn()
-        .map_err(|_| ProviderCredentialError::CommandFailed)?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or(ProviderCredentialError::CommandFailed)?;
-    let mut output = Vec::with_capacity(MAX_CREDENTIAL_BYTES + 1);
-    let read = async {
-        stdout
-            .take((MAX_CREDENTIAL_BYTES + 1) as u64)
-            .read_to_end(&mut output)
-            .await
-    };
-    match tokio::time::timeout(CREDENTIAL_COMMAND_TIMEOUT, read).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(_)) => {
-            terminate(&mut child).await;
-            return Err(ProviderCredentialError::CommandFailed);
-        }
-        Err(_) => {
-            terminate(&mut child).await;
-            return Err(ProviderCredentialError::CommandTimeout);
-        }
-    }
-    if output.len() > MAX_CREDENTIAL_BYTES {
-        terminate(&mut child).await;
-        return Err(ProviderCredentialError::CommandOutputTooLarge);
-    }
-    let status = match tokio::time::timeout(CREDENTIAL_COMMAND_TIMEOUT, child.wait()).await {
-        Ok(Ok(status)) => status,
-        Ok(Err(_)) => return Err(ProviderCredentialError::CommandFailed),
-        Err(_) => {
-            terminate(&mut child).await;
-            return Err(ProviderCredentialError::CommandTimeout);
-        }
-    };
-    if !status.success() {
-        return Err(ProviderCredentialError::CommandFailed);
-    }
-    let output = String::from_utf8(output).map_err(|_| ProviderCredentialError::Invalid)?;
-    validate_credential(SecretString::from(
-        output.trim_end_matches(['\r', '\n']).to_string(),
-    ))
-}
-
-async fn terminate(child: &mut Child) {
-    let _ = child.kill().await;
-}
-
-fn validate_credential(value: SecretString) -> Result<SecretString, ProviderCredentialError> {
-    let candidate = value.expose_secret();
-    if candidate.is_empty()
-        || candidate.len() > MAX_CREDENTIAL_BYTES
-        || !candidate.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
-    {
-        return Err(ProviderCredentialError::Invalid);
-    }
-    Ok(value)
-}
-
 fn invalid_provider(config: &ProviderConfig) -> ProviderRegistryBuildError {
     ProviderRegistryBuildError::InvalidProvider {
         provider: config.name.clone(),
@@ -824,30 +575,4 @@ pub enum ProviderRequestError {
     Codex,
     #[error(transparent)]
     Request(#[from] GatewayRequestError),
-}
-
-#[derive(Debug, Error)]
-enum ProviderCredentialError {
-    #[error("credential is missing")]
-    Missing,
-    #[error("credential has an invalid shape")]
-    Invalid,
-    #[error("credential command failed")]
-    CommandFailed,
-    #[error("credential command timed out")]
-    CommandTimeout,
-    #[error("credential command output exceeded its bound")]
-    CommandOutputTooLarge,
-}
-
-impl ProviderCredentialError {
-    const fn code(&self) -> &'static str {
-        match self {
-            Self::Missing => "missing",
-            Self::Invalid => "invalid",
-            Self::CommandFailed => "command_failed",
-            Self::CommandTimeout => "command_timeout",
-            Self::CommandOutputTooLarge => "command_output_too_large",
-        }
-    }
 }

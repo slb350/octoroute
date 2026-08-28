@@ -1,6 +1,7 @@
 use super::*;
+use crate::gateway::fabric::{FabricRouteError, PrivacyDirective, RoutePrivacy};
 
-const REPOSITORY_CONFIG: &str = include_str!("../../../config.toml");
+const REPOSITORY_CONFIG: &str = include_str!("../../../../config.toml");
 
 fn example() -> FabricConfig {
     FabricConfig::from_toml(REPOSITORY_CONFIG).expect("the repository v3 example must remain valid")
