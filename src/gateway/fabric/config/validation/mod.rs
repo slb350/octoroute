@@ -8,6 +8,9 @@
 mod fields;
 mod targets;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) use fields::{invalid, safe_parse_error, validate_name};
 use fields::{
     validate_env_name, validate_local_member_url, validate_log_level, validate_model,
