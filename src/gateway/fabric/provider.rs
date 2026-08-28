@@ -10,6 +10,7 @@ use crate::gateway::{
     http_client::endpoint_url,
     request::{GatewayRequest, GatewayRequestError},
 };
+use axum::http::StatusCode;
 use bytes::Bytes;
 use reqwest::{Client, RequestBuilder, Url};
 use secrecy::{ExposeSecret, SecretString};
@@ -45,6 +46,14 @@ pub enum ProviderAdmissionState {
     Incompatible,
     Busy,
     Unavailable,
+    /// The provider is reachable but its credential is missing, malformed, or
+    /// rejected.
+    ///
+    /// Deliberately distinct from `Unavailable`: an expired key is an operator
+    /// error, and silently rerouting the traffic and the spend it carries to the
+    /// next provider hides it. This state is outside the default fallback
+    /// trigger set.
+    Unauthenticated,
 }
 
 /// Result of attempting to reserve one configured provider.
@@ -111,11 +120,52 @@ struct HttpProvider {
     config: ProviderConfig,
     request_url: Url,
     models_url: Url,
-    credential: ProviderCredentialSource,
+    credential: CachedCredential,
     client: Client,
     permits: Arc<Semaphore>,
     readiness: Mutex<CachedReadiness>,
     metrics: Arc<FabricMetrics>,
+}
+
+/// Longest a resolved provider credential is reused before being re-resolved.
+const CREDENTIAL_CACHE_TTL: Duration = Duration::from_secs(300);
+
+/// A resolved credential held for a bounded time.
+///
+/// Without this, `api_key_command` spawns a subprocess on every request and
+/// again on every readiness refresh. The cache is invalidated whenever the
+/// provider answers 401 or 403, so a rotated key is picked up without a restart.
+struct CachedCredential {
+    source: ProviderCredentialSource,
+    cached: Mutex<Option<(Instant, SecretString)>>,
+}
+
+impl CachedCredential {
+    fn new(source: ProviderCredentialSource) -> Self {
+        Self {
+            source,
+            cached: Mutex::new(None),
+        }
+    }
+
+    async fn resolve(&self) -> Result<SecretString, ProviderCredentialError> {
+        {
+            let cached = self.cached.lock().await;
+            if let Some((resolved_at, value)) = cached.as_ref()
+                && resolved_at.elapsed() < CREDENTIAL_CACHE_TTL
+            {
+                return Ok(value.clone());
+            }
+        }
+        let value = self.source.resolve().await?;
+        *self.cached.lock().await = Some((Instant::now(), value.clone()));
+        Ok(value)
+    }
+
+    /// Discard the cached credential after the provider rejected it.
+    async fn invalidate(&self) {
+        self.cached.lock().await.take();
+    }
 }
 
 struct CodexProvider {
@@ -147,10 +197,26 @@ enum ProviderCredentialSource {
         name: String,
         environment: Arc<dyn Environment + Send + Sync>,
     },
-    Command(Vec<String>),
+    Command {
+        command: Vec<String>,
+        environment: ChildEnvironment,
+    },
 }
 
 impl ProviderRegistry {
+    /// Report that a real dispatch contradicted cached readiness.
+    ///
+    /// Cached readiness is otherwise only refreshed on its TTL, so a provider
+    /// that dies right after a successful probe keeps reporting `ready` for up
+    /// to an hour while every request through it fails.
+    pub(super) async fn record_dispatch_failure(&self, provider: &str, status: Option<StatusCode>) {
+        match self.providers.get(provider) {
+            Some(ProviderRuntime::Http(provider)) => provider.invalidate_readiness(status).await,
+            Some(ProviderRuntime::Codex(provider)) => provider.invalidate_readiness(status).await,
+            Some(ProviderRuntime::Disabled { .. }) | None => {}
+        }
+    }
+
     /// Build adapters without resolving credentials or launching commands.
     pub(super) fn new(
         configs: &BTreeMap<String, ProviderConfig>,
@@ -201,9 +267,7 @@ impl ProviderRegistry {
             ProviderRuntime::Disabled { .. } => Ok(ProviderAdmissionOutcome::Rejected(
                 ProviderAdmissionState::Disabled,
             )),
-            ProviderRuntime::Http(provider) => {
-                provider.try_admit(request, route_reasoning_effort).await
-            }
+            ProviderRuntime::Http(provider) => provider.try_admit(request).await,
             ProviderRuntime::Codex(provider) => {
                 provider.try_admit(request, route_reasoning_effort).await
             }
@@ -257,14 +321,17 @@ impl HttpProvider {
                 name: name.clone(),
                 environment,
             },
-            (None, Some(command)) => ProviderCredentialSource::Command(command.clone()),
+            (None, Some(command)) => ProviderCredentialSource::Command {
+                command: command.clone(),
+                environment: ChildEnvironment::current(),
+            },
             _ => return Err(invalid_provider(config)),
         };
         Ok(Self {
             config: config.clone(),
             request_url,
             models_url,
-            credential,
+            credential: CachedCredential::new(credential),
             client,
             permits: Arc::new(Semaphore::new(config.max_in_flight)),
             readiness: Mutex::new(CachedReadiness::default()),
@@ -275,7 +342,6 @@ impl HttpProvider {
     async fn try_admit(
         &self,
         request: &GatewayRequest,
-        route_reasoning_effort: ReasoningEffort,
     ) -> Result<ProviderAdmissionOutcome, ProviderRequestError> {
         let permit = match Arc::clone(&self.permits).try_acquire_owned() {
             Ok(permit) => permit,
@@ -300,9 +366,7 @@ impl HttpProvider {
             },
         };
         let body = match adapter {
-            ProviderHttpAdapter::OpenAi => {
-                build_open_ai_body(&self.config, request, route_reasoning_effort)?
-            }
+            ProviderHttpAdapter::OpenAi => build_open_ai_body(&self.config, request)?,
             ProviderHttpAdapter::Anthropic { .. } => {
                 match anthropic::build_request(&self.config, request) {
                     Ok(request) => request.body,
@@ -324,7 +388,7 @@ impl HttpProvider {
                     "provider credential could not be resolved"
                 );
                 return Ok(ProviderAdmissionOutcome::Rejected(
-                    ProviderAdmissionState::Unavailable,
+                    ProviderAdmissionState::Unauthenticated,
                 ));
             }
         };
@@ -344,6 +408,20 @@ impl HttpProvider {
                 _permit: permit,
             },
         )))
+    }
+
+    /// Discard cached readiness after a real dispatch proved it wrong.
+    ///
+    /// Without this a provider that dies right after a successful probe keeps
+    /// reporting `ready` for the whole TTL, which can be an hour.
+    async fn invalidate_readiness(&self, status: Option<StatusCode>) {
+        if matches!(
+            status,
+            Some(StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+        ) {
+            self.credential.invalidate().await;
+        }
+        *self.readiness.lock().await = CachedReadiness::default();
     }
 
     async fn readiness(&self) -> ProviderAdmissionState {
@@ -375,15 +453,21 @@ impl HttpProvider {
                     Ok(Ok(response)) if response.status().is_success() => {
                         ProviderAdmissionState::Ready
                     }
-                    Ok(Ok(response))
-                        if matches!(response.status().as_u16(), 400 | 404 | 405 | 429) =>
-                    {
+                    // A credential the provider rejects is an operator error,
+                    // not an outage, and must not be collapsed into it.
+                    Ok(Ok(response)) if matches!(response.status().as_u16(), 401 | 403) => {
+                        self.credential.invalidate().await;
+                        ProviderAdmissionState::Unauthenticated
+                    }
+                    // `/models` is not uniformly implemented. These statuses
+                    // prove the endpoint answered, which is what readiness asks.
+                    Ok(Ok(response)) if matches!(response.status().as_u16(), 405 | 429) => {
                         ProviderAdmissionState::Ready
                     }
                     _ => ProviderAdmissionState::Unavailable,
                 }
             }
-            Err(_) => ProviderAdmissionState::Unavailable,
+            Err(_) => ProviderAdmissionState::Unauthenticated,
         };
         *cached = CachedReadiness {
             checked_at: Some(Instant::now()),
@@ -453,6 +537,11 @@ impl CodexProvider {
         )))
     }
 
+    /// Discard cached readiness after a real dispatch proved it wrong.
+    async fn invalidate_readiness(&self, _status: Option<StatusCode>) {
+        *self.readiness.lock().await = CachedReadiness::default();
+    }
+
     async fn readiness(&self) -> ProviderAdmissionState {
         if self.permits.available_permits() == 0 {
             return ProviderAdmissionState::Busy;
@@ -506,7 +595,10 @@ impl ProviderCredentialSource {
                 .get(name)
                 .ok_or(ProviderCredentialError::Missing)
                 .and_then(validate_credential),
-            Self::Command(command) => resolve_command_credential(command).await,
+            Self::Command {
+                command,
+                environment,
+            } => resolve_command_credential(command, environment).await,
         }
     }
 }
@@ -514,21 +606,23 @@ impl ProviderCredentialSource {
 fn build_open_ai_body(
     config: &ProviderConfig,
     request: &GatewayRequest,
-    route_reasoning_effort: ReasoningEffort,
 ) -> Result<Bytes, ProviderRequestError> {
     let mut body = request.body_value_for_model(&config.model)?;
     let object = body
         .as_object_mut()
         .expect("gateway request bodies are validated objects");
 
-    if !present(object, "reasoning_effort") && !present(object, "reasoning") {
-        let effort = config
-            .reasoning_effort
-            .unwrap_or(route_reasoning_effort)
-            .as_str();
+    // Only a provider explicitly configured for reasoning receives the field.
+    // A route-wide default would send `reasoning_effort` to every OpenAI-protocol
+    // model whether or not it accepts one, which mutates more than the model and
+    // server-owned Auto policy.
+    if let Some(effort) = config.reasoning_effort
+        && !present(object, "reasoning_effort")
+        && !present(object, "reasoning")
+    {
         object.insert(
             "reasoning_effort".to_string(),
-            Value::String(effort.to_string()),
+            Value::String(effort.as_str().to_string()),
         );
     }
     if let Some(temperature) = config.temperature
@@ -613,6 +707,7 @@ fn present(body: &Map<String, Value>, field: &str) -> bool {
 
 async fn resolve_command_credential(
     arguments: &[String],
+    environment: &ChildEnvironment,
 ) -> Result<SecretString, ProviderCredentialError> {
     let (program, arguments) = arguments
         .split_first()
@@ -625,9 +720,10 @@ async fn resolve_command_credential(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    if let Some(path) = std::env::var_os("PATH") {
-        command.env("PATH", path);
-    }
+    // `op`, `security`, `pass`, `gcloud`, and `aws` all read HOME, and several
+    // need TMPDIR and locale. Restoring PATH alone makes every one of them fail
+    // as an indistinguishable provider outage.
+    environment.apply(&mut command);
     let mut child = command
         .spawn()
         .map_err(|_| ProviderCredentialError::CommandFailed)?;

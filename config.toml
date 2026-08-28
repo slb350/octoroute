@@ -183,7 +183,13 @@ model = "cloud-sota"
 privacy = "cloud_only"
 steps = ["provider:codex", "provider:openrouter", "provider:openai"]
 default_reasoning_effort = "xhigh"
-fallback_on = ["busy", "unhealthy", "rate_limited", "precommit_failure"]
+fallback_on = [
+  "busy",
+  "unhealthy",
+  "incompatible",
+  "rate_limited",
+  "precommit_failure",
+]
 
 [observability]
 log_level = "info"

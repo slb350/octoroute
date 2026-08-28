@@ -493,21 +493,36 @@ where
                                         &provider,
                                         FallbackTrigger::PrecommitFailure,
                                     );
+                                    let status = response.status();
+                                    self.providers
+                                        .record_dispatch_failure(&provider, Some(status))
+                                        .await;
                                     tracing::warn!(
                                         request_id,
                                         route = plan.model.as_str(),
                                         provider,
-                                        status = response.status().as_u16(),
+                                        status = status.as_u16(),
                                         "provider failed before commitment; trying next route step"
                                     );
                                     drop(response);
                                     continue;
                                 }
                                 Ok(response) => {
+                                    let status = response.status();
                                     self.metrics.record_response(
                                         &provider,
-                                        provider_response_outcome(response.status()),
+                                        provider_response_outcome(status),
                                     );
+                                    if status.is_server_error()
+                                        || matches!(
+                                            status,
+                                            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+                                        )
+                                    {
+                                        self.providers
+                                            .record_dispatch_failure(&provider, Some(status))
+                                            .await;
+                                    }
                                     return decorate_provider(
                                         response, plan, &provider, &model, request_id,
                                     );
@@ -522,6 +537,9 @@ where
                                         &provider,
                                         ProviderResponseOutcome::TransportError,
                                     );
+                                    self.providers
+                                        .record_dispatch_failure(&provider, None)
+                                        .await;
                                     self.metrics.record_fallback(
                                         &provider,
                                         FallbackTrigger::PrecommitFailure,
@@ -540,6 +558,9 @@ where
                                         &provider,
                                         ProviderResponseOutcome::TransportError,
                                     );
+                                    self.providers
+                                        .record_dispatch_failure(&provider, None)
+                                        .await;
                                     tracing::warn!(
                                         request_id,
                                         route = plan.model.as_str(),
@@ -660,6 +681,9 @@ fn provider_fallback_trigger(state: ProviderAdmissionState) -> Option<FallbackTr
         }
         ProviderAdmissionState::Incompatible => Some(FallbackTrigger::Incompatible),
         ProviderAdmissionState::Busy => Some(FallbackTrigger::Busy),
+        // Outside the default trigger set: an expired or missing key must not
+        // silently reroute traffic and spend to the next provider.
+        ProviderAdmissionState::Unauthenticated => Some(FallbackTrigger::Unauthenticated),
     }
 }
 
@@ -768,6 +792,11 @@ fn provider_state_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "the selected provider is unavailable",
             "provider_unavailable",
+        ),
+        ProviderAdmissionState::Unauthenticated => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the selected provider rejected or could not supply its credential",
+            "provider_unauthenticated",
         ),
     };
     tracing::info!(

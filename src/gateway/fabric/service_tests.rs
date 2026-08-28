@@ -3,11 +3,11 @@ use super::{
 };
 use crate::gateway::env::Environment;
 use axum::{
-    body::{Bytes, to_bytes},
-    http::{HeaderMap, HeaderValue, header::AUTHORIZATION},
+    body::{Body, Bytes, to_bytes},
+    http::{HeaderMap, HeaderValue, Response, header::AUTHORIZATION},
 };
 use reqwest::Url;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -51,6 +51,24 @@ fn headers() -> HeaderMap {
         HeaderValue::from_static("Bearer inbound-test-key"),
     );
     headers
+}
+
+/// The shared cloud-route request body used by the provider dispatch tests.
+fn cloud_request() -> Bytes {
+    Bytes::from(
+        serde_json::to_vec(&json!({
+            "model": "cloud-sota",
+            "messages": [{"role": "user", "content": "review the architecture"}],
+            "plugins": [{"id": "preserved-plugin", "setting": true}]
+        }))
+        .expect("JSON"),
+    )
+}
+
+async fn response_body(response: Response<Body>) -> Bytes {
+    to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("response body")
 }
 
 fn local_config(server: &MockServer) -> FabricConfig {
@@ -218,8 +236,16 @@ async fn incompatible_codex_request_fails_closed_without_launching_the_cli() {
         .with("OCTOROUTE_API_KEY", "inbound-test-key")
         .with("OPENROUTER_API_KEY", "unused-openrouter-key");
     let environment_audit = environment.clone();
-    let service =
-        FabricGatewayService::from_config(local_config(&server), environment).expect("service");
+    // Scoped to the Codex step alone: this asserts Codex fails closed, not what
+    // the route does afterwards. `incompatible_codex_request_falls_forward_to_a_
+    // capable_provider` covers the fall-through.
+    let mut config = local_config(&server);
+    config
+        .routes
+        .get_mut("cloud-sota")
+        .expect("cloud route")
+        .steps = vec![RouteTarget::Provider("codex".to_string())];
+    let service = FabricGatewayService::from_config(config, environment).expect("service");
     let incompatible_requests = [
         json!({
             "model": "cloud-sota",
@@ -334,13 +360,69 @@ async fn open_ai_provider_rewrites_only_destination_and_supplies_bounded_headers
     );
 }
 
+/// A missing credential must surface rather than silently rerouting the traffic,
+/// and the spend it carries, to the next provider. The prompt still reaches no
+/// provider whose credential could not be resolved.
 #[tokio::test]
-async fn missing_provider_credential_falls_forward_before_prompt_disclosure() {
+async fn missing_provider_credential_surfaces_instead_of_rerouting_spend() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({"id": "cloud", "model": "openrouter/auto", "choices": []})),
+        )
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let mut config = local_config(&server);
+    let endpoint = Url::parse(&format!("{}/", server.uri())).expect("mock provider URL");
+    config.providers.get_mut("zai").expect("zai").endpoint = Some(endpoint.clone());
+    config
+        .providers
+        .get_mut("openrouter")
+        .expect("openrouter")
+        .endpoint = Some(endpoint);
+    config
+        .routes
+        .get_mut("cloud-sota")
+        .expect("cloud route")
+        .steps = vec![
+        RouteTarget::Provider("zai".to_string()),
+        RouteTarget::Provider("openrouter".to_string()),
+    ];
+    let environment = TestEnvironment::default()
+        .with("OCTOROUTE_API_KEY", "inbound-test-key")
+        .with("OPENROUTER_API_KEY", "openrouter-test-key");
+    let environment_audit = environment.clone();
+    let service = FabricGatewayService::from_config(config, environment).expect("service");
+
+    let response = service.handle_chat(&headers(), cloud_request()).await;
+    assert_eq!(response.status(), 503);
+    let body = response_body(response).await;
+    let body: Value = serde_json::from_slice(&body).expect("error JSON");
+    assert_eq!(body["error"]["code"], "provider_unauthenticated");
+    // The second provider was never dispatched, so no prompt was disclosed to it.
+    assert_eq!(
+        environment_audit.reads(),
+        vec!["OCTOROUTE_API_KEY", "ZAI_API_KEY"]
+    );
+    let metrics = service.metrics_text();
+    assert!(metrics.contains(
+        "octoroute_fabric_provider_admissions_total{provider=\"zai\",state=\"unauthenticated\"} 1"
+    ));
+}
+
+/// An operator can still opt into credential fall-forward per route, which is
+/// what keeps the strict default a policy choice rather than a hard limit.
+#[tokio::test]
+async fn unauthenticated_fallback_is_available_when_explicitly_configured() {
     let server = MockServer::start().await;
     let expected_request = json!({
         "model": "openrouter/auto",
         "messages": [{"role": "user", "content": "review the architecture"}],
-        "reasoning_effort": "xhigh",
         "temperature": 0.2,
         "plugins": [
             {"id": "preserved-plugin", "setting": true},
@@ -369,29 +451,19 @@ async fn missing_provider_credential_falls_forward_before_prompt_disclosure() {
         .get_mut("openrouter")
         .expect("openrouter")
         .endpoint = Some(endpoint);
-    config
-        .routes
-        .get_mut("cloud-sota")
-        .expect("cloud route")
-        .steps = vec![
+    let route = config.routes.get_mut("cloud-sota").expect("cloud route");
+    route.steps = vec![
         RouteTarget::Provider("zai".to_string()),
         RouteTarget::Provider("openrouter".to_string()),
     ];
+    route.fallback_on.insert(FallbackTrigger::Unauthenticated);
     let environment = TestEnvironment::default()
         .with("OCTOROUTE_API_KEY", "inbound-test-key")
         .with("OPENROUTER_API_KEY", "openrouter-test-key");
     let environment_audit = environment.clone();
     let service = FabricGatewayService::from_config(config, environment).expect("service");
-    let body = Bytes::from(
-        serde_json::to_vec(&json!({
-            "model": "cloud-sota",
-            "messages": [{"role": "user", "content": "review the architecture"}],
-            "plugins": [{"id": "preserved-plugin", "setting": true}]
-        }))
-        .expect("JSON"),
-    );
 
-    let response = service.handle_chat(&headers(), body).await;
+    let response = service.handle_chat(&headers(), cloud_request()).await;
     assert_eq!(response.status(), 200);
     assert_eq!(
         response
@@ -406,10 +478,7 @@ async fn missing_provider_credential_falls_forward_before_prompt_disclosure() {
     );
     let metrics = service.metrics_text();
     assert!(metrics.contains(
-        "octoroute_fabric_provider_admissions_total{provider=\"zai\",state=\"unavailable\"} 1"
-    ));
-    assert!(metrics.contains(
-        "octoroute_fabric_provider_fallbacks_total{provider=\"zai\",trigger=\"unhealthy\"} 1"
+        "octoroute_fabric_provider_fallbacks_total{provider=\"zai\",trigger=\"unauthenticated\"} 1"
     ));
     assert!(metrics.contains(
         "octoroute_fabric_provider_responses_total{provider=\"openrouter\",outcome=\"success\"} 1"

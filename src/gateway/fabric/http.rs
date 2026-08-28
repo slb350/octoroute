@@ -154,6 +154,7 @@ fn provider_state(state: ProviderAdmissionState) -> &'static str {
         ProviderAdmissionState::Disabled => "disabled",
         ProviderAdmissionState::Incompatible => "incompatible",
         ProviderAdmissionState::Busy => "busy",
+        ProviderAdmissionState::Unauthenticated => "unauthenticated",
         ProviderAdmissionState::Unavailable => "unavailable",
     }
 }

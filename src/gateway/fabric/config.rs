@@ -263,20 +263,18 @@ impl FromStr for RouteTarget {
     type Err = FabricConfigError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (kind, name) = value.split_once(':').ok_or_else(|| {
-            invalid(
-                "routing.routes.steps",
-                format!("`{value}` must use `pool:name` or `provider:name`"),
-            )
-        })?;
+        // The raw step is never interpolated into the error. It is unvalidated
+        // configuration text, and the safety contract keeps it out of logs and
+        // messages regardless of what an operator put there.
+        const EXPECTED: &str = "must use `pool:<name>` or `provider:<name>`";
+        let (kind, name) = value
+            .split_once(':')
+            .ok_or_else(|| invalid("routing.routes.steps", EXPECTED))?;
         validate_name("routing.routes.steps", name)?;
         match kind {
             "pool" => Ok(Self::LocalPool(name.to_string())),
             "provider" => Ok(Self::Provider(name.to_string())),
-            _ => Err(invalid(
-                "routing.routes.steps",
-                format!("`{value}` must use `pool:name` or `provider:name`"),
-            )),
+            _ => Err(invalid("routing.routes.steps", EXPECTED)),
         }
     }
 }
@@ -291,6 +289,12 @@ pub enum FallbackTrigger {
     Incompatible,
     RateLimited,
     PrecommitFailure,
+    /// A provider rejected, or could not supply, its credential.
+    ///
+    /// Not in the default set: falling forward on it turns an expired key into
+    /// silently redirected traffic and spend, which an operator only discovers
+    /// on the bill.
+    Unauthenticated,
 }
 
 /// Safe static v3 configuration failures.
@@ -578,11 +582,15 @@ fn validate_local_pools(
             members.push(LocalMemberConfig {
                 name: member.name,
                 enabled: member.enabled,
-                base_url: validate_url(
-                    "fabric.local_pools.members.base_url",
-                    &member.base_url,
-                    false,
-                )?,
+                base_url: {
+                    let url = validate_url(
+                        "fabric.local_pools.members.base_url",
+                        &member.base_url,
+                        false,
+                    )?;
+                    validate_local_member_url("fabric.local_pools.members.base_url", &url)?;
+                    url
+                },
                 api_key_env: member.api_key_env,
                 max_in_flight: member.max_in_flight,
                 priority: member.priority,
@@ -900,6 +908,45 @@ fn validate_url(field: &str, value: &str, https_only: bool) -> Result<Url, Fabri
         url.set_path(&normalized);
     }
     Ok(url)
+}
+
+/// Reject a local member that is not on loopback, a private range, or `.local`.
+///
+/// `X-Octoroute-Privacy: local-only` promises the request does not leave the
+/// operator's trust boundary. Nothing else enforces that promise about a member
+/// address, so a member on a public address would satisfy `local-only` while
+/// sending prompts to the internet in plaintext.
+fn validate_local_member_url(field: &str, url: &Url) -> Result<(), FabricConfigError> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| invalid(field, "must name a host"))?;
+    // A URL renders an IPv6 host bracketed; the address itself is inside.
+    let literal = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'));
+    let trusted = match literal.unwrap_or(host).parse::<IpAddr>() {
+        Ok(IpAddr::V4(address)) => {
+            address.is_loopback() || address.is_private() || address.is_link_local()
+        }
+        // Loopback, or a unique local address (fc00::/7).
+        Ok(IpAddr::V6(address)) => address.is_loopback() || (address.octets()[0] & 0xfe) == 0xfc,
+        Err(_) => {
+            let domain = host.to_ascii_lowercase();
+            domain == "localhost"
+                || domain.ends_with(".localhost")
+                || domain.ends_with(".local")
+                || domain.ends_with(".internal")
+                || domain.ends_with(".home.arpa")
+        }
+    };
+    if !trusted {
+        return Err(invalid(
+            field,
+            "must be a loopback, private-range, or `.local` address so `local-only` \
+             requests cannot leave the trusted network",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_name(field: &str, value: &str) -> Result<(), FabricConfigError> {

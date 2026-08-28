@@ -42,7 +42,7 @@ impl ChildEnvironment {
         }
     }
 
-    fn apply(&self, command: &mut tokio::process::Command) {
+    pub(super) fn apply(&self, command: &mut tokio::process::Command) {
         command.env_clear().envs(self.values.iter());
     }
 

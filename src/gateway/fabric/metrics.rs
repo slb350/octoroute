@@ -13,6 +13,7 @@ const ADMISSION_STATES: &[&str] = &[
     "incompatible",
     "busy",
     "unavailable",
+    "unauthenticated",
 ];
 const RESPONSE_STATES: &[&str] = &[
     "success",
@@ -28,8 +29,16 @@ const FALLBACK_STATES: &[&str] = &[
     "incompatible",
     "rate_limited",
     "precommit_failure",
+    "unauthenticated",
 ];
-const PROBE_STATES: &[&str] = &["ready", "disabled", "incompatible", "busy", "unavailable"];
+const PROBE_STATES: &[&str] = &[
+    "ready",
+    "disabled",
+    "incompatible",
+    "busy",
+    "unavailable",
+    "unauthenticated",
+];
 const POOL_ADMISSION_STATES: &[&str] = &[
     "admitted",
     "disabled",
@@ -361,6 +370,7 @@ const fn provider_state(state: ProviderAdmissionState) -> &'static str {
         ProviderAdmissionState::Incompatible => "incompatible",
         ProviderAdmissionState::Busy => "busy",
         ProviderAdmissionState::Unavailable => "unavailable",
+        ProviderAdmissionState::Unauthenticated => "unauthenticated",
     }
 }
 
@@ -372,5 +382,6 @@ pub(super) const fn fallback_trigger_label(trigger: FallbackTrigger) -> &'static
         FallbackTrigger::Incompatible => "incompatible",
         FallbackTrigger::RateLimited => "rate_limited",
         FallbackTrigger::PrecommitFailure => "precommit_failure",
+        FallbackTrigger::Unauthenticated => "unauthenticated",
     }
 }
