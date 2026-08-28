@@ -116,21 +116,33 @@ jobs:
 
   # Mutation testing runs at two scopes. A pull request mutates only the lines it
   # changes, so the gate stays proportional to the change; a merge to main sweeps
-  # the tree. The split exists because the tree currently yields ~1000 mutants and
-  # each one is a build plus a full test run: an unscoped sweep on every pull
-  # request is a multi-hour gate, and without an explicit timeout it inherits the
-  # 360-minute default and fails the job rather than reporting a verdict.
+  # the tree. Each one is a build plus a full test run, and the tree currently
+  # yields ~1000 mutants, so scope alone is not enough: a branch whose diff IS
+  # the tree (a rewrite, or a long-lived feature branch) puts the pull-request
+  # job back at tree size. Both scopes are therefore sharded with
+  # `cargo mutants --shard k/n`, which splits the mutant list across independent
+  # runners so wall-clock stays bounded whatever the diff size.
+  #
+  # Every job also sets an explicit `timeout-minutes`. Without one a long sweep
+  # inherits the 360-minute default and is cancelled with no missed.txt, which
+  # reports as a failure indistinguishable from a surviving mutant. Sharding is
+  # what keeps that from happening; the timeout is the backstop.
   #
   # A GitHub runner cannot reach the LAN, so both sweeps run locally rather than
   # through scripts/mutants-remote.sh. Survivors print as
   # `MISSED <file>:<line>: <mutation>` straight into the job log; the verdict
   # comes from missed.txt, not the exit code, which is what
-  # scripts/mutants-run.sh exists to decide.
+  # scripts/mutants-run.sh exists to decide. A shard with no survivors passes, so
+  # the gate is green only when every shard is.
   mutants:
-    name: Mutation Testing
+    name: Mutation Testing (shard ${{ matrix.shard }}/8)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       # The full history is needed to diff against the merge base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -172,13 +184,17 @@ jobs:
 
       - name: Run mutation sweep (changed lines)
         if: steps.diff.outputs.has_rust_changes == 'true'
-        run: ./scripts/mutants-run.sh --in-diff pr.diff
+        run: ./scripts/mutants-run.sh --in-diff pr.diff --shard ${{ matrix.shard }}/8
 
   mutants-full:
-    name: Mutation Testing (full sweep)
+    name: Mutation Testing (full sweep, shard ${{ matrix.shard }}/8)
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -202,7 +218,7 @@ jobs:
           tool: cargo-mutants@27.1.0
 
       - name: Run mutation sweep
-        run: ./scripts/mutants-run.sh
+        run: ./scripts/mutants-run.sh --shard ${{ matrix.shard }}/8
 
   docs:
     name: Documentation Build

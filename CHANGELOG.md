@@ -148,6 +148,10 @@ gaps, and 45 smaller findings. The suite grew from 126 tests to 212.
 - Bound the local probe body reads, the credential-command total wait, and
   environment variable name length, all of which were unbounded against
   upstream-controlled or operator-controlled input.
+- Skip an `input_json_delta` whose `content_block_start` was skipped, rather
+  than failing the stream. Deltas arrive after the response has committed, so a
+  future Anthropic block type carrying partial tool arguments turned a complete
+  generation into a truncated one for a client already reading it.
 - Correct a range of error classifications: a local upstream 429 now uses the
   `rate_limited` trigger, a terminal route error reports the rejection that
   governed the route rather than the last step's state, `no_eligible_target`

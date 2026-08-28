@@ -7,7 +7,7 @@ use super::{AnthropicAdapterError, ignore_unknown_type};
 use bytes::Bytes;
 use serde_json::{Map, Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     time::{SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
@@ -171,6 +171,12 @@ pub(crate) struct AnthropicSseTranslator {
     created: u64,
     prompt_usage: AnthropicUsage,
     tool_indices: BTreeMap<u64, u64>,
+    /// Block indices whose `content_block_start` this adapter could not
+    /// represent and skipped.
+    ///
+    /// Their deltas still arrive, and they arrive after the response has
+    /// committed, so they have to be skipped too rather than failing.
+    skipped_indices: BTreeSet<u64>,
     next_tool_index: u64,
     done: bool,
 }
@@ -184,6 +190,7 @@ impl AnthropicSseTranslator {
             created: unix_timestamp(),
             prompt_usage: AnthropicUsage::default(),
             tool_indices: BTreeMap::new(),
+            skipped_indices: BTreeSet::new(),
             next_tool_index: 0,
             done: false,
         }
@@ -341,6 +348,9 @@ impl AnthropicSseTranslator {
                 )?))
             }
             _ => {
+                // Remember the index: this block's deltas are about to arrive and
+                // are just as unrepresentable as the block itself.
+                self.skipped_indices.insert(index);
                 ignore_unknown_type();
                 Ok(None)
             }
@@ -371,6 +381,25 @@ impl AnthropicSseTranslator {
                 None,
             )?)),
             Some("input_json_delta") => {
+                // Partial tool arguments are the one delta bound to its block:
+                // they are meaningless without the `tool_use` start that named
+                // the tool. When that start was skipped as unrepresentable, this
+                // is skipped for the same reason and counted the same way.
+                //
+                // Failing instead would truncate a response the client is
+                // already reading, because deltas arrive after commitment. A
+                // future Anthropic block carrying `input_json_delta` (a
+                // server-side tool, say) would turn a complete generation into a
+                // broken stream.
+                //
+                // `text_delta` and `thinking_delta` are deliberately not gated on
+                // the index: they carry their own payload and map to assistant
+                // content on their own terms, so dropping them would lose real
+                // output rather than protect the stream.
+                if self.skipped_indices.contains(&index) {
+                    ignore_unknown_type();
+                    return Ok(None);
+                }
                 let tool_index = self
                     .tool_indices
                     .get(&index)

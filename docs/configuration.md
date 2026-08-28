@@ -61,6 +61,11 @@ HTTPS but cannot contain credentials, queries, or fragments. The runtime
 derives `/health`, `/slots?fail_on_no_slot=1`,
 `/v1/chat/completions/input_tokens`, and `/v1/chat/completions` from the base.
 
+Member `priority` is a tiebreaker among equally loaded members, not a preference
+that outranks load: a busy `priority = 10` member loses to an idle
+`priority = 100` one. It cannot pin traffic to a particular member, and it never
+revives one that is unhealthy or out of permits.
+
 A member address must be loopback, private-range, link-local, or a `.local`,
 `.localhost`, `.internal`, or `.home.arpa` name. A public address is refused at
 startup, which is what makes `local-only` a guarantee rather than a convention.

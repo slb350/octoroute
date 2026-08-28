@@ -170,3 +170,54 @@ fn the_event_line_names_the_kind_when_the_body_does_not() {
     assert_eq!(rendered(&output), "data: [DONE]\n\n");
     translator.finish().expect("complete stream");
 }
+
+/// A skipped block's deltas must be skipped too, not fail the stream.
+///
+/// `content_block_start` skips a block type it cannot represent, which is how
+/// the adapter stays forward compatible. The deltas for that block still
+/// arrive, and they arrive *after* the response has committed to the client.
+/// Looking their index up in `tool_indices` and failing on the miss turns a
+/// complete generation into a truncated stream, which is the one thing a
+/// post-commitment path must never do.
+#[test]
+fn deltas_for_a_skipped_content_block_do_not_truncate_the_stream() {
+    const FUTURE_BLOCK: &str = concat!(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"k3\",\"usage\":{\"input_tokens\":4}}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"server_tool_use\",\"id\":\"srv_1\",\"name\":\"web_search\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"rust\\\"}\"}}\n\n",
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n",
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    );
+
+    let mut translator = AnthropicSseTranslator::new("k3");
+    let mut output = Vec::new();
+    for fragment in FUTURE_BLOCK.as_bytes().chunks(17) {
+        output.extend(
+            translator
+                .push(fragment)
+                .expect("a skipped block's deltas must not fail the stream"),
+        );
+    }
+    output.extend(translator.finish().expect("the stream still completes"));
+
+    let rendered = rendered(&output);
+    // The text that followed the skipped block still reaches the client, and the
+    // stream terminates properly instead of dying on the second event.
+    assert!(
+        rendered.contains("done"),
+        "content after the skipped block must survive: {rendered}"
+    );
+    assert!(
+        rendered.contains("data: [DONE]"),
+        "the stream must terminate normally: {rendered}"
+    );
+    // The unrepresentable partial JSON is not smuggled through as a tool call.
+    assert!(
+        !rendered.contains("tool_calls"),
+        "a skipped block must not emit tool_calls: {rendered}"
+    );
+}
