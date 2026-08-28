@@ -23,15 +23,16 @@ OpenCode / OpenAI-compatible clients
               supervisor
 ```
 
-The intended steady-state policy is local-first, not local-only. Bounded work
-should normally remain on a configurable pool of equivalent local endpoints.
+The intended steady-state policy is local-first, with cloud available. Bounded
+work should normally remain on a configurable pool of equivalent local
+endpoints.
 Complex planning and review can use a higher-capability local supervisor when
 one is available. A deliberately small fraction of work may escalate to a
 configured cloud or subscription model when the quality difference matters.
 
 When no local supervisor is enabled, the same `supervisor` virtual model uses
 its configured provider chain. Adding a local supervisor later is therefore a
-configuration change rather than a client or OpenCode rewrite.
+configuration change; clients and OpenCode stay as they are.
 
 ## Responsibility boundary
 
@@ -69,8 +70,8 @@ endpoint is idle.
 
 ## V3 virtual models
 
-The example configuration defines reusable routing roles rather than binding
-clients to physical machines or model releases:
+The example configuration defines reusable routing roles, so a client names a
+role rather than a machine or a model release:
 
 | Client model | Intended behavior |
 | --- | --- |
@@ -88,8 +89,8 @@ clients and general prompts.
 
 A local pool describes equivalent model servers with a shared model identity,
 context contract, capabilities, and reasoning default. Each member has its own
-URL, concurrency limit, enabled state, and priority. Pool size and hardware are
-operator choices rather than part of the client contract.
+URL, concurrency limit, enabled state, and priority. Pool size and hardware are operator choices,
+outside the client contract.
 
 The repository example uses multiple interchangeable members:
 
@@ -105,8 +106,8 @@ members:
 ```
 
 Each example member is single-slot. Parallelism comes from independent model
-replicas rather than multiple concurrent requests competing for one endpoint's
-context cache and compute bandwidth.
+replicas, so concurrent requests never compete for one endpoint's context cache
+and compute bandwidth.
 
 The initial selector is deterministic:
 
@@ -151,9 +152,9 @@ already exercised by Drep:
 
 Kimi's preset carries the endpoint-specific requirements observed in Drep:
 `max_tokens` is required, a 200,000-token fallback is accepted, and no default
-temperature is injected. OpenRouter has a distinct request profile so Octoroute can
-continue owning Auto Router policy fields instead of trusting conflicting
-client values.
+temperature is injected. OpenRouter has a distinct request profile so Octoroute
+continues to own Auto Router policy fields, which take precedence over
+conflicting client values.
 
 HTTP credentials are referenced by environment-variable name or by a safe argv
 credential command. Exactly one source is allowed. Raw keys never belong in
@@ -161,9 +162,8 @@ TOML or Debug output.
 
 ### Codex subscription backend
 
-Codex is not an HTTP API-key provider in this design. It is a separate backend
-that invokes the installed official Codex CLI using ChatGPT-managed
-credentials.
+Codex is a separate backend that invokes the installed official Codex CLI using
+ChatGPT-managed credentials, so it has no HTTP endpoint and no API key.
 
 The implementation reuses Drep's security posture:
 
@@ -176,14 +176,14 @@ The implementation reuses Drep's security posture:
 - disable tools, apps, hooks, memories, web search, and subagents unless a future
   adapter explicitly requires and safely exposes them;
 - enforce a bounded timeout and output contract;
-- parse structured JSONL events rather than scraping terminal prose.
+- parse structured JSONL events, never terminal prose.
 
 The gateway adapter serializes the OpenAI chat request as data under a stateless
 execution contract and translates the validated final event back into an OpenAI
 response. Tool calls are preserved. Streaming requests receive one complete SSE
 chunk plus `[DONE]`; the adapter does not claim token-by-token streaming.
 Unsupported media and provider-specific plugin features skip the Codex target
-as incompatible instead of silently losing semantics.
+as incompatible, preserving request semantics.
 
 ## Route chains and fallback
 

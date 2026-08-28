@@ -11,7 +11,7 @@ Authorization: Bearer <OCTOROUTE_API_KEY>
 
 The body must be a JSON object with a bounded virtual `model` identifier and a
 non-empty `messages` array. `stream`, when present and non-null, must be a
-boolean. Model identifiers use 1–128 ASCII letters, digits, dots, underscores,
+boolean. Model identifiers use 1-128 ASCII letters, digits, dots, underscores,
 or hyphens.
 
 Octoroute parses only the fields needed for validation, local capability

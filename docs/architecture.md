@@ -84,8 +84,8 @@ request after that provider's probe cache expires. Readiness is body-free,
 bounded, and coalesced per provider.
 
 The OpenAI adapter clones the schema-preserving body, patches the model, and
-applies configured defaults only when the caller omitted them. OpenRouter Auto
-is an explicit profile rather than behavior embedded in every provider.
+applies configured defaults only when the caller omitted them. OpenRouter Auto is an explicit profile,
+so the behavior stays out of every other provider.
 
 The Anthropic adapter explicitly maps system/developer messages, alternating
 user/assistant text, tool definitions and history, sampling controls, output
@@ -144,8 +144,8 @@ The inbound permit is also held by the response body stream.
 
 ## Adapter isolation
 
-OpenAI-compatible HTTP, Anthropic-compatible HTTP, and Codex CLI remain
-explicit runtime variants rather than behavior inferred from endpoints or
-prompts. Each adapter advertises only verified request features, uses its own
+OpenAI-compatible HTTP, Anthropic-compatible HTTP, and Codex CLI are explicit
+runtime variants, declared in configuration and never inferred from an endpoint
+or a prompt. Each adapter advertises only verified request features, uses its own
 authentication mechanism, and fails closed before disclosure when a request
 cannot be translated safely.

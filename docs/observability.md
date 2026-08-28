@@ -41,7 +41,22 @@ octoroute_fabric_provider_admissions_total{provider="openrouter",state="admitted
 octoroute_fabric_provider_responses_total{provider="openrouter",outcome="success"} 0
 octoroute_fabric_provider_fallbacks_total{provider="openrouter",trigger="rate_limited"} 0
 octoroute_fabric_provider_probes_total{provider="openrouter",state="ready"} 0
+octoroute_fabric_pool_admissions_total{pool="workers",state="admitted"} 0
+octoroute_fabric_pool_fallbacks_total{pool="workers",trigger="busy"} 0
+octoroute_fabric_routing_duration_seconds_bucket{le="0.05"} 0
+octoroute_fabric_anthropic_unknown_types_total 0
+octoroute_fabric_codex_unknown_events_total 0
 ```
+
+`octoroute_fabric_pool_fallbacks_total` is the signal that local capacity is
+spilling to cloud. Without it the first sign of a degraded local fleet is the
+provider bill. `octoroute_fabric_routing_duration_seconds` covers admission and
+the health, slot, and token-count probes, up to the moment a lease is held; it
+excludes the upstream call.
+
+The two `unknown` counters record content blocks, events, and deltas Octoroute
+skipped as unrecognized. A rising count means an upstream added something this
+release does not translate.
 
 Pool and provider labels come only from validated configuration. Prompt text,
 model output, credentials, session IDs, and provider error strings must never
@@ -54,6 +69,16 @@ when its value is zero, so series cardinality is bounded at startup.
 ## Liveness and readiness
 
 `GET /health/live` confirms the process is serving the v3 runtime.
+
+`/health/ready` and `/health` are unauthenticated so an orchestrator can probe
+them, and return the status code plus an aggregate `status` of `ready`,
+`degraded`, or `not_ready`. `degraded` means some configured target is
+unavailable while others still serve - the case where a dead local fleet is
+being covered by billed cloud capacity. The per-pool and per-provider breakdown
+names every configured target, so it is returned only to an authenticated
+caller. Readiness answers are cached briefly: a readiness pass spawns
+`codex doctor` and sends credentialed `/models` probes, and the endpoints are
+reachable by anyone who can reach the port.
 
 `GET /health/ready` and `/health` return per-pool and per-provider states. Pools
 and providers are checked concurrently; each pool checks eligible members in

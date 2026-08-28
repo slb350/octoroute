@@ -76,6 +76,19 @@ The selected member permit remains held through the complete response body.
 deadlines default to 30 minutes and must be between 1 millisecond and one hour.
 Member and provider `max_in_flight` values must be between 1 and 10,000.
 
+Optional `first_byte_timeout_ms`, accepted by both pools and providers, bounds
+how long an upstream may take to produce its first body byte. `timeout_ms`
+covers the whole response and is legitimately long for a large generation, so
+without this a hung upstream holds its member permit and the inbound permit for
+that full window before the route can fall forward. It must not exceed
+`timeout_ms`. Leave it unset unless you have measured the upstream: Octoroute
+invents no deadline of its own.
+
+Pools also accept `token_count_timeout_ms`, the deadline for one
+`/v1/chat/completions/input_tokens` call, defaulting to 15 seconds with a
+two-minute maximum. Tokenizing a prompt near the request-size ceiling on a busy
+server takes materially longer than a health or slot probe.
+
 ## Providers
 
 ### OpenAI-compatible HTTP
@@ -110,9 +123,15 @@ api_key_command = ["secret-tool", "lookup", "service", "provider"]
 ```
 
 Credential commands accept at most 32 arguments, 4 KiB per argument, and 16
-KiB total, with no empty argument or control character. They run only after
-selection with a cleared environment (plus `PATH`), null stdin/stderr, a
-five-second deadline, and a 4 KiB output bound.
+KiB total, with no empty argument or control character. They run with a cleared
+environment carrying only an allowlist (`PATH`, `HOME`, `TMPDIR`, locale, and
+proxy variables, which `op`, `pass`, `gcloud`, and `aws` all need), null
+stdin/stderr, a five-second deadline, and a 4 KiB output bound.
+
+A command runs when a provider is selected for a request and when its readiness
+is refreshed, not on selection alone. Resolved credentials are cached for five
+minutes and discarded when the provider answers 401 or 403, so a rotated key is
+picked up without a restart and a command is not spawned per request.
 
 Optional request defaults are `reasoning_effort`, `temperature`, and
 `max_tokens`. Client-supplied non-null values win. `profile =

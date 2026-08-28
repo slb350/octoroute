@@ -17,7 +17,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --locked --all-features --no-deps
 cargo audit --deny warnings
 ```
 
-`just check` runs the primary formatting, lint, and test path. The focused
+`just check` runs clippy and the formatting check. `just test` runs the tests,
+`just mutants` the mutation sweep, and `just validate` all of them. The focused
 public-contract tests are `cli_config_command` and `gateway_v3`.
 
 ## Source layout
@@ -46,9 +47,8 @@ src/
       http_support.rs
 ```
 
-The `fabric` module owns all runtime routing and dispatch. `auth`, `env`,
-`http_client`, and `request` are protocol/security primitives rather than a
-second gateway implementation.
+The `fabric` module owns all runtime routing and dispatch. `auth`, `env`, `http_client`, and `request`
+are protocol and security primitives shared by that one implementation.
 
 ## Testing boundaries
 
@@ -56,8 +56,9 @@ Unit and integration coverage should preserve these invariants:
 
 - unknown request fields survive destination model rewriting;
 - malformed or unsupported content is not admitted locally;
-- local pool selection distinguishes disabled, incompatible, busy, unhealthy,
-  and context-overflow states;
+- local pool admission distinguishes disabled, incompatible, busy, unhealthy,
+  context-overflow, and token-count-unavailable states, asserted against the
+  production admission path;
 - member and provider permits remain held until response bodies are dropped;
 - `local-only` removes provider targets before any credential resolution;
 - cached readiness resolves credentials only on refresh, coalesces concurrent
@@ -93,8 +94,8 @@ Keep protocol translation isolated from the registry and executor:
 7. test streaming, tools, reasoning, errors, and secret redaction.
 
 OpenAI-compatible providers share one schema-preserving adapter.
-Anthropic-compatible providers use the explicit message, tool, reasoning,
-error, and streaming translator rather than pretending wire compatibility.
+Anthropic-compatible providers go through the explicit message, tool,
+reasoning, error, and streaming translator, because the two wire formats differ.
 
 ## Adding a command provider
 

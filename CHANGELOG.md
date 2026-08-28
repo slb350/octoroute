@@ -34,6 +34,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Apply local-pool reasoning defaults when callers omit reasoning controls and
   reject multi-choice requests before Codex prompt disclosure.
 - Reject invalid local-member bearer credentials before the listener binds.
+- Add `first_byte_timeout_ms` to local pools and providers, bounding how long a
+  hung upstream holds its member and inbound permits before the route falls
+  forward. Unset by default; configure it only from measured behaviour.
+- Add `token_count_timeout_ms` to local pools so tokenizing a large prompt no
+  longer shares the two-second health-probe deadline.
+- Add `octoroute_fabric_pool_admissions_total{pool,state}`,
+  `octoroute_fabric_pool_fallbacks_total{pool,trigger}`,
+  `octoroute_fabric_routing_duration_seconds`, and counters for skipped unknown
+  Anthropic and Codex types. Local spillover to the next route step now emits a
+  tracing warning.
+- Add `ProviderAdmissionState::Unauthenticated` and the matching
+  `unauthenticated` fallback trigger, outside the default trigger set, so an
+  expired credential surfaces instead of silently rerouting traffic and spend.
+- Add `PoolAdmissionState::TokenCountUnavailable`, distinguishing a member whose
+  token-count endpoint has gone missing from an unreachable one.
+- Report `degraded` from `/health` when some configured target is unavailable
+  while others still serve.
+- Wire `cargo-mutants` into the tracked pre-commit hook, the justfile, and CI,
+  replacing a benchmark-compilation job that compiled nothing.
 
 ### Changed
 
@@ -47,6 +66,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Give the hardened systemd service an explicit private `CODEX_HOME` state
   directory so ChatGPT-managed Codex readiness works with `ProtectHome=true`.
 - Align the workstation profile with the shipped loopback llama.cpp service.
+- **Breaking:** client `model` values are route names, not provider slugs. v2
+  accepted `provider/model` passthrough such as `openrouter/auto`; v3 resolves
+  the provider from the route, so identifiers are restricted to letters, digits,
+  dots, underscores, and hyphens and a slug returns 400. Point clients at a
+  configured route (`auto`, `auto-route`, `cloud-sota`) instead.
+- **Breaking:** `/health/ready` and `/health` return the per-pool and
+  per-provider breakdown only to an authenticated caller. Anonymous callers get
+  the status code and aggregate. Readiness is also cached briefly, so an
+  anonymous caller cannot drive `codex doctor` spawns and credentialed `/models`
+  probes at request rate.
+- Enable thinking on Anthropic providers only when the caller sends a reasoning
+  control or the provider config sets `reasoning_effort`, and cap the budget at
+  half of `max_tokens` so a real answer allowance remains. Sampling controls are
+  dropped when thinking is on, which the Anthropic API requires.
+- Inject `reasoning_effort` only into OpenAI-protocol providers explicitly
+  configured for it, rather than from the route default.
+- Forward the upstream `error.message` and `error.type` from Anthropic error
+  responses instead of replacing them with a fixed message.
+- Refuse upstream redirects. The provider credential travels in a custom
+  `x-api-key` header, which reqwest does not strip across origins, so a 3xx is
+  now a pre-commit failure.
+- Share one pooled rustls client across local probes, local inference, and every
+  provider.
+- Require local pool members to be on a loopback, private-range, or `.local`
+  address, so a public member cannot satisfy `X-Octoroute-Privacy: local-only`.
+- Filter a route declaring `privacy = "local_only"` to local steps whether or
+  not the caller sent the header.
+- Give `cloud-sota` the `incompatible` trigger so an image, audio, or video
+  request falls through Codex to OpenRouter instead of returning 503.
+- Print startup failures with `Display` and exit non-zero, and initialize
+  telemetry before service construction.
+- Raise the `zerovec-derive` manifest floor to 0.11.6, matching what 2.2.2
+  states for unlocked builds.
 
 ### Removed
 
@@ -176,7 +228,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Restore the opt-in evidence gate for semantic enforcement and document its
-  measured 760–1500 ms latency cost.
+  measured 760-1500 ms latency cost.
 
 ## [2.0.1] - 2026-07-26
 
@@ -231,6 +283,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request DOM, and stale llama.cpp health and slot probes run concurrently.
 - CI now enforces the locked dependency graph, denied RustSec warnings,
   benchmark compilation, and current GitHub-hosted Action runtimes.
+  (Superseded in v3: the benchmark job compiled nothing and is replaced by a
+  `cargo-mutants` sweep.)
 - Local agent instruction files are explicitly excluded from crate packages.
 
 ### Removed
@@ -246,8 +300,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Route unknown or malformed message content blocks to cloud instead of
   assuming text-only local compatibility.
 - Preserve an allowlisted upstream `X-Request-Id` on committed responses.
-
-See [the v1-to-v2 migration guide](docs/migration-v2.md).
 
 ## [1.0.0] - 2025-11-27
 

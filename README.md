@@ -13,7 +13,8 @@ OpenAI-compatible client
 local pools   provider chain
 ```
 
-The routing policy is explicit configuration, not prompt classification.
+The routing policy comes from configuration alone; Octoroute never classifies a
+prompt to choose a route.
 `X-Octoroute-Privacy: local-only` narrows a route before admission, so a
 local-only request cannot resolve provider credentials or disclose its prompt
 to a provider.
@@ -44,7 +45,8 @@ to a provider.
 
 Requirements:
 
-- Rust 1.90 or newer.
+- Rust 1.90 or newer (MSRV). Development is pinned to 1.97.1 by
+  `rust-toolchain.toml`; CI is authoritative for MSRV compatibility.
 - At least one configured local llama.cpp member or enabled provider.
 - The official Codex CLI logged in with ChatGPT when a `codex_cli` provider
   should be ready.
@@ -87,6 +89,7 @@ The repository template exposes:
 | Model | Route contract |
 | --- | --- |
 | `auto` | Alias for the configured `routing.default_model` |
+| `auto-route` | Local pools first, then providers |
 | `worker` | Local worker pool only |
 | `supervisor` | Optional local supervisor, then configured providers |
 | `local` | Local pools only |
@@ -163,13 +166,14 @@ model/default policy fields; Anthropic and Codex use their explicit adapters.
 | `POST /v1/chat/completions` | Bearer | Routed completion or SSE |
 | `GET /v1/models` | Bearer | Virtual model IDs |
 | `GET /health/live` | No | Process liveness |
-| `GET /health/ready` | No | Cached active pool/provider readiness snapshot |
+| `GET /health/ready` | No | Aggregate readiness; per-target detail needs the bearer |
 | `GET /health` | No | Readiness alias |
 | `GET /metrics` | Bearer | Bounded Prometheus exposition |
 
 See [configuration](docs/configuration.md), [API reference](docs/api-reference.md),
-[architecture](docs/architecture.md), [security](docs/security.md), and
-[runtime status](docs/v3-runtime-status.md).
+[architecture](docs/architecture.md), [observability](docs/observability.md),
+[security](docs/security.md), [deployment](docs/deployment.md), and
+[development](docs/development.md).
 
 ## Development
 

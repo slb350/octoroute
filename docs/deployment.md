@@ -40,7 +40,7 @@ sudo -u octoroute env CODEX_HOME=/var/lib/octoroute/codex codex doctor --json
 
 ```bash
 cargo build --locked --release
-target/release/octoroute --config /etc/octoroute/config.toml
+target/release/octoroute --config /opt/octoroute/config.toml
 ```
 
 The repository includes example systemd units in `deploy/`. Adjust user/group,
@@ -53,7 +53,10 @@ deployment.
 - For remote clients, bind a private address and place authenticated TLS in
   front of Octoroute.
 - Keep llama.cpp members on trusted private networks.
-- Restrict outbound traffic to configured HTTPS provider endpoints.
+- Restrict outbound traffic to configured HTTPS provider endpoints at the
+  network, not through proxy variables: Octoroute's own client sets
+  `no_proxy`, so `HTTP_PROXY` and friends do not route its provider calls. The
+  Codex child does inherit them.
 - Do not expose local health, slot, or token-count endpoints publicly.
 - Restrict Octoroute's unauthenticated readiness endpoint to operator networks:
   a cache refresh resolves provider credentials and can execute the bounded

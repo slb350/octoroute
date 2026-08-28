@@ -95,7 +95,9 @@ Errors and logs omit:
 
 - Run as a dedicated unprivileged account.
 - Restrict configuration and `.env` permissions.
-- Allow outbound access only to configured endpoints.
+- Allow outbound access only to configured endpoints, enforced at the network.
+  Octoroute's HTTP client sets `no_proxy`, so proxy environment variables do
+  not constrain it; the Codex child inherits them and is constrained by them.
 - Keep local llama.cpp services on a private network and use member bearer keys
   when that boundary is shared.
 - Rotate a compromised provider key at the provider, update the environment,
