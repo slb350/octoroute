@@ -79,6 +79,12 @@ impl FabricReadiness {
         &self.providers
     }
 
+    /// Whether the gateway can serve a request now.
+    ///
+    /// Any ready target makes the gateway ready. `degraded` is the finer signal:
+    /// a gateway whose whole local fleet is down but whose cloud providers are
+    /// up will answer every request, and bill for it, while `/health` says
+    /// nothing is wrong.
     pub fn is_ready(&self) -> bool {
         self.pools
             .values()
@@ -87,6 +93,25 @@ impl FabricReadiness {
                 .providers
                 .values()
                 .any(|state| *state == ProviderAdmissionState::Ready)
+    }
+
+    /// Whether some configured target is unavailable while others still serve.
+    pub fn is_degraded(&self) -> bool {
+        let unready_pools = self.pools.values().any(|state| {
+            !matches!(
+                state,
+                PoolAdmissionState::Ready | PoolAdmissionState::Busy | PoolAdmissionState::Disabled
+            )
+        });
+        let unready_providers = self.providers.values().any(|state| {
+            !matches!(
+                state,
+                ProviderAdmissionState::Ready
+                    | ProviderAdmissionState::Busy
+                    | ProviderAdmissionState::Disabled
+            )
+        });
+        self.is_ready() && (unready_pools || unready_providers)
     }
 }
 

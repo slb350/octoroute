@@ -89,7 +89,14 @@ impl FixedWindowRateLimiter {
     }
 
     pub(super) fn allow(&self) -> bool {
-        let mut state = self.state.lock().expect("rate limiter mutex poisoned");
+        // Recover rather than panic: the guarded state is two plain counters, a
+        // poisoned lock leaves them consistent, and panicking here would turn
+        // one unrelated panic into a failure of every subsequent request. The
+        // metrics registry already recovers for the same reason.
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.started.elapsed() >= Duration::from_secs(60) {
             state.started = Instant::now();
             state.requests = 0;

@@ -121,14 +121,6 @@ impl PoolLease {
         &self.chat_url
     }
 
-    pub fn api_key(&self) -> Option<&SecretString> {
-        self.api_key.as_ref()
-    }
-
-    pub fn request_body(&self) -> &Bytes {
-        &self.request_body
-    }
-
     pub(crate) fn into_transport_parts(
         self,
     ) -> (

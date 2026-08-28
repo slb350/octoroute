@@ -94,3 +94,21 @@ fn malformed_dotenv_does_not_expose_the_line_value() {
     assert!(matches!(error, DotenvLoadError::Invalid { .. }));
     assert!(!error.to_string().contains("private-value"));
 }
+
+/// An exported-but-empty process variable is the shape a shell leaves after
+/// `export KEY=` or a failed substitution. Treating it as a value shadows a
+/// good `.env` entry and surfaces as a missing credential.
+#[test]
+fn empty_process_variable_does_not_shadow_a_dotenv_value() {
+    let file = dotenv_file("OPENROUTER_API_KEY=file-key\n");
+    let parent = TestEnvironment::default().with("OPENROUTER_API_KEY", "");
+    let environment = DotenvEnvironment::from_path(file.path(), parent).expect("valid dotenv file");
+
+    assert_eq!(
+        environment
+            .get("OPENROUTER_API_KEY")
+            .as_ref()
+            .map(ExposeSecret::expose_secret),
+        Some("file-key")
+    );
+}

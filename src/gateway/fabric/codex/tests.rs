@@ -142,3 +142,30 @@ fn nonstream_tool_calls_do_not_include_stream_only_indices() {
     assert!(call.get("index").is_none());
     assert_eq!(call["function"]["name"], "lookup");
 }
+
+/// `sensitive_name` is reachable, contrary to a plausible reading of the fixed
+/// allowlist. The `LC_` arm is an open-ended prefix, not a fixed entry, so it
+/// admits any `LC_*` name the environment happens to carry; the sensitive-name
+/// check is what stops `LC_AUTH` or `LC_SECRET` reaching the Codex child.
+#[test]
+fn open_ended_locale_prefix_still_filters_sensitive_names() {
+    for name in ["LC_ALL", "LC_TIME", "LC_MESSAGES"] {
+        assert!(
+            allowed_name(OsStr::new(name)),
+            "{name} is an ordinary locale variable"
+        );
+    }
+    for name in [
+        "LC_AUTH",
+        "LC_SECRET",
+        "LC_API_KEY",
+        "LC_TOKEN",
+        "LC_PASSWORD",
+    ] {
+        assert!(
+            !allowed_name(OsStr::new(name)),
+            "{name} matches the LC_ prefix and must still be filtered"
+        );
+    }
+    assert!(!allowed_name(OsStr::new("OCTOROUTE_API_KEY")));
+}

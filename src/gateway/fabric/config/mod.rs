@@ -266,15 +266,6 @@ pub enum RouteTarget {
     Provider(String),
 }
 
-impl RouteTarget {
-    /// Stable configured target name without the `pool:` or `provider:` prefix.
-    pub fn name(&self) -> &str {
-        match self {
-            Self::LocalPool(name) | Self::Provider(name) => name,
-        }
-    }
-}
-
 impl FromStr for RouteTarget {
     type Err = FabricConfigError;
 

@@ -95,12 +95,24 @@ async fn run_server(config_path: &Path) -> Result<(), Box<dyn std::error::Error>
     tracing::info!("GET /metrics");
 
     let listener = tokio::net::TcpListener::bind(address).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let serve = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+    // Graceful shutdown waits for in-flight responses, and an upstream deadline
+    // can be 30 minutes. Without a bound, one long generation holds the process
+    // past any service-manager stop timeout and it is killed anyway - after the
+    // supervisor has stopped waiting, which is the worst of both.
+    match tokio::time::timeout(SHUTDOWN_GRACE, serve).await {
+        Ok(result) => result?,
+        Err(_) => tracing::warn!(
+            timeout_s = SHUTDOWN_GRACE.as_secs(),
+            "graceful shutdown deadline elapsed with responses still in flight"
+        ),
+    }
     tracing::info!("Octoroute shutdown complete");
     Ok(())
 }
+
+/// Longest the gateway waits for in-flight responses after a stop signal.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
 async fn shutdown_signal() {
     let ctrl_c = async {

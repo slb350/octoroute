@@ -405,3 +405,77 @@ fn unparseable_provider_error_bodies_fall_back_to_a_fixed_message() {
     assert_eq!(body["error"]["code"], "provider_server_error");
     assert!(body["error"].get("upstream_type").is_none());
 }
+
+/// A mixed-terminator stream must split at the earliest boundary. Scanning the
+/// whole buffer for `\n\n` first finds the one inside a later `\r\n\r\n` and
+/// splits the earlier CRLF event at the wrong offset.
+#[test]
+fn mixed_terminator_streams_split_at_the_earliest_boundary() {
+    let mut translator = AnthropicSseTranslator::new("k3");
+    let mut output = Vec::new();
+    for event in [
+        "event: message_start\r\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"model\":\"k3\",\"usage\":{\"input_tokens\":7}}}\r\n\r\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+        "event: message_stop\r\ndata: {\"type\":\"message_stop\"}\r\n\r\n",
+    ] {
+        output.extend(translator.push(event.as_bytes()).expect("translated chunk"));
+    }
+    translator.finish().expect("complete stream");
+    let rendered = output
+        .iter()
+        .map(|chunk| String::from_utf8_lossy(chunk).to_string())
+        .collect::<String>();
+    assert!(rendered.contains("\"content\":\"hi\""));
+    assert!(rendered.contains("data: [DONE]"));
+}
+
+/// `refusal` and `pause_turn` are not stops. Reporting them as `stop` tells the
+/// client it received a complete answer when it did not.
+#[test]
+fn stop_reasons_without_an_open_ai_equivalent_are_preserved() {
+    for (stop_reason, expected) in [
+        ("end_turn", "stop"),
+        ("stop_sequence", "stop"),
+        ("max_tokens", "length"),
+        ("tool_use", "tool_calls"),
+        ("refusal", "refusal"),
+        ("pause_turn", "pause_turn"),
+    ] {
+        let response = json!({
+            "id": "msg-1",
+            "type": "message",
+            "role": "assistant",
+            "model": "k3",
+            "content": [{"type": "text", "text": "hello"}],
+            "stop_reason": stop_reason,
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        });
+        let translated =
+            translate_message_response(&serde_json::to_vec(&response).expect("JSON"), "k3")
+                .expect("translated response");
+        let body: Value = serde_json::from_slice(&translated).expect("translated JSON");
+        assert_eq!(body["choices"][0]["finish_reason"], expected);
+    }
+}
+
+/// Reporting zeros for an upstream that sent no usage tells a cost-tracking
+/// client the request was free.
+#[test]
+fn absent_usage_is_omitted_rather_than_reported_as_zero() {
+    let response = json!({
+        "id": "msg-1",
+        "type": "message",
+        "role": "assistant",
+        "model": "k3",
+        "content": [{"type": "text", "text": "hello"}],
+        "stop_reason": "end_turn"
+    });
+    let translated =
+        translate_message_response(&serde_json::to_vec(&response).expect("JSON"), "k3")
+            .expect("translated response");
+    let body: Value = serde_json::from_slice(&translated).expect("translated JSON");
+    assert!(
+        body.get("usage").is_none(),
+        "absent upstream usage must not be reported as zero"
+    );
+}

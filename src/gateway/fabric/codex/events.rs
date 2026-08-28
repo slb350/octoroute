@@ -146,7 +146,9 @@ impl CodexReply {
             self.finish_reason.as_str(),
             "stop" | "tool_calls" | "length"
         ) || (self.finish_reason == "tool_calls") != !self.tool_calls.is_empty()
-            || (self.content.is_none() && self.tool_calls.is_empty())
+            // An empty string is not an answer. Accepting it turns a Codex run
+            // that produced nothing into a successful, empty completion.
+            || (self.content.as_deref().is_none_or(str::is_empty) && self.tool_calls.is_empty())
         {
             return Err(CodexAdapterError::Contract);
         }

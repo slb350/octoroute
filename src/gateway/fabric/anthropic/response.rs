@@ -87,7 +87,7 @@ pub(crate) fn translate_message_response(
     if !tool_calls.is_empty() {
         assistant.insert("tool_calls".to_string(), Value::Array(tool_calls));
     }
-    let response = json!({
+    let mut response = json!({
         "id": id,
         "object": "chat.completion",
         "created": unix_timestamp(),
@@ -97,8 +97,10 @@ pub(crate) fn translate_message_response(
             "message": Value::Object(assistant),
             "finish_reason": finish_reason(message.get("stop_reason").and_then(Value::as_str))
         }],
-        "usage": translate_usage(message.get("usage"))
     });
+    if let Some(usage) = translate_usage(message.get("usage")) {
+        response["usage"] = usage;
+    }
     serde_json::to_vec(&response)
         .map(Bytes::from)
         .map_err(|_| AnthropicAdapterError::Serialization)
@@ -249,16 +251,21 @@ impl AnthropicSseTranslator {
                     .and_then(Value::as_object)
                     .and_then(|delta| delta.get("stop_reason"))
                     .and_then(Value::as_str);
-                let mut usage = translate_usage(value.get("usage"));
-                usage["prompt_tokens"] = Value::Number(Number::from(self.input_tokens));
-                let output_tokens = usage["completion_tokens"].as_u64().unwrap_or_default();
-                usage["total_tokens"] = Value::Number(Number::from(
-                    self.input_tokens.saturating_add(output_tokens),
-                ));
+                // `message_start` carried the input tokens; `message_delta`
+                // carries the output tokens. The stream reports usage whenever
+                // either half is known.
+                let usage = translate_usage(value.get("usage")).map(|mut usage| {
+                    let output_tokens = usage["completion_tokens"].as_u64().unwrap_or_default();
+                    usage["prompt_tokens"] = Value::Number(Number::from(self.input_tokens));
+                    usage["total_tokens"] = Value::Number(Number::from(
+                        self.input_tokens.saturating_add(output_tokens),
+                    ));
+                    usage
+                });
                 Ok(Some(self.chunk(
                     json!({}),
                     finish_reason(stop_reason),
-                    Some(usage),
+                    usage,
                 )?))
             }
             "message_stop" => {
@@ -412,17 +419,27 @@ impl AnthropicSseTranslator {
     }
 }
 
+/// Find the first event boundary, whichever terminator forms it.
+///
+/// Scanning the whole buffer for `\n\n` before trying `\r\n\r\n` splits a
+/// mixed-terminator stream at the wrong offset: the `\n\n` inside a later
+/// `\r\n\r\n` wins over an earlier CRLF boundary. Both candidates are computed
+/// and the earlier one is returned, with CRLF preferred where they coincide so
+/// the `\r` is consumed rather than left to head the next event.
 fn event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
-    buffer
+    let lf = buffer
         .windows(2)
         .position(|window| window == b"\n\n")
-        .map(|position| (position, 2))
-        .or_else(|| {
-            buffer
-                .windows(4)
-                .position(|window| window == b"\r\n\r\n")
-                .map(|position| (position, 4))
-        })
+        .map(|position| (position, 2));
+    let crlf = buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| (position, 4));
+    match (lf, crlf) {
+        (Some(lf), Some(crlf)) if crlf.0 <= lf.0 => Some(crlf),
+        (Some(lf), _) => Some(lf),
+        (None, crlf) => crlf,
+    }
 }
 
 fn sse_data(event: &[u8]) -> Result<Vec<u8>, AnthropicAdapterError> {
@@ -439,32 +456,39 @@ fn sse_data(event: &[u8]) -> Result<Vec<u8>, AnthropicAdapterError> {
     Ok(data)
 }
 
+/// Map an Anthropic `stop_reason` onto an OpenAI `finish_reason`.
+///
+/// Values with no OpenAI equivalent - `refusal`, `pause_turn`, and anything
+/// added later - are passed through rather than reported as `stop`. A client
+/// that sees `stop` assumes a complete answer, which is exactly wrong for a
+/// refused or paused turn.
 fn finish_reason(reason: Option<&str>) -> Value {
     match reason {
         Some("end_turn" | "stop_sequence") => Value::String("stop".to_string()),
         Some("max_tokens") => Value::String("length".to_string()),
         Some("tool_use") => Value::String("tool_calls".to_string()),
-        Some(_) => Value::String("stop".to_string()),
+        Some(other) => Value::String(other.to_string()),
         None => Value::Null,
     }
 }
 
-fn translate_usage(usage: Option<&Value>) -> Value {
-    let input = usage
-        .and_then(Value::as_object)
-        .and_then(|usage| usage.get("input_tokens"))
-        .and_then(Value::as_u64)
-        .unwrap_or_default();
-    let output = usage
-        .and_then(Value::as_object)
-        .and_then(|usage| usage.get("output_tokens"))
-        .and_then(Value::as_u64)
-        .unwrap_or_default();
-    json!({
+/// Translate Anthropic token accounting, or report nothing when it is absent.
+///
+/// Reporting zeros for an upstream that sent no usage tells a cost-tracking
+/// client the request was free, which is worse than telling it nothing.
+fn translate_usage(usage: Option<&Value>) -> Option<Value> {
+    let usage = usage.and_then(Value::as_object)?;
+    let field = |name: &str| usage.get(name).and_then(Value::as_u64);
+    let (input, output) = (field("input_tokens"), field("output_tokens"));
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    let (input, output) = (input.unwrap_or_default(), output.unwrap_or_default());
+    Some(json!({
         "prompt_tokens": input,
         "completion_tokens": output,
         "total_tokens": input.saturating_add(output)
-    })
+    }))
 }
 
 fn unix_timestamp() -> u64 {

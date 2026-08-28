@@ -117,14 +117,6 @@ impl GatewayRequest {
         Ok(default_max_output_tokens)
     }
 
-    /// Consume the complete body and patch only its model field.
-    pub fn into_body_for_model(mut self, model: &str) -> Result<Value, GatewayRequestError> {
-        validate_destination_model(model)?;
-        self.body
-            .insert("model".to_string(), Value::String(model.to_string()));
-        Ok(Value::Object(self.body))
-    }
-
     /// Serialize one destination-specific body for reuse across local probes and dispatch.
     pub fn body_bytes_for_model(&self, model: &str) -> Result<Bytes, GatewayRequestError> {
         validate_destination_model(model)?;

@@ -98,10 +98,17 @@ where
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
+    let status_label = if !ready {
+        "not_ready"
+    } else if readiness.is_degraded() {
+        "degraded"
+    } else {
+        "ready"
+    };
     let mut body = Map::from_iter([
         (
             "status".to_string(),
-            Value::String(if ready { "ready" } else { "not_ready" }.to_string()),
+            Value::String(status_label.to_string()),
         ),
         ("config_version".to_string(), json!(3)),
     ]);

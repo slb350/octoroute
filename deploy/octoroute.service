@@ -23,12 +23,22 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-RestrictNamespaces=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
-MemoryDenyWriteExecute=true
 UMask=0077
+
+# MemoryDenyWriteExecute and RestrictNamespaces are deliberately NOT set.
+#
+# Both propagate to child processes, and the codex_cli provider launches the
+# Codex CLI as a child. MemoryDenyWriteExecute faults any JIT in that child, and
+# RestrictNamespaces can block Codex's own read-only sandbox, which is one of
+# the protections the provider relies on. Re-enable either only after validating
+# a real `codex exec` run under it.
+#
+# Gateways with no codex_cli provider enabled can add both back:
+#   MemoryDenyWriteExecute=true
+#   RestrictNamespaces=true
 
 [Install]
 WantedBy=multi-user.target

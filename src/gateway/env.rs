@@ -1,6 +1,6 @@
 //! Secret-bearing process and repository `.env` configuration.
 
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use std::{
     collections::HashMap,
     fmt,
@@ -59,9 +59,15 @@ impl<E> DotenvEnvironment<E> {
 }
 
 impl<E: Environment> Environment for DotenvEnvironment<E> {
+    /// Process values take precedence, but an empty one is not a value.
+    ///
+    /// An exported-but-empty variable is the shape a shell leaves behind after
+    /// `export KEY=` or a failed substitution. Treating it as a value shadows a
+    /// perfectly good `.env` entry and surfaces as a missing credential.
     fn get(&self, name: &str) -> Option<SecretString> {
         self.parent
             .get(name)
+            .filter(|value| !value.expose_secret().is_empty())
             .or_else(|| self.file_values.get(name).cloned())
     }
 }

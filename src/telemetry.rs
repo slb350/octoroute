@@ -31,13 +31,3 @@ pub fn init(default_level: &str) {
             .init();
     });
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_telemetry_module_exists() {
-        // Note: We can't actually test init() fully because it can only be called once
-        // per process. This test just verifies the module compiles.
-        // Real testing would be done via integration tests.
-    }
-}
