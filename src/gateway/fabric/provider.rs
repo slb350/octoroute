@@ -7,7 +7,7 @@ use super::{
 };
 use crate::gateway::{
     env::Environment,
-    http_client::{build as build_http_client, endpoint_url},
+    http_client::endpoint_url,
     request::{GatewayRequest, GatewayRequestError},
 };
 use bytes::Bytes;
@@ -156,8 +156,8 @@ impl ProviderRegistry {
         configs: &BTreeMap<String, ProviderConfig>,
         environment: Arc<dyn Environment + Send + Sync>,
         metrics: Arc<FabricMetrics>,
+        client: Client,
     ) -> Result<Self, ProviderRegistryBuildError> {
-        let client = build_http_client().map_err(ProviderRegistryBuildError::HttpClient)?;
         let codex_environment = ChildEnvironment::current();
         let mut providers = BTreeMap::new();
         for (name, config) in configs {
@@ -304,7 +304,7 @@ impl HttpProvider {
                 build_open_ai_body(&self.config, request, route_reasoning_effort)?
             }
             ProviderHttpAdapter::Anthropic { .. } => {
-                match anthropic::build_request(&self.config, request, route_reasoning_effort) {
+                match anthropic::build_request(&self.config, request) {
                     Ok(request) => request.body,
                     Err(error) if error.is_incompatible() => {
                         return Ok(ProviderAdmissionOutcome::Rejected(

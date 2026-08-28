@@ -1,9 +1,10 @@
 //! Bounded in-memory metrics for the v3 provider runtime.
 
-use super::{FabricConfig, FallbackTrigger, ProviderAdmissionState};
+use super::{FabricConfig, FallbackTrigger, PoolAdmissionState, ProviderAdmissionState, anthropic};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Mutex, MutexGuard, PoisonError},
+    time::Duration,
 };
 
 const ADMISSION_STATES: &[&str] = &[
@@ -29,6 +30,24 @@ const FALLBACK_STATES: &[&str] = &[
     "precommit_failure",
 ];
 const PROBE_STATES: &[&str] = &["ready", "disabled", "incompatible", "busy", "unavailable"];
+const POOL_ADMISSION_STATES: &[&str] = &[
+    "admitted",
+    "disabled",
+    "unhealthy",
+    "incompatible",
+    "busy",
+    "context_overflow",
+    "token_count_unavailable",
+];
+
+/// Upper bounds, in seconds, of the routing-latency histogram.
+///
+/// Routing covers admission, health, slot, and token-count probes up to the
+/// point a destination is chosen, so the buckets span a sub-millisecond local
+/// hit through a probe that reaches its deadline.
+const ROUTING_BUCKETS_SECONDS: &[f64] = &[
+    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum ProviderResponseOutcome {
@@ -57,11 +76,18 @@ struct MetricCounters {
     responses: BTreeMap<(String, &'static str), u64>,
     fallbacks: BTreeMap<(String, &'static str), u64>,
     probes: BTreeMap<(String, &'static str), u64>,
+    pool_admissions: BTreeMap<(String, &'static str), u64>,
+    pool_fallbacks: BTreeMap<(String, &'static str), u64>,
+    routing_buckets: Vec<u64>,
+    routing_count: u64,
+    routing_sum_seconds: f64,
 }
 
-/// Fixed-label metrics keyed only by validated provider names and closed enums.
+/// Fixed-label metrics keyed only by validated pool and provider names and
+/// closed enums.
 pub(super) struct FabricMetrics {
     providers: BTreeSet<String>,
+    pools: BTreeSet<String>,
     counters: Mutex<MetricCounters>,
 }
 
@@ -69,7 +95,41 @@ impl FabricMetrics {
     pub(super) fn new(config: &FabricConfig) -> Self {
         Self {
             providers: config.providers.keys().cloned().collect(),
-            counters: Mutex::new(MetricCounters::default()),
+            pools: config.local_pools.keys().cloned().collect(),
+            counters: Mutex::new(MetricCounters {
+                routing_buckets: vec![0; ROUTING_BUCKETS_SECONDS.len()],
+                ..MetricCounters::default()
+            }),
+        }
+    }
+
+    pub(super) fn record_pool_admitted(&self, pool: &str) {
+        self.increment_pool(pool, "admitted", |counters| &mut counters.pool_admissions);
+    }
+
+    pub(super) fn record_pool_rejected(&self, pool: &str, state: PoolAdmissionState) {
+        self.increment_pool(pool, pool_state_label(state), |counters| {
+            &mut counters.pool_admissions
+        });
+    }
+
+    /// Record a local pool spilling forward to the next route step.
+    pub(super) fn record_pool_fallback(&self, pool: &str, trigger: FallbackTrigger) {
+        self.increment_pool(pool, fallback_trigger_label(trigger), |counters| {
+            &mut counters.pool_fallbacks
+        });
+    }
+
+    /// Record how long choosing a destination took, before any upstream call.
+    pub(super) fn record_routing_latency(&self, elapsed: Duration) {
+        let seconds = elapsed.as_secs_f64();
+        let mut counters = self.lock();
+        counters.routing_count = counters.routing_count.saturating_add(1);
+        counters.routing_sum_seconds += seconds;
+        for (index, bound) in ROUTING_BUCKETS_SECONDS.iter().enumerate() {
+            if seconds <= *bound {
+                counters.routing_buckets[index] = counters.routing_buckets[index].saturating_add(1);
+            }
         }
     }
 
@@ -90,7 +150,7 @@ impl FabricMetrics {
     }
 
     pub(super) fn record_fallback(&self, provider: &str, trigger: FallbackTrigger) {
-        self.increment(provider, fallback_trigger(trigger), |counters| {
+        self.increment(provider, fallback_trigger_label(trigger), |counters| {
             &mut counters.fallbacks
         });
     }
@@ -128,8 +188,29 @@ impl FabricMetrics {
         }
         render_family(
             &mut output,
+            "octoroute_fabric_pool_admissions_total",
+            "Local pool admission decisions.",
+            "pool",
+            "state",
+            POOL_ADMISSION_STATES,
+            &self.pools,
+            &counters.pool_admissions,
+        );
+        render_family(
+            &mut output,
+            "octoroute_fabric_pool_fallbacks_total",
+            "Local pool spillovers to the next route step by closed policy trigger.",
+            "pool",
+            "trigger",
+            FALLBACK_STATES,
+            &self.pools,
+            &counters.pool_fallbacks,
+        );
+        render_family(
+            &mut output,
             "octoroute_fabric_provider_admissions_total",
             "Provider admission decisions.",
+            "provider",
             "state",
             ADMISSION_STATES,
             &self.providers,
@@ -139,6 +220,7 @@ impl FabricMetrics {
             &mut output,
             "octoroute_fabric_provider_responses_total",
             "Provider response outcomes before client commitment.",
+            "provider",
             "outcome",
             RESPONSE_STATES,
             &self.providers,
@@ -148,6 +230,7 @@ impl FabricMetrics {
             &mut output,
             "octoroute_fabric_provider_fallbacks_total",
             "Provider fallbacks by closed policy trigger.",
+            "provider",
             "trigger",
             FALLBACK_STATES,
             &self.providers,
@@ -157,12 +240,37 @@ impl FabricMetrics {
             &mut output,
             "octoroute_fabric_provider_probes_total",
             "Bounded provider readiness probe outcomes.",
+            "provider",
             "state",
             PROBE_STATES,
             &self.providers,
             &counters.probes,
         );
+        render_routing_histogram(&mut output, &counters);
+        output.push_str(&format!(
+            "# HELP octoroute_fabric_anthropic_unknown_types_total Anthropic content blocks, \
+             events, and deltas skipped as unrecognized.\n\
+             # TYPE octoroute_fabric_anthropic_unknown_types_total counter\n\
+             octoroute_fabric_anthropic_unknown_types_total {}\n",
+            anthropic::ignored_unknown_types()
+        ));
         output
+    }
+
+    fn increment_pool(
+        &self,
+        pool: &str,
+        value: &'static str,
+        family: impl FnOnce(&mut MetricCounters) -> &mut BTreeMap<(String, &'static str), u64>,
+    ) {
+        if !self.pools.contains(pool) {
+            return;
+        }
+        let mut counters = self.lock();
+        let counter = family(&mut counters)
+            .entry((pool.to_string(), value))
+            .or_default();
+        *counter = counter.saturating_add(1);
     }
 
     fn increment(
@@ -186,28 +294,63 @@ impl FabricMetrics {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one closed-label Prometheus family is described by exactly these fields"
+)]
 fn render_family(
     output: &mut String,
     metric: &str,
     help: &str,
+    name_label: &str,
     value_label: &str,
     values: &[&'static str],
-    providers: &BTreeSet<String>,
+    names: &BTreeSet<String>,
     counters: &BTreeMap<(String, &'static str), u64>,
 ) {
     output.push_str(&format!(
         "# HELP {metric} {help}\n# TYPE {metric} counter\n"
     ));
-    for provider in providers {
+    for name in names {
         for value in values {
             let count = counters
-                .get(&(provider.clone(), *value))
+                .get(&(name.clone(), *value))
                 .copied()
                 .unwrap_or_default();
             output.push_str(&format!(
-                "{metric}{{provider=\"{provider}\",{value_label}=\"{value}\"}} {count}\n"
+                "{metric}{{{name_label}=\"{name}\",{value_label}=\"{value}\"}} {count}\n"
             ));
         }
+    }
+}
+
+/// Render the routing-latency histogram in Prometheus text format.
+fn render_routing_histogram(output: &mut String, counters: &MetricCounters) {
+    const METRIC: &str = "octoroute_fabric_routing_duration_seconds";
+    output.push_str(&format!(
+        "# HELP {METRIC} Time spent choosing a destination, before any upstream call.\n\
+         # TYPE {METRIC} histogram\n"
+    ));
+    for (index, bound) in ROUTING_BUCKETS_SECONDS.iter().enumerate() {
+        let count = counters.routing_buckets.get(index).copied().unwrap_or(0);
+        output.push_str(&format!("{METRIC}_bucket{{le=\"{bound}\"}} {count}\n"));
+    }
+    output.push_str(&format!(
+        "{METRIC}_bucket{{le=\"+Inf\"}} {count}\n{METRIC}_sum {sum}\n{METRIC}_count {count}\n",
+        count = counters.routing_count,
+        sum = counters.routing_sum_seconds
+    ));
+}
+
+pub(super) const fn pool_state_label(state: PoolAdmissionState) -> &'static str {
+    match state {
+        PoolAdmissionState::Ready => "admitted",
+        PoolAdmissionState::Disabled => "disabled",
+        PoolAdmissionState::Unhealthy => "unhealthy",
+        PoolAdmissionState::Incompatible => "incompatible",
+        PoolAdmissionState::Busy => "busy",
+        PoolAdmissionState::ContextOverflow => "context_overflow",
+        PoolAdmissionState::TokenCountUnavailable => "token_count_unavailable",
     }
 }
 
@@ -221,7 +364,7 @@ const fn provider_state(state: ProviderAdmissionState) -> &'static str {
     }
 }
 
-const fn fallback_trigger(trigger: FallbackTrigger) -> &'static str {
+pub(super) const fn fallback_trigger_label(trigger: FallbackTrigger) -> &'static str {
     match trigger {
         FallbackTrigger::Busy => "busy",
         FallbackTrigger::Unhealthy => "unhealthy",

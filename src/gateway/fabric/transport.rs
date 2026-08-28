@@ -55,9 +55,14 @@ pub struct FabricTransport {
 
 impl FabricTransport {
     pub fn new() -> Result<Self, FabricTransportError> {
-        Ok(Self {
-            client: build().map_err(FabricTransportError::HttpClient)?,
-        })
+        Ok(Self::with_client(
+            build().map_err(FabricTransportError::HttpClient)?,
+        ))
+    }
+
+    /// Build a transport over the gateway's one pooled client.
+    pub(crate) fn with_client(client: Client) -> Self {
+        Self { client }
     }
 }
 
@@ -82,6 +87,7 @@ impl FabricUpstreamTransport for FabricTransport {
             .execute(request)
             .await
             .map_err(FabricTransportError::Send)?;
+        reject_redirect(&response)?;
         PendingUpstreamResponse::new(response, permit)
             .prepare_passthrough()
             .await
@@ -148,6 +154,7 @@ async fn dispatch_http(
         .execute(request)
         .await
         .map_err(FabricTransportError::Send)?;
+    reject_redirect(&response)?;
     match dispatch.adapter {
         ProviderHttpAdapter::OpenAi => {
             PendingUpstreamResponse::new(response, permit)
@@ -207,10 +214,20 @@ async fn prepare_anthropic(
             _ if status.is_server_error() => "provider_server_error",
             _ => "provider_request_failed",
         };
+        let upstream = read_bounded(response, MAX_TRANSLATED_RESPONSE_BYTES)
+            .await
+            .unwrap_or_default();
+        let body = anthropic::open_ai_error_body(code, &upstream);
+        tracing::warn!(
+            status = status.as_u16(),
+            code,
+            model,
+            "anthropic provider returned an error response"
+        );
         return Ok(PreparedUpstreamResponse::from_bytes(
             status,
             "application/json",
-            anthropic::open_ai_error_body(code),
+            body,
             permit,
         ));
     }
@@ -404,6 +421,24 @@ pub enum FabricTransportError {
     InvalidProviderResponse,
     #[error("Codex CLI failed before response commitment")]
     Codex,
+    #[error("upstream answered with a redirect to an unconfigured host")]
+    UnexpectedRedirect,
+}
+
+/// Refuse a 3xx before any adapter treats it as a real answer.
+///
+/// The shared client does not follow redirects, so a 3xx means the configured
+/// endpoint is pointing somewhere the operator did not configure. It is a
+/// pre-commit failure, which lets the route fall forward to its next step.
+fn reject_redirect(response: &reqwest::Response) -> Result<(), FabricTransportError> {
+    if response.status().is_redirection() {
+        tracing::warn!(
+            status = response.status().as_u16(),
+            "upstream answered with a redirect; refusing to follow it"
+        );
+        return Err(FabricTransportError::UnexpectedRedirect);
+    }
+    Ok(())
 }
 
 fn safe_response_headers(source: &HeaderMap) -> HeaderMap {

@@ -25,6 +25,8 @@ const MAX_REQUESTS_PER_MINUTE: u32 = 1_000_000;
 const DEFAULT_CONTEXT_SAFETY_TOKENS: u32 = 2_048;
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_384;
 const DEFAULT_UPSTREAM_TIMEOUT_MS: u64 = 1_800_000;
+const DEFAULT_TOKEN_COUNT_TIMEOUT_MS: u64 = 15_000;
+const MAX_TOKEN_COUNT_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 1_800_000;
 const DEFAULT_PROVIDER_READINESS_TTL_MS: u64 = 30_000;
 const DEFAULT_PROVIDER_READINESS_TIMEOUT_MS: u64 = 30_000;
@@ -115,6 +117,12 @@ pub struct LocalPoolConfig {
     pub context_safety_tokens: u32,
     pub default_max_output_tokens: u32,
     pub timeout_ms: u64,
+    /// Deadline for one `/v1/chat/completions/input_tokens` call.
+    ///
+    /// Tokenizing a prompt near the request-size ceiling on a busy server takes
+    /// materially longer than a `/health` or `/slots` probe, so this has its own
+    /// budget rather than sharing the fixed probe deadline.
+    pub token_count_timeout_ms: u64,
     pub capabilities: BTreeSet<LocalCapability>,
     pub strategy: PoolStrategy,
     pub default_reasoning_effort: ReasoningEffort,
@@ -347,6 +355,8 @@ struct RawLocalPoolConfig {
     default_max_output_tokens: u32,
     #[serde(default = "default_upstream_timeout_ms")]
     timeout_ms: u64,
+    #[serde(default = "default_token_count_timeout_ms")]
+    token_count_timeout_ms: u64,
     capabilities: BTreeSet<LocalCapability>,
     #[serde(default)]
     strategy: PoolStrategy,
@@ -535,6 +545,11 @@ fn validate_local_pools(
             raw.timeout_ms,
             MAX_UPSTREAM_TIMEOUT_MS,
         )?;
+        validate_u64_range(
+            "fabric.local_pools.token_count_timeout_ms",
+            raw.token_count_timeout_ms,
+            MAX_TOKEN_COUNT_TIMEOUT_MS,
+        )?;
         if !raw.capabilities.contains(&LocalCapability::Chat) {
             return Err(invalid(
                 "fabric.local_pools.capabilities",
@@ -590,6 +605,7 @@ fn validate_local_pools(
             context_safety_tokens: raw.context_safety_tokens,
             default_max_output_tokens: raw.default_max_output_tokens,
             timeout_ms: raw.timeout_ms,
+            token_count_timeout_ms: raw.token_count_timeout_ms,
             capabilities: raw.capabilities,
             strategy: raw.strategy,
             default_reasoning_effort: raw.default_reasoning_effort,
@@ -1082,6 +1098,10 @@ const fn default_context_safety_tokens() -> u32 {
 
 const fn default_max_output_tokens() -> u32 {
     DEFAULT_MAX_OUTPUT_TOKENS
+}
+
+const fn default_token_count_timeout_ms() -> u64 {
+    DEFAULT_TOKEN_COUNT_TIMEOUT_MS
 }
 
 const fn default_upstream_timeout_ms() -> u64 {

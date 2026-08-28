@@ -144,6 +144,7 @@ fn pool_state(state: PoolAdmissionState) -> &'static str {
         PoolAdmissionState::Busy => "busy",
         PoolAdmissionState::Unhealthy => "unavailable",
         PoolAdmissionState::ContextOverflow => "context_overflow",
+        PoolAdmissionState::TokenCountUnavailable => "token_count_unavailable",
     }
 }
 

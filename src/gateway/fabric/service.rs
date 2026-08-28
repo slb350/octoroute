@@ -5,23 +5,30 @@ use super::http_support::{
     REQUEST_ID_HEADER, error_response, header_bytes, hold_response_guard, insert_header,
     metadata_authorization_error, rate_limit_response,
 };
-use super::metrics::{FabricMetrics, ProviderResponseOutcome};
+use super::metrics::{
+    FabricMetrics, ProviderResponseOutcome, fallback_trigger_label, pool_state_label,
+};
 use super::{
     FabricConfig, FabricRouteError, FabricTransport, FabricTransportError, FabricUpstreamTransport,
     FallbackTrigger, LlamaCppPool, LlamaCppPoolBuildError, PoolAdmissionOutcome,
     PoolAdmissionState, PreparedUpstreamResponse, PrivacyDirective, ProviderAdmissionOutcome,
     ProviderAdmissionState, ProviderRegistry, ProviderRegistryBuildError, RoutePlan, RouteTarget,
 };
-use crate::gateway::{auth::BearerAuthenticator, env::Environment, request::GatewayRequest};
+use crate::gateway::{
+    auth::BearerAuthenticator, env::Environment, http_client::build as build_http_client,
+    request::GatewayRequest,
+};
 use axum::{
     body::{Body, Bytes, to_bytes},
     http::{HeaderMap, Request, Response, StatusCode},
 };
 use futures::future::join_all;
+use reqwest::Client;
 use secrecy::SecretString;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
+    time::Instant,
 };
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -89,6 +96,20 @@ where
     where
         E: Environment + Send + Sync + 'static,
     {
+        let client = build_http_client().map_err(FabricTransportError::HttpClient)?;
+        Self::with_client(config, environment, transport, client)
+    }
+
+    /// Build the v3 service over one caller-supplied pooled client.
+    pub(crate) fn with_client<E>(
+        config: FabricConfig,
+        environment: E,
+        transport: T,
+        client: Client,
+    ) -> Result<Self, FabricGatewayServiceBuildError>
+    where
+        E: Environment + Send + Sync + 'static,
+    {
         let environment: Arc<dyn Environment + Send + Sync> = Arc::new(environment);
         let inbound_key = resolve_secret(
             environment.as_ref(),
@@ -100,17 +121,16 @@ where
             if !pool_config.enabled {
                 continue;
             }
-            let pool = LlamaCppPool::new(pool_config, environment.as_ref()).map_err(|source| {
-                FabricGatewayServiceBuildError::Pool {
+            let pool = LlamaCppPool::with_client(pool_config, environment.as_ref(), client.clone())
+                .map_err(|source| FabricGatewayServiceBuildError::Pool {
                     pool: name.clone(),
                     source,
-                }
-            })?;
+                })?;
             pools.insert(name.clone(), pool);
         }
         let metrics = Arc::new(FabricMetrics::new(&config));
         let providers =
-            ProviderRegistry::new(&config.providers, environment, Arc::clone(&metrics))?;
+            ProviderRegistry::new(&config.providers, environment, Arc::clone(&metrics), client)?;
 
         Ok(Self {
             authenticator: BearerAuthenticator::new(inbound_key),
@@ -298,6 +318,10 @@ where
         plan: &RoutePlan,
         request_id: &str,
     ) -> Response<Body> {
+        // Routing latency is everything spent selecting a destination -
+        // admission, health, slot, and token-count probes - up to the moment a
+        // lease is held, and excludes the upstream call itself.
+        let routing_started = Instant::now();
         for (index, step) in plan.steps.iter().enumerate() {
             let has_more = index + 1 < plan.steps.len();
             match step {
@@ -320,6 +344,9 @@ where
 
                     match outcome {
                         PoolAdmissionOutcome::Admitted(lease) => {
+                            self.metrics.record_pool_admitted(pool_name);
+                            self.metrics
+                                .record_routing_latency(routing_started.elapsed());
                             let pool = lease.pool().to_string();
                             let member = lease.member().to_string();
                             let revision = lease.model_revision().to_string();
@@ -383,11 +410,21 @@ where
                             }
                         }
                         PoolAdmissionOutcome::Rejected(state) => {
+                            self.metrics.record_pool_rejected(pool_name, state);
                             let trigger = fallback_trigger(state);
                             if has_more
-                                && trigger
-                                    .is_some_and(|trigger| plan.fallback_on.contains(&trigger))
+                                && let Some(trigger) = trigger
+                                && plan.fallback_on.contains(&trigger)
                             {
+                                self.metrics.record_pool_fallback(pool_name, trigger);
+                                tracing::warn!(
+                                    request_id,
+                                    route = plan.model.as_str(),
+                                    pool = pool_name.as_str(),
+                                    state = pool_state_label(state),
+                                    trigger = fallback_trigger_label(trigger),
+                                    "v3 local pool rejected the request; spilling to the next route step"
+                                );
                                 continue;
                             }
                             return pool_state_error(state, pool_name, request_id);
@@ -416,6 +453,8 @@ where
                             let provider = lease.provider().to_string();
                             let model = lease.model().to_string();
                             self.metrics.record_admitted(&provider);
+                            self.metrics
+                                .record_routing_latency(routing_started.elapsed());
                             match self.transport.provider(*lease).await {
                                 Ok(response)
                                     if response.status() == StatusCode::TOO_MANY_REQUESTS
@@ -551,8 +590,12 @@ impl FabricGatewayService<FabricTransport> {
     where
         E: Environment + Send + Sync + 'static,
     {
-        let transport = FabricTransport::new()?;
-        Self::new(config, environment, transport)
+        // Strix health, slot, and token probes, Strix inference, and every
+        // cloud provider share one pooled rustls client and its TLS session
+        // cache. Credentials are still applied per request.
+        let client = build_http_client().map_err(FabricTransportError::HttpClient)?;
+        let transport = FabricTransport::with_client(client.clone());
+        Self::with_client(config, environment, transport, client)
     }
 }
 
@@ -600,9 +643,9 @@ fn resolve_secret(
 fn fallback_trigger(state: PoolAdmissionState) -> Option<FallbackTrigger> {
     match state {
         PoolAdmissionState::Ready => None,
-        PoolAdmissionState::Disabled | PoolAdmissionState::Unhealthy => {
-            Some(FallbackTrigger::Unhealthy)
-        }
+        PoolAdmissionState::Disabled
+        | PoolAdmissionState::Unhealthy
+        | PoolAdmissionState::TokenCountUnavailable => Some(FallbackTrigger::Unhealthy),
         PoolAdmissionState::Incompatible => Some(FallbackTrigger::Incompatible),
         PoolAdmissionState::Busy => Some(FallbackTrigger::Busy),
         PoolAdmissionState::ContextOverflow => Some(FallbackTrigger::ContextOverflow),
@@ -664,6 +707,11 @@ fn pool_state_error(state: PoolAdmissionState, pool: &str, request_id: &str) -> 
             StatusCode::BAD_REQUEST,
             "the selected local pool does not support this request",
             "local_incompatible",
+        ),
+        PoolAdmissionState::TokenCountUnavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the selected local pool could not count input tokens for this request",
+            "local_token_count_unavailable",
         ),
         PoolAdmissionState::Busy => (
             StatusCode::SERVICE_UNAVAILABLE,

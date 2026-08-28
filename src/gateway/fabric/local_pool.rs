@@ -61,6 +61,14 @@ pub enum PoolAdmissionState {
     Busy,
     Unhealthy,
     ContextOverflow,
+    /// A member is otherwise healthy but its token-count endpoint did not
+    /// answer usably, so exact context admission cannot be decided.
+    ///
+    /// `/v1/chat/completions/input_tokens` is not part of the OpenAI surface. A
+    /// llama.cpp upgrade or a compatible-but-different server can drop it while
+    /// `/health` and `/slots` still report a working member, and this state
+    /// keeps that case distinguishable from an unreachable one.
+    TokenCountUnavailable,
 }
 
 /// Lease held through the complete upstream response body.
@@ -163,6 +171,7 @@ struct Member {
     permits: Arc<Semaphore>,
     max_in_flight: usize,
     cached_health: Mutex<Option<CachedHealth>>,
+    token_count_timeout: Duration,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,6 +200,16 @@ enum MemberState {
     Ready,
     Busy,
     Unhealthy,
+}
+
+/// Why a token count could not be obtained from a member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputTokenError {
+    /// The member could not be reached, or the probe deadline elapsed.
+    Transport,
+    /// The member answered, but not with a usable token count. The endpoint is
+    /// missing or has changed shape; the member itself is up.
+    Unsupported,
 }
 
 impl LlamaCppPool {
@@ -240,6 +259,7 @@ impl LlamaCppPool {
                 permits: Arc::new(Semaphore::new(member.max_in_flight)),
                 max_in_flight: member.max_in_flight,
                 cached_health: Mutex::new(None),
+                token_count_timeout: Duration::from_millis(config.token_count_timeout_ms),
             }));
         }
         if members.is_empty() {
@@ -289,6 +309,7 @@ impl LlamaCppPool {
         }
 
         let mut saw_busy = false;
+        let mut saw_token_count_unavailable = false;
         for (index, member) in candidates {
             let permit = match Arc::clone(&member.permits).try_acquire_owned() {
                 Ok(permit) => permit,
@@ -305,8 +326,13 @@ impl LlamaCppPool {
                 MemberState::Unhealthy => continue,
                 MemberState::Ready => {}
             }
-            let Some(input_tokens) = member.input_tokens(request_body.clone()).await else {
-                continue;
+            let input_tokens = match member.input_tokens(request_body.clone()).await {
+                Ok(input_tokens) => input_tokens,
+                Err(InputTokenError::Transport) => continue,
+                Err(InputTokenError::Unsupported) => {
+                    saw_token_count_unavailable = true;
+                    continue;
+                }
             };
             let used_context = u64::from(input_tokens)
                 + u64::from(output_tokens)
@@ -334,33 +360,66 @@ impl LlamaCppPool {
 
         Ok(PoolAdmissionOutcome::Rejected(if saw_busy {
             PoolAdmissionState::Busy
+        } else if saw_token_count_unavailable {
+            PoolAdmissionState::TokenCountUnavailable
         } else {
             PoolAdmissionState::Unhealthy
         }))
     }
 
     /// Return whether any member could accept a request now, without reserving it.
+    ///
+    /// This exercises every endpoint admission depends on, token counting
+    /// included. Reporting `ready` from `/health` and `/slots` alone would let a
+    /// pool whose token endpoint has gone missing look healthy indefinitely
+    /// while rejecting every request it is offered.
     pub async fn readiness_state(&self) -> PoolAdmissionState {
         if !self.inner.config.enabled {
             return PoolAdmissionState::Disabled;
         }
+        let probe_body = self.token_count_probe_body();
         let mut saw_busy = false;
+        let mut saw_token_count_unavailable = false;
         for (_, member) in self.candidates_with_busy() {
             if member.permits.available_permits() == 0 {
                 saw_busy = true;
                 continue;
             }
             match member.availability_state().await {
-                MemberState::Ready => return PoolAdmissionState::Ready,
+                MemberState::Ready => {
+                    match member.token_count_readiness(probe_body.clone()).await {
+                        PoolAdmissionState::Ready => return PoolAdmissionState::Ready,
+                        PoolAdmissionState::TokenCountUnavailable => {
+                            saw_token_count_unavailable = true;
+                        }
+                        _ => {}
+                    }
+                }
                 MemberState::Busy => saw_busy = true,
                 MemberState::Unhealthy => {}
             }
         }
         if saw_busy {
             PoolAdmissionState::Busy
+        } else if saw_token_count_unavailable {
+            PoolAdmissionState::TokenCountUnavailable
         } else {
             PoolAdmissionState::Unhealthy
         }
+    }
+
+    /// Smallest well-formed body that exercises the token-count endpoint.
+    ///
+    /// Readiness carries no client prompt, so the probe body is fixed and
+    /// contains no request-derived content.
+    fn token_count_probe_body(&self) -> Bytes {
+        Bytes::from(
+            serde_json::to_vec(&serde_json::json!({
+                "model": self.inner.config.model,
+                "messages": [{"role": "user", "content": "ping"}]
+            }))
+            .expect("the fixed readiness probe body serializes"),
+        )
     }
 
     fn candidates(&self) -> Vec<(usize, Arc<Member>)> {
@@ -485,25 +544,43 @@ impl Member {
         }
     }
 
-    async fn input_tokens(&self, body: Bytes) -> Option<u32> {
+    async fn input_tokens(&self, body: Bytes) -> Result<u32, InputTokenError> {
         let response = authorized(
             self.client.post(self.input_tokens_url.clone()),
             self.api_key.as_ref(),
         )
-        .timeout(PROBE_TIMEOUT)
+        .timeout(self.token_count_timeout)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(body)
         .send()
         .await
-        .ok()?;
+        .map_err(|_| InputTokenError::Transport)?;
         if !response.status().is_success() {
-            return None;
+            tracing::warn!(
+                member = self.name.as_str(),
+                status = response.status().as_u16(),
+                "llama.cpp token-count endpoint answered with a non-success status"
+            );
+            return Err(InputTokenError::Unsupported);
         }
         response
             .json::<InputTokenResponse>()
             .await
-            .ok()
             .map(|response| response.input_tokens)
+            .map_err(|_| InputTokenError::Unsupported)
+    }
+
+    /// Probe the token-count endpoint the admission path depends on.
+    ///
+    /// Readiness must exercise the same endpoint as admission, or a member whose
+    /// token endpoint has gone missing reports `ready` forever while rejecting
+    /// every request it is offered.
+    async fn token_count_readiness(&self, probe_body: Bytes) -> PoolAdmissionState {
+        match self.input_tokens(probe_body).await {
+            Ok(_) => PoolAdmissionState::Ready,
+            Err(InputTokenError::Transport) => PoolAdmissionState::Unhealthy,
+            Err(InputTokenError::Unsupported) => PoolAdmissionState::TokenCountUnavailable,
+        }
     }
 }
 
