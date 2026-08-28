@@ -7,10 +7,11 @@
 //! URL.
 
 use super::fields::{
-    validate_command, validate_env_name, validate_local_member_url, validate_model, validate_name,
-    validate_revision, validate_url,
+    validate_command, validate_env_name, validate_executable, validate_local_member_url,
+    validate_log_level, validate_model, validate_name, validate_revision, validate_u32_range,
+    validate_url, validate_usize_range,
 };
-use crate::gateway::fabric::FabricConfigError;
+use crate::gateway::fabric::{FabricConfig, FabricConfigError};
 
 const FIELD: &str = "fabric.providers.endpoint";
 
@@ -208,4 +209,75 @@ fn credential_command_argv_is_bounded_on_every_axis() {
         "control characters are rejected"
     );
     assert!(!ok(&["op", "has\0null"]), "a NUL is rejected");
+}
+
+/// The Codex executable path is bounded and rejects control characters.
+#[test]
+fn executable_paths_are_bounded_and_control_free() {
+    validate_executable(FIELD, "codex").expect("a plain name is valid");
+    validate_executable(FIELD, "/usr/local/bin/codex").expect("an absolute path is valid");
+    validate_executable(FIELD, &"a".repeat(4096)).expect("exactly 4096 bytes is accepted");
+    validate_executable(FIELD, &"a".repeat(4097)).expect_err("4097 bytes is rejected");
+    for rejected in ["", "   ", "codex\nrm -rf /", "codex\0", "codex\ttab"] {
+        validate_executable(FIELD, rejected)
+            .expect_err(&format!("`{rejected:?}` must be rejected"));
+    }
+}
+
+/// `log_level` is a closed set; anything else is a configuration error rather
+/// than a silent fallback.
+#[test]
+fn log_level_accepts_only_the_five_documented_values() {
+    for accepted in ["trace", "debug", "info", "warn", "error"] {
+        validate_log_level(accepted).unwrap_or_else(|_| panic!("`{accepted}` is valid"));
+    }
+    for rejected in ["INFO", "warning", "verbose", "", "off", "fatal"] {
+        validate_log_level(rejected).expect_err(&format!("`{rejected}` must be rejected"));
+    }
+}
+
+/// Numeric ranges are inclusive at both ends and reject zero.
+#[test]
+fn numeric_ranges_are_inclusive_and_reject_zero() {
+    validate_usize_range(FIELD, 1, 10).expect("the lower bound is accepted");
+    validate_usize_range(FIELD, 10, 10).expect("the upper bound is accepted");
+    validate_usize_range(FIELD, 0, 10).expect_err("zero is rejected");
+    validate_usize_range(FIELD, 11, 10).expect_err("above the maximum is rejected");
+
+    validate_u32_range(FIELD, 1, 10).expect("the lower bound is accepted");
+    validate_u32_range(FIELD, 10, 10).expect("the upper bound is accepted");
+    validate_u32_range(FIELD, 0, 10).expect_err("zero is rejected");
+    validate_u32_range(FIELD, 11, 10).expect_err("above the maximum is rejected");
+}
+
+/// Parse errors report a 1-indexed line and column and never echo the document,
+/// which may contain the credential that made it invalid.
+#[test]
+fn parse_errors_locate_the_fault_without_echoing_the_document() {
+    // The same fault, once on line 1 and once on line 3. Both report the same
+    // column, which is what pins the column arithmetic: it is counted from the
+    // start of its own line, not from the start of the document.
+    const FAULT: &str = "[server\n";
+    let first = FabricConfig::from_toml(FAULT).expect_err("malformed TOML");
+    let FabricConfigError::Parse { line, column } = first else {
+        panic!("expected a parse error, got {first:?}");
+    };
+    assert_eq!((line, column), (1, 8));
+
+    let later = FabricConfig::from_toml(&format!(
+        "config_version = 3\nkey = \"do-not-echo\"\n{FAULT}"
+    ))
+    .expect_err("malformed TOML");
+    let FabricConfigError::Parse { line, column } = later else {
+        panic!("expected a parse error, got {later:?}");
+    };
+    assert_eq!(
+        (line, column),
+        (3, 8),
+        "the line advances but the column restarts"
+    );
+    assert!(
+        !format!("{later}").contains("do-not-echo"),
+        "a parse error must never echo the document"
+    );
 }
