@@ -129,7 +129,9 @@ pub enum LlamaCppPoolBuildError {
         "environment variable `{name}` required by local member `{member}` is missing or empty"
     )]
     MissingEnvironmentVariable { member: String, name: String },
-    #[error("credential referenced by local member `{member}` must use visible ASCII without whitespace")]
+    #[error(
+        "credential referenced by local member `{member}` must use visible ASCII without whitespace"
+    )]
     InvalidCredential { member: String },
     #[error("could not resolve `{path}` for local member `{member}`")]
     InvalidPath { member: String, path: String },

@@ -419,34 +419,10 @@ async fn missing_provider_credential_falls_forward_before_prompt_disclosure() {
 #[tokio::test]
 async fn provider_response_fallback_obeys_the_closed_trigger_set() {
     for (first_status, remove_trigger, expected_status, expected_provider, falls_forward) in [
-        (
-            429,
-            None,
-            200,
-            "openrouter",
-            true,
-        ),
-        (
-            429,
-            Some(FallbackTrigger::RateLimited),
-            429,
-            "zai",
-            false,
-        ),
-        (
-            503,
-            None,
-            200,
-            "openrouter",
-            true,
-        ),
-        (
-            401,
-            None,
-            401,
-            "zai",
-            false,
-        ),
+        (429, None, 200, "openrouter", true),
+        (429, Some(FallbackTrigger::RateLimited), 429, "zai", false),
+        (503, None, 200, "openrouter", true),
+        (401, None, 401, "zai", false),
     ] {
         let server = MockServer::start().await;
         Mock::given(method("POST"))

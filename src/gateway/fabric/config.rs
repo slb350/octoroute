@@ -933,9 +933,7 @@ fn validate_model(field: &str, value: &str) -> Result<(), FabricConfigError> {
     {
         return Err(invalid(
             field,
-            format!(
-                "must use at most {MAX_MODEL_BYTES} visible ASCII bytes without whitespace"
-            ),
+            format!("must use at most {MAX_MODEL_BYTES} visible ASCII bytes without whitespace"),
         ));
     }
     Ok(())
@@ -956,9 +954,9 @@ fn validate_env_name(field: &str, value: &str) -> Result<(), FabricConfigError> 
 }
 
 fn validate_command(field: &str, command: &[String]) -> Result<(), FabricConfigError> {
-    let total_bytes = command
-        .iter()
-        .fold(0usize, |total, argument| total.saturating_add(argument.len()));
+    let total_bytes = command.iter().fold(0usize, |total, argument| {
+        total.saturating_add(argument.len())
+    });
     if command.is_empty()
         || command.len() > MAX_COMMAND_ARGUMENTS
         || total_bytes > MAX_COMMAND_BYTES

@@ -251,8 +251,8 @@ fn codex_provider_accepts_only_an_executable_override() {
 #[test]
 fn provider_readiness_windows_are_bounded() {
     let input = include_str!("../../../config.toml").replace(
-        "timeout_ms = 1800000",
-        "timeout_ms = 1800000\nreadiness_ttl_ms = 3600001",
+        "timeout_ms = 1800000\nmax_tokens = 200000",
+        "timeout_ms = 1800000\nreadiness_ttl_ms = 3600001\nmax_tokens = 200000",
     );
     let error = FabricConfig::from_toml(&input).expect_err("probe TTL exceeds its bound");
     assert!(error.to_string().contains("readiness_ttl_ms"));
@@ -271,8 +271,8 @@ fn auto_is_reserved_for_the_default_route_alias() {
 #[test]
 fn route_targets_cannot_repeat() {
     let input = include_str!("../../../config.toml").replace(
-        "steps = [\"provider:kimi\", \"provider:zai\", \"provider:openrouter\", \"provider:codex\"]",
-        "steps = [\"provider:kimi\", \"provider:kimi\"]",
+        "steps = [\"provider:codex\", \"provider:openrouter\", \"provider:openai\"]",
+        "steps = [\"provider:codex\", \"provider:codex\"]",
     );
     let error = FabricConfig::from_toml(&input).expect_err("duplicate target must be rejected");
     assert!(error.to_string().contains("duplicate target"));
