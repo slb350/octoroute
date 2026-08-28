@@ -169,3 +169,104 @@ fn open_ended_locale_prefix_still_filters_sensitive_names() {
     }
     assert!(!allowed_name(OsStr::new("OCTOROUTE_API_KEY")));
 }
+
+/// The Codex hardening argv is the sandbox. Nothing else constrains the child:
+/// the fake-Codex fixture in the service tests branches on `$1 = doctor` and
+/// otherwise ignores argv, so deleting `--sandbox read-only`, `--ephemeral`, or
+/// any `--disable` flag passed every test before this one existed.
+#[test]
+fn codex_invocation_argv_pins_every_hardening_flag() {
+    let args = invocation_args(
+        "gpt-test",
+        ReasoningEffort::High,
+        Path::new("/tmp/instructions.md"),
+        Path::new("/tmp/schema.json"),
+        Path::new("/tmp/workspace"),
+    )
+    .expect("argv");
+    let rendered = args
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    // Every integration Codex must not reach.
+    for feature in [
+        "shell_tool",
+        "unified_exec",
+        "apps",
+        "multi_agent",
+        "hooks",
+        "memories",
+    ] {
+        let position = rendered
+            .iter()
+            .position(|arg| arg == feature)
+            .unwrap_or_else(|| panic!("`{feature}` must be disabled"));
+        assert_eq!(
+            rendered[position - 1],
+            "--disable",
+            "`{feature}` must be preceded by --disable"
+        );
+    }
+
+    // Execution boundary.
+    let sandbox = rendered
+        .iter()
+        .position(|arg| arg == "--sandbox")
+        .expect("--sandbox must be present");
+    assert_eq!(rendered[sandbox + 1], "read-only");
+    for flag in [
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--skip-git-repo-check",
+        "--json",
+    ] {
+        assert!(rendered.iter().any(|arg| arg == flag), "{flag} is required");
+    }
+
+    // Approvals off, and the config overrides that keep Codex off the network
+    // and out of the surrounding project.
+    let approval = rendered
+        .iter()
+        .position(|arg| arg == "-a")
+        .expect("-a must be present");
+    assert_eq!(rendered[approval + 1], "never");
+    for override_arg in [
+        "project_doc_max_bytes=0",
+        "web_search=\"disabled\"",
+        "forced_login_method=\"chatgpt\"",
+        "model_reasoning_effort=\"high\"",
+    ] {
+        assert!(
+            rendered.iter().any(|arg| arg == override_arg),
+            "`{override_arg}` must be passed with -c"
+        );
+    }
+
+    // The prompt is passed on stdin, never as an argument.
+    assert_eq!(rendered.last().map(String::as_str), Some("-"));
+    assert!(rendered.iter().any(|arg| arg == "exec"));
+}
+
+/// `ChildEnvironment::apply` is what actually clears the environment. A no-op
+/// implementation would hand the Codex child the gateway's whole environment,
+/// credentials included.
+#[test]
+fn child_environment_applies_a_cleared_allowlist() {
+    let environment = ChildEnvironment::from_iter([
+        (OsString::from("HOME"), OsString::from("/home/octoroute")),
+        (OsString::from("PATH"), OsString::from("/usr/bin")),
+        (
+            OsString::from("OPENROUTER_API_KEY"),
+            OsString::from("secret"),
+        ),
+        (OsString::from("LC_SECRET"), OsString::from("secret")),
+        (OsString::from("RANDOM_VAR"), OsString::from("value")),
+    ]);
+    assert_eq!(environment.get("HOME"), Some("/home/octoroute"));
+    assert_eq!(environment.get("PATH"), Some("/usr/bin"));
+    assert_eq!(environment.get("OPENROUTER_API_KEY"), None);
+    assert_eq!(environment.get("LC_SECRET"), None);
+    assert_eq!(environment.get("RANDOM_VAR"), None);
+}
