@@ -34,6 +34,35 @@ fn preserves_unknown_fields_when_patching_only_the_model() {
 }
 
 #[test]
+fn local_reasoning_default_applies_only_when_the_caller_omits_controls() {
+    let omitted = gateway_request(json!({
+        "model": "worker",
+        "messages": [{"role": "user", "content": "hello"}]
+    }));
+    let body: serde_json::Value = serde_json::from_slice(
+        &omitted
+            .body_bytes_for_model_with_reasoning_default("local-model", "high")
+            .expect("local body"),
+    )
+    .expect("body JSON");
+    assert_eq!(body["reasoning_effort"], "high");
+
+    let explicit = gateway_request(json!({
+        "model": "worker",
+        "messages": [{"role": "user", "content": "hello"}],
+        "reasoning": {"effort": "low"}
+    }));
+    let body: serde_json::Value = serde_json::from_slice(
+        &explicit
+            .body_bytes_for_model_with_reasoning_default("local-model", "high")
+            .expect("local body"),
+    )
+    .expect("body JSON");
+    assert!(body.get("reasoning_effort").is_none());
+    assert_eq!(body["reasoning"]["effort"], "low");
+}
+
+#[test]
 fn detects_all_features_without_flattening_messages() {
     let request = gateway_request(json!({
         "model": "auto",
@@ -228,6 +257,22 @@ fn rejects_non_json_and_non_object_bodies_safely() {
         GatewayRequest::parse(br#"["not", "an", "object"]"#),
         Err(GatewayRequestError::Invalid { ref field, .. }) if field == "body"
     ));
+}
+
+#[test]
+fn rejects_unbounded_or_unreachable_virtual_model_names() {
+    for model in ["contains/slash".to_string(), "x".repeat(129)] {
+        let bytes = serde_json::to_vec(&json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "hello"}]
+        }))
+        .expect("request JSON");
+        let error = GatewayRequest::parse(&bytes).expect_err("model must be bounded");
+        assert!(matches!(
+            error,
+            GatewayRequestError::Invalid { ref field, .. } if field == "model"
+        ));
+    }
 }
 
 #[test]

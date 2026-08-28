@@ -66,10 +66,11 @@ impl FabricUpstreamTransport for FabricTransport {
     type Error = FabricTransportError;
 
     async fn local(&self, lease: PoolLease) -> Result<PreparedUpstreamResponse, Self::Error> {
-        let (chat_url, api_key, request_body, permit) = lease.into_transport_parts();
+        let (chat_url, api_key, request_body, timeout, permit) = lease.into_transport_parts();
         let request = authorized(
             self.client
                 .post(chat_url)
+                .timeout(timeout)
                 .header(CONTENT_TYPE, "application/json")
                 .body(request_body),
             api_key.as_ref(),

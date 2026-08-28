@@ -23,8 +23,10 @@ local pool       provider registry
 
 - stable names and cross-references;
 - local-before-provider ordering;
+- reserved `auto` alias and non-repeating route targets;
 - route privacy versus target kinds;
-- URL, environment-name, context, concurrency, and timeout bounds;
+- URL, model, environment-name, credential-argv, context, concurrency, and
+  timeout bounds;
 - exactly one credential source for each HTTP provider;
 - provider-kind-specific fields.
 
@@ -45,7 +47,7 @@ semantics, or task difficulty from prompt text. Clients such as OpenCode choose
 
 Each `LlamaCppPool` owns equivalent members. A member owns:
 
-- an isolated HTTP client;
+- a pool-scoped HTTP client handle;
 - resolved optional local credential;
 - health, slot, input-token, and chat URLs;
 - a concurrency semaphore;
@@ -72,6 +74,9 @@ An HTTP provider owns:
 - timeout;
 - bounded cached readiness state;
 - concurrency semaphore.
+
+Provider preference is represented only by route order. There is no separate
+provider priority that could disagree with the executable chain.
 
 Credential resolution occurs after the executor selects the provider and
 acquires its permit. The only other resolution path is an explicit readiness

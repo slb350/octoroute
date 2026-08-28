@@ -77,7 +77,7 @@ Start the gateway:
 cargo run --release -- --config config.toml
 ```
 
-For a workstation deployment using `http://local-model.local:8080`, use
+For a same-workstation deployment using `http://127.0.0.1:8080`, use
 `config.laptop.toml`.
 
 ## Virtual models
@@ -152,8 +152,9 @@ Successful routed responses include bounded identity such as:
 - `X-Octoroute-Model-Revision` for local work
 - `X-Octoroute-Request-Id` and `X-Request-Id`
 
-Unknown request fields and upstream response/SSE bytes remain opaque except for
-destination-specific model/default policy fields.
+Unknown request fields remain intact inside the gateway. Local and generic
+OpenAI-compatible HTTP dispatch preserve them except for destination-owned
+model/default policy fields; Anthropic and Codex use their explicit adapters.
 
 ## Operations
 

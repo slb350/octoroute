@@ -11,9 +11,13 @@ A v3 configuration starts an authenticated OpenAI-compatible service with:
 
 - chat completions, model listing, liveness, readiness, and metrics;
 - bounded request body, headers, concurrency, and rate;
-- deterministic virtual routes and request-level local-only narrowing;
+- bounded virtual/physical model identifiers, credential argv, upstream
+  deadlines, and semaphore sizes;
+- deterministic non-repeating virtual routes, a reserved `auto` alias, and
+  request-level local-only narrowing;
 - ordered local-pool and provider admission with closed fallback triggers;
 - member-specific health, slot, token-count, capability, and context checks;
+- effective local-pool reasoning defaults when callers omit reasoning controls;
 - least-loaded selection with rotating ties;
 - a lazy HTTP provider registry keyed by validated names;
 - isolated provider credentials, permits, and deadlines;
@@ -58,6 +62,8 @@ primitives were retained under neutral or fabric ownership.
 - No target switch is possible after the first client-visible body byte.
 - Secrets are referenced by configured name and omitted from errors and logs.
 - Physical endpoint identity is bounded configuration, not prompt-derived state.
+- Provider preference is exactly the configured route order; no inert priority
+  field can conflict with it.
 
 ## Provider runtime boundary
 
@@ -68,7 +74,8 @@ disclosure and can continue only through the route's explicit `incompatible`
 fallback trigger.
 
 Representative OpenCode-style tool/SSE translation, fake-Codex lifecycle and
-environment isolation, readiness caching, provider fallback metrics, and
+environment isolation, adapter-incompatible multi-choice rejection, readiness
+caching, provider fallback metrics, and
 local-only zero-contact behavior are covered by the test suite. Operators can
 run `scripts/v3-canary.sh` for liveness, readiness, model discovery, local-only
 non-streaming/streaming completions, and an optional explicit provider route.

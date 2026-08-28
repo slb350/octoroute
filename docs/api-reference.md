@@ -9,12 +9,16 @@ Authorization: Bearer <OCTOROUTE_API_KEY>
 
 ## `POST /v1/chat/completions`
 
-The body must be a JSON object with a non-empty string `model` and a non-empty
-`messages` array. `stream`, when present and non-null, must be a boolean.
+The body must be a JSON object with a bounded virtual `model` identifier and a
+non-empty `messages` array. `stream`, when present and non-null, must be a
+boolean. Model identifiers use 1–128 ASCII letters, digits, dots, underscores,
+or hyphens.
 
 Octoroute parses only the fields needed for validation, local capability
 admission, token budgeting, and provider defaults. Unknown fields and message
-content remain schema-preserving.
+content remain intact in the gateway; local and generic OpenAI-compatible
+dispatch preserve them, while explicit Anthropic and Codex adapters translate
+only their documented compatible subset.
 
 `model` resolves as follows:
 
@@ -64,7 +68,7 @@ the first upstream body chunk is buffered. Anthropic Messages responses and
 SSE events are translated into OpenAI Chat Completions shapes. Codex CLI output
 is validated and returned as a non-streaming completion or a single completion
 chunk followed by `[DONE]`; the CLI adapter does not expose token-by-token
-streaming.
+streaming. Codex routes reject multi-choice requests before prompt disclosure.
 
 ### Errors
 

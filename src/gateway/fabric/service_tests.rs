@@ -1,4 +1,6 @@
-use super::{FabricConfig, FabricGatewayService, ProviderAdmissionState, RouteTarget};
+use super::{
+    FabricConfig, FabricGatewayService, FallbackTrigger, ProviderAdmissionState, RouteTarget,
+};
 use crate::gateway::env::Environment;
 use axum::{
     body::{Bytes, to_bytes},
@@ -218,8 +220,8 @@ async fn incompatible_codex_request_fails_closed_without_launching_the_cli() {
     let environment_audit = environment.clone();
     let service =
         FabricGatewayService::from_config(local_config(&server), environment).expect("service");
-    let body = Bytes::from(
-        serde_json::to_vec(&json!({
+    let incompatible_requests = [
+        json!({
             "model": "cloud-sota",
             "messages": [{
                 "role": "user",
@@ -228,20 +230,27 @@ async fn incompatible_codex_request_fails_closed_without_launching_the_cli() {
                     "image_url": {"url": "data:image/png;base64,AA=="}
                 }]
             }]
-        }))
-        .expect("JSON"),
-    );
+        }),
+        json!({
+            "model": "cloud-sota",
+            "messages": [{"role": "user", "content": "two answers"}],
+            "n": 2
+        }),
+    ];
 
-    let response = service.handle_chat(&headers(), body).await;
-    assert_eq!(response.status(), 503);
-    let body = to_bytes(response.into_body(), 1024 * 1024)
-        .await
-        .expect("error body");
-    assert!(
-        std::str::from_utf8(&body)
-            .expect("UTF-8")
-            .contains("provider_incompatible")
-    );
+    for request in incompatible_requests {
+        let body = Bytes::from(serde_json::to_vec(&request).expect("JSON"));
+        let response = service.handle_chat(&headers(), body).await;
+        assert_eq!(response.status(), 503);
+        let body = to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("error body");
+        assert!(
+            std::str::from_utf8(&body)
+                .expect("UTF-8")
+                .contains("provider_incompatible")
+        );
+    }
     assert_eq!(environment_audit.reads(), vec!["OCTOROUTE_API_KEY"]);
 }
 
@@ -405,6 +414,107 @@ async fn missing_provider_credential_falls_forward_before_prompt_disclosure() {
     assert!(metrics.contains(
         "octoroute_fabric_provider_responses_total{provider=\"openrouter\",outcome=\"success\"} 1"
     ));
+}
+
+#[tokio::test]
+async fn provider_response_fallback_obeys_the_closed_trigger_set() {
+    for (first_status, remove_trigger, expected_status, expected_provider, falls_forward) in [
+        (
+            429,
+            None,
+            200,
+            "openrouter",
+            true,
+        ),
+        (
+            429,
+            Some(FallbackTrigger::RateLimited),
+            429,
+            "zai",
+            false,
+        ),
+        (
+            503,
+            None,
+            200,
+            "openrouter",
+            true,
+        ),
+        (
+            401,
+            None,
+            401,
+            "zai",
+            false,
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer zai-test-key"))
+            .respond_with(
+                ResponseTemplate::new(first_status)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(json!({"error": {"message": "bounded fixture"}})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer openrouter-test-key"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(json!({"id": "fallback", "choices": []})),
+            )
+            .expect(if falls_forward { 1 } else { 0 })
+            .mount(&server)
+            .await;
+
+        let mut config = local_config(&server);
+        let endpoint = Url::parse(&format!("{}/", server.uri())).expect("mock provider URL");
+        config.providers.get_mut("zai").expect("zai").endpoint = Some(endpoint.clone());
+        config
+            .providers
+            .get_mut("openrouter")
+            .expect("openrouter")
+            .endpoint = Some(endpoint);
+        let route = config.routes.get_mut("cloud-sota").expect("cloud route");
+        route.steps = vec![
+            RouteTarget::Provider("zai".to_string()),
+            RouteTarget::Provider("openrouter".to_string()),
+        ];
+        if let Some(trigger) = remove_trigger {
+            route.fallback_on.remove(&trigger);
+        }
+        let service = FabricGatewayService::from_config(
+            config,
+            TestEnvironment::default()
+                .with("OCTOROUTE_API_KEY", "inbound-test-key")
+                .with("ZAI_API_KEY", "zai-test-key")
+                .with("OPENROUTER_API_KEY", "openrouter-test-key"),
+        )
+        .expect("service");
+        let body = Bytes::from(
+            serde_json::to_vec(&json!({
+                "model": "cloud-sota",
+                "messages": [{"role": "user", "content": "review the boundary"}]
+            }))
+            .expect("JSON"),
+        );
+
+        let response = service.handle_chat(&headers(), body).await;
+        assert_eq!(response.status().as_u16(), expected_status);
+        assert_eq!(
+            response
+                .headers()
+                .get("x-octoroute-provider")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_provider)
+        );
+        drop(response);
+    }
 }
 
 #[tokio::test]

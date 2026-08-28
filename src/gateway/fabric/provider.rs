@@ -611,17 +611,6 @@ fn present(body: &Map<String, Value>, field: &str) -> bool {
     body.get(field).is_some_and(|value| !value.is_null())
 }
 
-impl ReasoningEffort {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::Xhigh => "xhigh",
-        }
-    }
-}
-
 async fn resolve_command_credential(
     arguments: &[String],
 ) -> Result<SecretString, ProviderCredentialError> {

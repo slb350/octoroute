@@ -55,9 +55,11 @@ when its value is zero, so series cardinality is bounded at startup.
 
 `GET /health/live` confirms the process is serving the v3 runtime.
 
-`GET /health/ready` and `/health` return per-pool and per-provider states. Pool
-readiness probes eligible members concurrently. Enabled HTTP providers resolve
-their credential and perform a body-free authenticated reachability request;
+`GET /health/ready` and `/health` return per-pool and per-provider states. Pools
+and providers are checked concurrently; each pool checks eligible members in
+selection order, with a member's health and slot probes concurrent when its
+health cache is stale. Enabled HTTP providers resolve their credential and
+perform a body-free authenticated reachability request;
 Codex providers perform `codex doctor --json` and require ChatGPT-managed auth.
 Each provider result is cached for `readiness_ttl_ms`, refreshes coalesce, and
 the operation is bounded by `readiness_timeout_ms`. A provider with no available

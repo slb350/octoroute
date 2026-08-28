@@ -72,6 +72,7 @@ pub struct PoolLease {
     chat_url: Url,
     api_key: Option<SecretString>,
     request_body: Bytes,
+    timeout: Duration,
     _permit: OwnedSemaphorePermit,
 }
 
@@ -102,8 +103,20 @@ impl PoolLease {
 
     pub(crate) fn into_transport_parts(
         self,
-    ) -> (Url, Option<SecretString>, Bytes, OwnedSemaphorePermit) {
-        (self.chat_url, self.api_key, self.request_body, self._permit)
+    ) -> (
+        Url,
+        Option<SecretString>,
+        Bytes,
+        Duration,
+        OwnedSemaphorePermit,
+    ) {
+        (
+            self.chat_url,
+            self.api_key,
+            self.request_body,
+            self.timeout,
+            self._permit,
+        )
     }
 }
 
@@ -116,6 +129,8 @@ pub enum LlamaCppPoolBuildError {
         "environment variable `{name}` required by local member `{member}` is missing or empty"
     )]
     MissingEnvironmentVariable { member: String, name: String },
+    #[error("credential referenced by local member `{member}` must use visible ASCII without whitespace")]
+    InvalidCredential { member: String },
     #[error("could not resolve `{path}` for local member `{member}`")]
     InvalidPath { member: String, path: String },
     #[error("could not build isolated llama.cpp HTTP client")]
@@ -202,6 +217,11 @@ impl LlamaCppPool {
                             member: member.name.clone(),
                             name: name.to_string(),
                         })?;
+                    if !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+                        return Err(LlamaCppPoolBuildError::InvalidCredential {
+                            member: member.name.clone(),
+                        });
+                    }
                     Some(SecretString::from(value))
                 }
                 None => None,
@@ -257,7 +277,10 @@ impl LlamaCppPool {
 
         let output_tokens =
             request.output_token_budget(self.inner.config.default_max_output_tokens)?;
-        let request_body = request.body_bytes_for_model(&self.inner.config.model)?;
+        let request_body = request.body_bytes_for_model_with_reasoning_default(
+            &self.inner.config.model,
+            self.inner.config.default_reasoning_effort.as_str(),
+        )?;
         let candidates = self.candidates();
         if candidates.is_empty() {
             return Ok(PoolAdmissionOutcome::Rejected(PoolAdmissionState::Busy));
@@ -302,6 +325,7 @@ impl LlamaCppPool {
                 chat_url: member.chat_url.clone(),
                 api_key: member.api_key.clone(),
                 request_body,
+                timeout: Duration::from_millis(self.inner.config.timeout_ms),
                 _permit: permit,
             })));
         }

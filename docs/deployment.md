@@ -25,8 +25,16 @@ exist at startup.
 Restrict both files to the service account.
 
 For an enabled `codex_cli` provider, install the official `codex` executable
-for the service account and complete ChatGPT login under its `HOME` or
-`CODEX_HOME`. Verify `codex doctor --json` as that account before startup.
+for the service account and complete ChatGPT login under its `CODEX_HOME`.
+The supplied systemd unit creates and uses
+`/var/lib/octoroute/codex`; log in and verify the diagnostic with the same
+identity and environment before startup:
+
+```bash
+sudo install -d -o octoroute -g octoroute -m 0700 /var/lib/octoroute/codex
+sudo -u octoroute env CODEX_HOME=/var/lib/octoroute/codex codex login
+sudo -u octoroute env CODEX_HOME=/var/lib/octoroute/codex codex doctor --json
+```
 
 ## Build and run
 
@@ -97,7 +105,7 @@ directing production traffic.
 ## Rolling changes
 
 Virtual model names are the client contract. Pool membership, model revisions,
-provider priority, and route chains can change without reconfiguring clients.
+provider settings and route chains can change without reconfiguring clients.
 
 For a model replacement:
 

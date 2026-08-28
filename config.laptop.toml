@@ -23,13 +23,14 @@ model_revision = "example-local-revision"
 context_window = 65536
 context_safety_tokens = 1024
 default_max_output_tokens = 4096
+timeout_ms = 1800000
 capabilities = ["chat", "stream", "tools", "structured_output", "reasoning"]
 strategy = "least_loaded"
 default_reasoning_effort = "medium"
 
 [[fabric.local_pools.members]]
 name = "local-model"
-base_url = "http://local-model.local:8080"
+base_url = "http://127.0.0.1:8080"
 max_in_flight = 1
 priority = 100
 
@@ -43,7 +44,6 @@ model = "openrouter/auto"
 api_key_env = "OPENROUTER_API_KEY"
 max_in_flight = 4
 timeout_ms = 1800000
-priority = 10
 temperature = 0.2
 profile = "open_router_auto"
 

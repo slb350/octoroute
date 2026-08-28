@@ -17,6 +17,14 @@ impl Environment for EmptyEnvironment {
     }
 }
 
+struct InvalidCredentialEnvironment;
+
+impl Environment for InvalidCredentialEnvironment {
+    fn get(&self, _name: &str) -> Option<String> {
+        Some("invalid credential\n".to_string())
+    }
+}
+
 fn example() -> FabricConfig {
     FabricConfig::from_toml(include_str!("../../../config.toml")).expect("repository example")
 }
@@ -212,5 +220,20 @@ fn referenced_local_member_secret_must_exist_at_startup() {
     assert!(matches!(
         error,
         LlamaCppPoolBuildError::MissingEnvironmentVariable { .. }
+    ));
+}
+
+#[test]
+fn referenced_local_member_secret_must_be_header_safe_at_startup() {
+    let mut pool = example().local_pools["workers"].clone();
+    pool.members[0].api_key_env = Some("WORKER_KEY".to_string());
+
+    let error = match LlamaCppPool::new(&pool, &InvalidCredentialEnvironment) {
+        Ok(_) => panic!("invalid secret must fail startup"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        LlamaCppPoolBuildError::InvalidCredential { .. }
     ));
 }

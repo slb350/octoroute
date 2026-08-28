@@ -24,11 +24,17 @@ const MAX_CONCURRENCY: usize = 10_000;
 const MAX_REQUESTS_PER_MINUTE: u32 = 1_000_000;
 const DEFAULT_CONTEXT_SAFETY_TOKENS: u32 = 2_048;
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_384;
+const DEFAULT_UPSTREAM_TIMEOUT_MS: u64 = 1_800_000;
 const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 1_800_000;
 const DEFAULT_PROVIDER_READINESS_TTL_MS: u64 = 30_000;
 const DEFAULT_PROVIDER_READINESS_TIMEOUT_MS: u64 = 30_000;
 const MAX_PROVIDER_READINESS_TTL_MS: u64 = 3_600_000;
 const MAX_PROVIDER_READINESS_TIMEOUT_MS: u64 = 300_000;
+const MAX_UPSTREAM_TIMEOUT_MS: u64 = 3_600_000;
+const MAX_COMMAND_ARGUMENTS: usize = 32;
+const MAX_COMMAND_ARGUMENT_BYTES: usize = 4 * 1024;
+const MAX_COMMAND_BYTES: usize = 16 * 1024;
+const MAX_MODEL_BYTES: usize = 512;
 const DEFAULT_PRIORITY: u16 = 100;
 const DEFAULT_CODEX_EXECUTABLE: &str = "codex";
 
@@ -108,6 +114,7 @@ pub struct LocalPoolConfig {
     pub context_window: u32,
     pub context_safety_tokens: u32,
     pub default_max_output_tokens: u32,
+    pub timeout_ms: u64,
     pub capabilities: BTreeSet<LocalCapability>,
     pub strategy: PoolStrategy,
     pub default_reasoning_effort: ReasoningEffort,
@@ -149,7 +156,6 @@ pub struct ProviderConfig {
     pub timeout_ms: u64,
     pub readiness_ttl_ms: u64,
     pub readiness_timeout_ms: u64,
-    pub priority: u16,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
@@ -194,6 +200,17 @@ pub enum ReasoningEffort {
     Medium,
     High,
     Xhigh,
+}
+
+impl ReasoningEffort {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+        }
+    }
 }
 
 /// Privacy contract attached to a virtual-model route.
@@ -328,6 +345,8 @@ struct RawLocalPoolConfig {
     context_safety_tokens: u32,
     #[serde(default = "default_max_output_tokens")]
     default_max_output_tokens: u32,
+    #[serde(default = "default_upstream_timeout_ms")]
+    timeout_ms: u64,
     capabilities: BTreeSet<LocalCapability>,
     #[serde(default)]
     strategy: PoolStrategy,
@@ -371,8 +390,6 @@ struct RawProviderConfig {
     readiness_ttl_ms: u64,
     #[serde(default = "default_provider_readiness_timeout_ms")]
     readiness_timeout_ms: u64,
-    #[serde(default = "default_priority")]
-    priority: u16,
     reasoning_effort: Option<ReasoningEffort>,
     temperature: Option<f64>,
     max_tokens: Option<u32>,
@@ -492,7 +509,7 @@ fn validate_local_pools(
     let mut pools = BTreeMap::new();
     for raw in raw_pools {
         validate_name("fabric.local_pools.name", &raw.name)?;
-        validate_nonempty("fabric.local_pools.model", &raw.model)?;
+        validate_model("fabric.local_pools.model", &raw.model)?;
         validate_revision("fabric.local_pools.model_revision", &raw.model_revision)?;
         if raw.context_window == 0 {
             return Err(invalid(
@@ -513,6 +530,11 @@ fn validate_local_pools(
                 "must be positive and leave room for input",
             ));
         }
+        validate_u64_range(
+            "fabric.local_pools.timeout_ms",
+            raw.timeout_ms,
+            MAX_UPSTREAM_TIMEOUT_MS,
+        )?;
         if !raw.capabilities.contains(&LocalCapability::Chat) {
             return Err(invalid(
                 "fabric.local_pools.capabilities",
@@ -530,12 +552,11 @@ fn validate_local_pools(
                     format!("duplicate member `{}`", member.name),
                 ));
             }
-            if member.max_in_flight == 0 {
-                return Err(invalid(
-                    "fabric.local_pools.members.max_in_flight",
-                    "must be greater than zero",
-                ));
-            }
+            validate_usize_range(
+                "fabric.local_pools.members.max_in_flight",
+                member.max_in_flight,
+                MAX_CONCURRENCY,
+            )?;
             if let Some(name) = member.api_key_env.as_deref() {
                 validate_env_name("fabric.local_pools.members.api_key_env", name)?;
             }
@@ -568,6 +589,7 @@ fn validate_local_pools(
             context_window: raw.context_window,
             context_safety_tokens: raw.context_safety_tokens,
             default_max_output_tokens: raw.default_max_output_tokens,
+            timeout_ms: raw.timeout_ms,
             capabilities: raw.capabilities,
             strategy: raw.strategy,
             default_reasoning_effort: raw.default_reasoning_effort,
@@ -589,19 +611,17 @@ fn validate_providers(
     let mut providers = BTreeMap::new();
     for raw in raw_providers {
         validate_name("fabric.providers.name", &raw.name)?;
-        validate_nonempty("fabric.providers.model", &raw.model)?;
-        if raw.max_in_flight == 0 {
-            return Err(invalid(
-                "fabric.providers.max_in_flight",
-                "must be greater than zero",
-            ));
-        }
-        if raw.timeout_ms == 0 {
-            return Err(invalid(
-                "fabric.providers.timeout_ms",
-                "must be greater than zero",
-            ));
-        }
+        validate_model("fabric.providers.model", &raw.model)?;
+        validate_usize_range(
+            "fabric.providers.max_in_flight",
+            raw.max_in_flight,
+            MAX_CONCURRENCY,
+        )?;
+        validate_u64_range(
+            "fabric.providers.timeout_ms",
+            raw.timeout_ms,
+            MAX_UPSTREAM_TIMEOUT_MS,
+        )?;
         validate_u64_range(
             "fabric.providers.readiness_ttl_ms",
             raw.readiness_ttl_ms,
@@ -719,7 +739,6 @@ fn validate_providers(
             timeout_ms: raw.timeout_ms,
             readiness_ttl_ms: raw.readiness_ttl_ms,
             readiness_timeout_ms: raw.readiness_timeout_ms,
-            priority: raw.priority,
             reasoning_effort: raw.reasoning_effort,
             temperature: raw.temperature,
             max_tokens: raw.max_tokens,
@@ -747,11 +766,26 @@ fn validate_routes(
     let mut routes = BTreeMap::new();
     for raw in raw_routes {
         validate_name("routing.routes.model", &raw.model)?;
+        if raw.model == "auto" {
+            return Err(invalid(
+                "routing.routes.model",
+                "`auto` is reserved for the configured default-model alias",
+            ));
+        }
         if raw.steps.is_empty() {
             return Err(invalid(
                 "routing.routes.steps",
                 "must include at least one target",
             ));
+        }
+        let mut target_names = BTreeSet::new();
+        for step in &raw.steps {
+            if !target_names.insert(step) {
+                return Err(invalid(
+                    "routing.routes.steps",
+                    format!("duplicate target `{step}`"),
+                ));
+            }
         }
         let steps = raw
             .steps
@@ -890,6 +924,23 @@ fn validate_nonempty(field: &str, value: &str) -> Result<(), FabricConfigError> 
     }
 }
 
+fn validate_model(field: &str, value: &str) -> Result<(), FabricConfigError> {
+    validate_nonempty(field, value)?;
+    if value.len() > MAX_MODEL_BYTES
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && !byte.is_ascii_whitespace())
+    {
+        return Err(invalid(
+            field,
+            format!(
+                "must use at most {MAX_MODEL_BYTES} visible ASCII bytes without whitespace"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_env_name(field: &str, value: &str) -> Result<(), FabricConfigError> {
     validate_nonempty(field, value)?;
     let mut bytes = value.bytes();
@@ -905,10 +956,23 @@ fn validate_env_name(field: &str, value: &str) -> Result<(), FabricConfigError> 
 }
 
 fn validate_command(field: &str, command: &[String]) -> Result<(), FabricConfigError> {
-    if command.is_empty() || command.iter().any(|argument| argument.trim().is_empty()) {
+    let total_bytes = command
+        .iter()
+        .fold(0usize, |total, argument| total.saturating_add(argument.len()));
+    if command.is_empty()
+        || command.len() > MAX_COMMAND_ARGUMENTS
+        || total_bytes > MAX_COMMAND_BYTES
+        || command.iter().any(|argument| {
+            argument.trim().is_empty()
+                || argument.len() > MAX_COMMAND_ARGUMENT_BYTES
+                || argument.chars().any(char::is_control)
+        })
+    {
         return Err(invalid(
             field,
-            "must be a non-empty argv with no empty arguments",
+            format!(
+                "must contain 1..={MAX_COMMAND_ARGUMENTS} non-empty arguments, each at most {MAX_COMMAND_ARGUMENT_BYTES} bytes without control characters, and at most {MAX_COMMAND_BYTES} bytes total"
+            ),
         ));
     }
     Ok(())
@@ -1020,6 +1084,10 @@ const fn default_context_safety_tokens() -> u32 {
 
 const fn default_max_output_tokens() -> u32 {
     DEFAULT_MAX_OUTPUT_TOKENS
+}
+
+const fn default_upstream_timeout_ms() -> u64 {
+    DEFAULT_UPSTREAM_TIMEOUT_MS
 }
 
 const fn default_provider_timeout_ms() -> u64 {

@@ -25,6 +25,7 @@ model_revision = "example-worker-revision"
 context_window = 131072
 context_safety_tokens = 2048
 default_max_output_tokens = 16384
+timeout_ms = 1800000
 capabilities = ["chat", "stream", "tools", "structured_output", "reasoning"]
 strategy = "least_loaded"
 default_reasoning_effort = "medium"
@@ -57,6 +58,7 @@ model_revision = "example-supervisor-revision"
 context_window = 262144
 context_safety_tokens = 4096
 default_max_output_tokens = 32768
+timeout_ms = 1800000
 capabilities = ["chat", "stream", "tools", "structured_output", "image_input", "reasoning"]
 strategy = "least_loaded"
 default_reasoning_effort = "xhigh"
@@ -82,7 +84,6 @@ model = "k3"
 api_key_env = "KIMI_API_KEY"
 max_in_flight = 2
 timeout_ms = 1800000
-priority = 10
 max_tokens = 200000
 
 # z.ai's GLM Coding Plan.
@@ -96,7 +97,6 @@ model = "glm-5.3"
 api_key_env = "ZAI_API_KEY"
 max_in_flight = 2
 timeout_ms = 1800000
-priority = 20
 temperature = 0.2
 
 # OpenRouter remains the broad cloud fallback and SOTA model broker.
@@ -110,7 +110,6 @@ model = "openrouter/auto"
 api_key_env = "OPENROUTER_API_KEY"
 max_in_flight = 4
 timeout_ms = 1800000
-priority = 30
 temperature = 0.2
 profile = "open_router_auto"
 
@@ -125,7 +124,6 @@ model = "gpt-5.6-sol"
 api_key_env = "OPENAI_API_KEY"
 max_in_flight = 2
 timeout_ms = 1800000
-priority = 40
 reasoning_effort = "xhigh"
 
 # Subscription-backed Codex execution follows Drep's locked-down CLI pattern:
@@ -139,7 +137,6 @@ model = "gpt-5.6-sol"
 executable = "codex"
 max_in_flight = 1
 timeout_ms = 1800000
-priority = 50
 reasoning_effort = "xhigh"
 
 [routing]

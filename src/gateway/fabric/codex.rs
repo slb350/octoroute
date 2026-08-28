@@ -86,6 +86,13 @@ pub(super) fn build_request(
         return Err(CodexAdapterError::Incompatible);
     }
     let body = request.body_value_for_model(&config.model)?;
+    if body
+        .get("n")
+        .filter(|value| !value.is_null())
+        .is_some_and(|value| value.as_u64() != Some(1))
+    {
+        return Err(CodexAdapterError::Incompatible);
+    }
     let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let input = serde_json::to_string(&json!({
         "contract": "openai_chat_completion",
@@ -124,8 +131,8 @@ pub(super) async fn probe(
         DIAGNOSTIC_MAX_BYTES,
     )
     .await?;
-    if !output.status.success() && output.stdout.is_empty() {
-        return Err(CodexAdapterError::Diagnostic);
+    if !output.status.success() {
+        return Err(CodexAdapterError::Process);
     }
     parse_diagnostic(&output.stdout)
 }
@@ -535,7 +542,7 @@ fn render_open_ai_reply(
     let created = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs());
-    let tool_calls = reply
+    let stream_tool_calls = reply
         .tool_calls
         .iter()
         .enumerate()
@@ -556,8 +563,8 @@ fn render_open_ai_reply(
         if let Some(reasoning) = reply.reasoning_content {
             delta["reasoning_content"] = Value::String(reasoning);
         }
-        if !tool_calls.is_empty() {
-            delta["tool_calls"] = Value::Array(tool_calls);
+        if !stream_tool_calls.is_empty() {
+            delta["tool_calls"] = Value::Array(stream_tool_calls);
         }
         let chunk = json!({
             "id": id,
@@ -579,8 +586,20 @@ fn render_open_ai_reply(
         if let Some(reasoning) = reply.reasoning_content {
             message["reasoning_content"] = Value::String(reasoning);
         }
-        if !tool_calls.is_empty() {
-            message["tool_calls"] = Value::Array(tool_calls);
+        if !reply.tool_calls.is_empty() {
+            message["tool_calls"] = Value::Array(
+                reply
+                    .tool_calls
+                    .iter()
+                    .map(|call| {
+                        json!({
+                            "id": call.id,
+                            "type": "function",
+                            "function": {"name": call.name, "arguments": call.arguments}
+                        })
+                    })
+                    .collect(),
+            );
         }
         json!({
             "id": id,
@@ -779,5 +798,24 @@ mod tests {
         let rendered = std::str::from_utf8(&rendered).expect("UTF-8");
         assert!(rendered.contains("chat.completion.chunk"), "{rendered}");
         assert!(rendered.contains("data: [DONE]"), "{rendered}");
+    }
+
+    #[test]
+    fn nonstream_tool_calls_do_not_include_stream_only_indices() {
+        let reply = CodexReply {
+            content: None,
+            reasoning_content: None,
+            tool_calls: vec![CodexToolCall {
+                id: "call_1".to_string(),
+                name: "lookup".to_string(),
+                arguments: "{}".to_string(),
+            }],
+            finish_reason: "tool_calls".to_string(),
+        };
+        let rendered = render_open_ai_reply("gpt-test", false, reply).expect("OpenAI response");
+        let rendered: Value = serde_json::from_slice(&rendered).expect("response JSON");
+        let call = &rendered["choices"][0]["message"]["tool_calls"][0];
+        assert!(call.get("index").is_none());
+        assert_eq!(call["function"]["name"], "lookup");
     }
 }

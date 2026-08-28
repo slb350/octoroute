@@ -198,6 +198,9 @@ supervisor:
   provider:codex
 ```
 
+Each target may appear only once. Route order is the provider preference
+contract; provider entries intentionally have no independent priority field.
+
 Validation requires every local pool to precede every provider. Once a prompt
 has been disclosed to cloud, the same request may not fall back to a local
 machine. This preserves a simple disclosure boundary and prevents surprising
@@ -346,26 +349,22 @@ Implemented as one OpenAI-compatible base URL and stable model IDs. OpenCode sub
 `worker`; the primary agent uses `supervisor`. OpenCode remains responsible for
 worktree isolation and review.
 
-The representative suite validates:
+The automated suite validates:
 
 - simultaneous independent worker requests occupy distinct local endpoints;
-- an additional worker request returns or queues according to configured policy
-  without taking cloud fallback on the `worker` local-only route;
+- an additional worker admission reports busy without taking cloud fallback on
+  the `worker` local-only route;
 - exact-context admission rejects oversized input before dispatch;
 - Low, Medium, High, and XHigh fields survive schema-preserving proxying;
-- a disabled local supervisor is skipped without marking the whole route
-  unhealthy;
-- enabling a local supervisor makes it the first supervisor target;
 - provider-specific request quirks are applied only to their providers;
 - OpenCode-style function tools and fragmented Anthropic SSE round-trip through
   the public OpenAI contract;
 - Codex diagnostic, filtered environment, ephemeral invocation, lifecycle, and
   OpenAI response translation round-trip through the provider executor;
 - local-only never launches a subscription command or contacts cloud;
-- pre-commit failures may continue; post-commit failures may not switch target;
-- provider rate limits can continue only when the route explicitly allows it;
-- OpenCode can run multiple worktree-isolated subagents and integrate their
-  results.
+- provider admission failures continue only under their matching closed
+  trigger;
+- streaming bodies retain provider permits through completion or drop.
 
 ## Non-goals
 

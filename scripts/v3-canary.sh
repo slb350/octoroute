@@ -24,10 +24,10 @@ esac
   || fail 'OCTOROUTE_API_KEY must not contain a line break'
 [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] \
   || fail 'OCTOROUTE_CANARY_TIMEOUT_SECONDS must be a positive integer'
-[[ "$local_model" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] \
+[[ "$local_model" =~ ^[A-Za-z0-9._-]{1,128}$ ]] \
   || fail 'OCTOROUTE_LOCAL_MODEL is not a bounded model name'
 if [[ -n "$provider_model" ]]; then
-  [[ "$provider_model" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] \
+  [[ "$provider_model" =~ ^[A-Za-z0-9._-]{1,128}$ ]] \
     || fail 'OCTOROUTE_PROVIDER_MODEL is not a bounded model name'
 fi
 command -v "$curl_bin" >/dev/null 2>&1 || fail "curl executable not found: $curl_bin"

@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add cached, coalesced, bounded provider authentication/reachability probes;
   fixed-label admission, response, fallback, and probe counters; representative
   OpenCode-style provider integration tests; and a deployment canary script.
+- Bound virtual and physical model identifiers, credential-command argv,
+  upstream deadlines, and member/provider concurrency; reserve `auto` for the
+  default-route alias; reject duplicate route targets; and require successful
+  Codex diagnostics before readiness.
+- Apply local-pool reasoning defaults when callers omit reasoning controls and
+  reject multi-choice requests before Codex prompt disclosure.
+- Reject invalid local-member bearer credentials before the listener binds.
 
 ### Changed
 
@@ -35,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   integration tests, and operator documentation now use the inference fabric.
 - Move reusable environment, capability, privacy, HTTP-limit, error, and
   held-first-byte streaming primitives under neutral or fabric ownership.
+- Make route order the sole provider preference contract and remove the inert
+  provider-priority field.
+- Give the hardened systemd service an explicit private `CODEX_HOME` state
+  directory so ChatGPT-managed Codex readiness works with `ProtectHome=true`.
+- Align the workstation profile with the shipped loopback llama.cpp service.
 
 ### Removed
 

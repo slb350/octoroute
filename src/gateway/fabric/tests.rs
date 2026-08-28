@@ -257,3 +257,64 @@ fn provider_readiness_windows_are_bounded() {
     let error = FabricConfig::from_toml(&input).expect_err("probe TTL exceeds its bound");
     assert!(error.to_string().contains("readiness_ttl_ms"));
 }
+
+#[test]
+fn auto_is_reserved_for_the_default_route_alias() {
+    let input = include_str!("../../../config.toml").replace(
+        "model = \"auto-route\"\nprivacy = \"cloud_allowed\"",
+        "model = \"auto\"\nprivacy = \"cloud_allowed\"",
+    );
+    let error = FabricConfig::from_toml(&input).expect_err("auto route must be rejected");
+    assert!(error.to_string().contains("reserved"));
+}
+
+#[test]
+fn route_targets_cannot_repeat() {
+    let input = include_str!("../../../config.toml").replace(
+        "steps = [\"provider:kimi\", \"provider:zai\", \"provider:openrouter\", \"provider:codex\"]",
+        "steps = [\"provider:kimi\", \"provider:kimi\"]",
+    );
+    let error = FabricConfig::from_toml(&input).expect_err("duplicate target must be rejected");
+    assert!(error.to_string().contains("duplicate target"));
+}
+
+#[test]
+fn removed_provider_priority_is_rejected_instead_of_ignored() {
+    let input = include_str!("../../../config.toml").replace(
+        "name = \"kimi\"\nenabled = true",
+        "name = \"kimi\"\nenabled = true\npriority = 10",
+    );
+    let error = FabricConfig::from_toml(&input).expect_err("provider priority is not a field");
+    assert!(matches!(error, FabricConfigError::Parse { .. }));
+}
+
+#[test]
+fn credential_command_argv_is_statically_bounded() {
+    let oversized = "x".repeat(4097);
+    let input = include_str!("../../../config.toml").replace(
+        "api_key_env = \"KIMI_API_KEY\"",
+        &format!("api_key_command = [\"{oversized}\"]"),
+    );
+    let error = FabricConfig::from_toml(&input).expect_err("oversized argv must be rejected");
+    assert!(error.to_string().contains("4096"));
+}
+
+#[test]
+fn upstream_deadlines_and_concurrency_are_statically_bounded() {
+    let timeout = include_str!("../../../config.toml").replacen(
+        "timeout_ms = 1800000",
+        "timeout_ms = 3600001",
+        1,
+    );
+    let error = FabricConfig::from_toml(&timeout).expect_err("local timeout exceeds one hour");
+    assert!(error.to_string().contains("timeout_ms"));
+
+    let concurrency = include_str!("../../../config.toml").replacen(
+        "max_in_flight = 2",
+        "max_in_flight = 10001",
+        1,
+    );
+    let error =
+        FabricConfig::from_toml(&concurrency).expect_err("provider concurrency exceeds bound");
+    assert!(error.to_string().contains("max_in_flight"));
+}

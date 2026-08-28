@@ -40,6 +40,7 @@ model_revision = "immutable-release-id"
 context_window = 131072
 context_safety_tokens = 2048
 default_max_output_tokens = 16384
+timeout_ms = 1800000
 capabilities = ["chat", "stream", "tools", "structured_output", "reasoning"]
 strategy = "least_loaded"
 default_reasoning_effort = "medium"
@@ -68,7 +69,12 @@ Admission requires all of the following:
 4. a member concurrency permit is available;
 5. input tokens + output reservation + safety tokens fit the context window.
 
+When the caller omits both `reasoning_effort` and `reasoning`, local dispatch
+injects the selected pool's `default_reasoning_effort`. Caller controls win.
 The selected member permit remains held through the complete response body.
+`timeout_ms` is the complete local chat deadline. Local and provider request
+deadlines default to 30 minutes and must be between 1 millisecond and one hour.
+Member and provider `max_in_flight` values must be between 1 and 10,000.
 
 ## Providers
 
@@ -87,7 +93,6 @@ max_in_flight = 4
 timeout_ms = 1800000
 readiness_ttl_ms = 30000
 readiness_timeout_ms = 30000
-priority = 30
 temperature = 0.2
 profile = "open_router_auto"
 ```
@@ -98,14 +103,16 @@ HTTP endpoints must use HTTPS. Configure exactly one credential source:
 api_key_env = "PROVIDER_API_KEY"
 ```
 
-or a non-empty argv without shell interpretation:
+or a bounded argv without shell interpretation:
 
 ```toml
 api_key_command = ["secret-tool", "lookup", "service", "provider"]
 ```
 
-Credential commands run only after selection with a cleared environment (plus
-`PATH`), null stdin/stderr, a five-second deadline, and a 4 KiB output bound.
+Credential commands accept at most 32 arguments, 4 KiB per argument, and 16
+KiB total, with no empty argument or control character. They run only after
+selection with a cleared environment (plus `PATH`), null stdin/stderr, a
+five-second deadline, and a 4 KiB output bound.
 
 Optional request defaults are `reasoning_effort`, `temperature`, and
 `max_tokens`. Client-supplied non-null values win. `profile =
@@ -168,6 +175,8 @@ request runs ephemerally in an empty read-only workspace with user config,
 rules, tools, web, apps, hooks, memories, and subagents disabled. Output must
 match the bounded structured adapter contract. A streaming OpenAI request is
 returned as one complete SSE chunk plus `[DONE]`, not token-by-token output.
+Requests for multiple choices, unsupported media, or provider-specific plugins
+are rejected as `incompatible` before the CLI receives the prompt.
 
 ## Virtual routes
 
@@ -183,9 +192,10 @@ default_reasoning_effort = "medium"
 fallback_on = ["busy", "unhealthy", "context_overflow", "incompatible", "rate_limited", "precommit_failure"]
 ```
 
-Targets use `pool:name` or `provider:name`. Every target must exist. Local pools
-must precede providers so a disclosed request can never return to local
-execution.
+Targets use `pool:name` or `provider:name`. Every target must exist and may
+appear only once in a route. Local pools must precede providers so a disclosed
+request can never return to local execution. Route order is the provider
+preference order; providers do not have a separate priority field.
 
 Privacy values:
 
@@ -201,8 +211,11 @@ Fallback values are `busy`, `unhealthy`, `context_overflow`, `incompatible`,
 `rate_limited`, and `precommit_failure`. Omitting `fallback_on` enables the full
 closed set; specify an explicit subset when a route should stop sooner.
 
-`model: auto` resolves to `routing.default_model`. Other model values must
-match a configured route exactly.
+`model: auto` resolves to `routing.default_model`, so `auto` is reserved and
+cannot also name a virtual route. Other model values must match a configured
+route exactly and use at most 128 ASCII letters, digits, dots, underscores, or
+hyphens. Configured upstream model IDs use at most 512 visible ASCII bytes
+without whitespace.
 
 ## Observability
 

@@ -7,6 +7,8 @@ use serde_json::{Map, Value};
 use std::{collections::BTreeSet, sync::OnceLock};
 use thiserror::Error;
 
+const MAX_VIRTUAL_MODEL_BYTES: usize = 128;
+
 /// A feature inferred from the request envelope without rewriting messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RequestFeature {
@@ -43,8 +45,13 @@ impl GatewayRequest {
         let model = body
             .get("model")
             .and_then(Value::as_str)
-            .filter(|model| !model.trim().is_empty())
-            .ok_or_else(|| invalid("model", "must be a non-empty string"))?
+            .filter(|model| valid_virtual_model(model))
+            .ok_or_else(|| {
+                invalid(
+                    "model",
+                    "must use 1..=128 ASCII letters, digits, dots, underscores, or hyphens",
+                )
+            })?
             .to_string();
 
         body.get("messages")
@@ -115,6 +122,31 @@ impl GatewayRequest {
         })
         .map(Bytes::from)
         .map_err(|_| GatewayRequestError::Serialization)
+    }
+
+    /// Serialize a local body, supplying the pool reasoning default only when
+    /// the caller omitted both supported reasoning controls.
+    pub(crate) fn body_bytes_for_model_with_reasoning_default(
+        &self,
+        model: &str,
+        reasoning_effort: &str,
+    ) -> Result<Bytes, GatewayRequestError> {
+        let mut body = self.body_value_for_model(model)?;
+        let object = body
+            .as_object_mut()
+            .expect("gateway request bodies are validated objects");
+        let has_reasoning_control = ["reasoning_effort", "reasoning"]
+            .iter()
+            .any(|field| object.get(*field).is_some_and(|value| !value.is_null()));
+        if !has_reasoning_control {
+            object.insert(
+                "reasoning_effort".to_string(),
+                Value::String(reasoning_effort.to_string()),
+            );
+        }
+        serde_json::to_vec(&body)
+            .map(Bytes::from)
+            .map_err(|_| GatewayRequestError::Serialization)
     }
 
     /// Clone the schema-preserving body while replacing only the destination model.
@@ -348,6 +380,14 @@ fn validate_destination_model(model: &str) -> Result<(), GatewayRequestError> {
         return Err(invalid("model", "destination model must not be empty"));
     }
     Ok(())
+}
+
+fn valid_virtual_model(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= MAX_VIRTUAL_MODEL_BYTES
+        && model
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 fn invalid(field: impl Into<String>, message: impl Into<String>) -> GatewayRequestError {
