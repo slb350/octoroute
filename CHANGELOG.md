@@ -52,7 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report `degraded` from `/health` when some configured target is unavailable
   while others still serve.
 - Wire `cargo-mutants` into the tracked pre-commit hook, the justfile, and CI,
-  replacing a benchmark-compilation job that compiled nothing.
+  replacing a benchmark-compilation job that compiled nothing. The documentation
+  build with `RUSTDOCFLAGS: -D warnings` remains a separate CI job.
 
 ### Changed
 

@@ -46,15 +46,23 @@ cleanup_mutation_scratch() {
   # `find` does not follow symlinks by default. Descendants match the path arm,
   # then -depth removes the matching top-level cargo-mutants directory last.
   # No other entry directly under a caller-supplied TMPDIR can match.
+  #
+  # `|| true` because -delete races with anything still tearing down its own
+  # copy and reports ENOENT per vanished entry. Under `set -e` that non-zero
+  # status aborts the sweep before cargo-mutants starts; from the EXIT trap it
+  # overwrites the real exit status and reports a clean sweep as a failure.
+  # Losing a stale directory is harmless, so the status is discarded.
   find "$TMPDIR" -depth -mindepth 1 \
     \( -name 'cargo-mutants-*.tmp' -o \
     -path "$TMPDIR"/'cargo-mutants-*.tmp/*' -o \
     -name 'octoroute-diff-test-*' -o \
-    -path "$TMPDIR"/'octoroute-diff-test-*/*' \) -delete
+    -path "$TMPDIR"/'octoroute-diff-test-*/*' \) -delete 2>/dev/null || true
 }
 
 cleanup_mutation_scratch
-trap cleanup_mutation_scratch EXIT
+# Preserve the verdict across the trap: the trap runs on the way out, and its
+# own exit status would otherwise become the script's.
+trap 'mutants_exit_status=$?; cleanup_mutation_scratch; exit "$mutants_exit_status"' EXIT
 
 # --minimum-test-timeout: cargo-mutants derives the per-mutant timeout from the
 # unmutated baseline, which on a fast suite is a second or two. With -j running

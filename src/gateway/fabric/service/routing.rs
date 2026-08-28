@@ -30,12 +30,15 @@ where
         plan: &RoutePlan,
         request_id: &str,
     ) -> Response<Body> {
-        // Routing latency is everything spent selecting a destination -
-        // admission, health, slot, and token-count probes - up to the moment a
-        // lease is held, and excludes the upstream call itself.
-        let routing_started = Instant::now();
         for (index, step) in plan.steps.iter().enumerate() {
             let has_more = index + 1 < plan.steps.len();
+            // Restarted per step. One observation is the admission work for one
+            // destination - health, slot, and token-count probes, credential
+            // resolution, body construction - up to the moment its lease is
+            // held. A request that falls forward records one observation per
+            // step it reaches, and none of them include the upstream call that
+            // caused the fall-forward.
+            let routing_started = Instant::now();
             match step {
                 RouteTarget::LocalPool(pool_name) => {
                     let outcome = match self.pools.get(pool_name) {

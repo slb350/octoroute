@@ -406,20 +406,23 @@ fn unparseable_provider_error_bodies_fall_back_to_a_fixed_message() {
     assert!(body["error"].get("upstream_type").is_none());
 }
 
-/// A mixed-terminator stream must split at the earliest boundary. Scanning the
-/// whole buffer for `\n\n` first finds the one inside a later `\r\n\r\n` and
-/// splits the earlier CRLF event at the wrong offset.
+/// A mixed-terminator stream must split at the earliest boundary.
+///
+/// Both terminators have to be in the buffer at once for this to discriminate:
+/// `push` drains the buffer on every call, so feeding one event per call never
+/// reaches the state where a later standalone `\n\n` wins over an earlier
+/// `\r\n\r\n`. The events are concatenated into a single `push` for that reason.
 #[test]
 fn mixed_terminator_streams_split_at_the_earliest_boundary() {
-    let mut translator = AnthropicSseTranslator::new("k3");
-    let mut output = Vec::new();
-    for event in [
+    let stream = concat!(
         "event: message_start\r\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"model\":\"k3\",\"usage\":{\"input_tokens\":7}}}\r\n\r\n",
         "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
         "event: message_stop\r\ndata: {\"type\":\"message_stop\"}\r\n\r\n",
-    ] {
-        output.extend(translator.push(event.as_bytes()).expect("translated chunk"));
-    }
+    );
+    let mut translator = AnthropicSseTranslator::new("k3");
+    let output = translator
+        .push(stream.as_bytes())
+        .expect("a mixed-terminator buffer must split at each boundary");
     translator.finish().expect("complete stream");
     let rendered = output
         .iter()

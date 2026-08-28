@@ -12,10 +12,14 @@ cargo fmt --all --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
 cargo test --locked --no-default-features
-cargo bench --locked --all-features --no-run
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --all-features --no-deps
 cargo audit --deny warnings
+./scripts/mutants-run.sh
 ```
+
+The repository has no `benches/` directory and no `[[bench]]` target, so there
+is no benchmark step. The mutation sweep is the slowest gate; `just mutants`
+offloads it to `strix.local` when that host is reachable.
 
 `just check` runs clippy and the formatting check. `just test` runs the tests,
 `just mutants` the mutation sweep, and `just validate` all of them. The focused

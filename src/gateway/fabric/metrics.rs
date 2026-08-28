@@ -53,9 +53,10 @@ const POOL_ADMISSION_STATES: &[&str] = &[
 
 /// Upper bounds, in seconds, of the routing-latency histogram.
 ///
-/// Routing covers admission, health, slot, and token-count probes up to the
-/// point a destination is chosen, so the buckets span a sub-millisecond local
-/// hit through a probe that reaches its deadline.
+/// One observation is the admission work for one route step, so the buckets span
+/// a sub-millisecond local hit through a probe that reaches its deadline. A
+/// request that falls forward contributes one observation per step it reaches,
+/// so `_count` is admissions, not requests.
 const ROUTING_BUCKETS_SECONDS: &[f64] = &[
     0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 ];
@@ -131,7 +132,7 @@ impl FabricMetrics {
         });
     }
 
-    /// Record how long choosing a destination took, before any upstream call.
+    /// Record the admission time for one route step, excluding its upstream call.
     pub(super) fn record_routing_latency(&self, elapsed: Duration) {
         let seconds = elapsed.as_secs_f64();
         let mut counters = self.lock();
@@ -346,7 +347,7 @@ fn render_family(
 fn render_routing_histogram(output: &mut String, counters: &MetricCounters) {
     const METRIC: &str = "octoroute_fabric_routing_duration_seconds";
     output.push_str(&format!(
-        "# HELP {METRIC} Time spent choosing a destination, before any upstream call.\n\
+        "# HELP {METRIC} Admission time for one route step, excluding its upstream call.\n\
          # TYPE {METRIC} histogram\n"
     ));
     for (index, bound) in ROUTING_BUCKETS_SECONDS.iter().enumerate() {
