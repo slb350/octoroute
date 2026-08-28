@@ -117,6 +117,7 @@ async fn local_pool_sse_is_forwarded_opaquely_with_unknown_request_fields() {
             "model": "coding-worker-model",
             "messages": [{"role": "user", "content": "hello"}],
             "stream": true,
+            "reasoning_effort": "medium",
             "future_field": {"preserved": true}
         })))
         .respond_with(
