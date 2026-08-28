@@ -137,3 +137,92 @@ async fn shutdown_signal() {
         _ = terminate => tracing::info!("received SIGTERM"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, io};
+    use tempfile::TempDir;
+
+    #[test]
+    fn write_new_artifact_writes_exact_bytes() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("artifact.bin");
+        let contents = b"exact artifact bytes\n\0with a binary suffix";
+
+        write_new_artifact(&path, "test artifact", contents).expect("write new artifact");
+
+        assert_eq!(fs::read(path).expect("read artifact"), contents);
+    }
+
+    #[test]
+    fn write_new_artifact_remaps_only_already_exists_errors() {
+        let directory = TempDir::new().expect("temporary directory");
+        let existing_path = directory.path().join("existing.toml");
+        fs::write(&existing_path, "preserve me").expect("create existing file");
+
+        let existing_error =
+            write_new_artifact(&existing_path, "configuration file", b"replacement")
+                .expect_err("existing path must be refused");
+        assert_eq!(existing_error.kind(), io::ErrorKind::AlreadyExists);
+        let message = existing_error.to_string();
+        assert!(message.contains("configuration file"), "{message}");
+        assert!(message.contains("already exists"), "{message}");
+        assert!(
+            message.contains(&existing_path.display().to_string()),
+            "{message}"
+        );
+        assert_eq!(
+            fs::read_to_string(&existing_path).expect("read preserved file"),
+            "preserve me"
+        );
+
+        let missing_parent_path = directory.path().join("missing").join("artifact.toml");
+        let expected_error = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&missing_parent_path)
+            .expect_err("missing parent must fail");
+        let actual_error =
+            write_new_artifact(&missing_parent_path, "configuration file", b"contents")
+                .expect_err("missing parent must fail");
+
+        assert_eq!(actual_error.kind(), expected_error.kind());
+        assert_eq!(actual_error.raw_os_error(), expected_error.raw_os_error());
+        assert_eq!(actual_error.to_string(), expected_error.to_string());
+    }
+
+    #[test]
+    fn handle_config_command_writes_parseable_v3_template() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("octoroute.toml");
+
+        handle_config_command(Some(path.display().to_string())).expect("generate configuration");
+
+        let contents = fs::read_to_string(&path).expect("read generated configuration");
+        assert_eq!(contents, generate_config_template());
+        let config = FabricConfig::from_toml(&contents).expect("valid v3 configuration");
+        assert_eq!(config.default_model, "auto-route");
+    }
+
+    #[test]
+    fn handle_config_command_refuses_to_overwrite_existing_file() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("octoroute.toml");
+        fs::write(&path, "operator-owned contents").expect("create existing configuration");
+
+        let error = handle_config_command(Some(path.display().to_string()))
+            .expect_err("existing configuration must be refused");
+        let io_error = error
+            .downcast_ref::<io::Error>()
+            .expect("configuration error must preserve its I/O type");
+        assert_eq!(io_error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(io_error.to_string().contains("configuration file"));
+        assert!(io_error.to_string().contains("already exists"));
+        assert!(io_error.to_string().contains(&path.display().to_string()));
+        assert_eq!(
+            fs::read_to_string(path).expect("read preserved configuration"),
+            "operator-owned contents"
+        );
+    }
+}
