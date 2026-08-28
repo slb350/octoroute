@@ -19,7 +19,10 @@ cargo audit --deny warnings
 
 The repository has no `benches/` directory and no `[[bench]]` target, so there
 is no benchmark step. The mutation sweep is the slowest gate; `just mutants`
-offloads it to `strix.local` when that host is reachable.
+offloads it to `homelab-1.local` when that host is reachable, and falls back to
+a local run with a warning when it is not. That host is shared with self-hosted
+CI runners, so the sweep is capped at `CPUQuota=500%` of its 16 cores; raise it
+with `OCTOROUTE_MUTANTS_CPUQUOTA` when you know the box is idle.
 
 `just check` runs clippy and the formatting check. `just test` runs the tests,
 `just mutants` the mutation sweep, and `just validate` all of them. The focused

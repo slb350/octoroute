@@ -71,7 +71,7 @@ clean:
 ci: check test
     @echo "CI checks passed!"
 
-# Mutation-test the whole tree (offloaded to strix.local when reachable)
+# Mutation-test the whole tree (offloaded to homelab-1.local when reachable)
 mutants:
     @echo "Running full mutation sweep..."
     ./scripts/mutants-remote.sh
