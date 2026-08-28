@@ -281,3 +281,27 @@ fn parse_errors_locate_the_fault_without_echoing_the_document() {
         "a parse error must never echo the document"
     );
 }
+
+/// `validate_model` and `validate_revision` accept visible ASCII only. The
+/// interesting rejections are bytes that are neither graphic nor whitespace -
+/// NUL, DEL, and any non-ASCII byte - because a charset test using only spaces
+/// cannot distinguish the intended check from a broken one.
+#[test]
+fn visible_ascii_validators_reject_non_graphic_bytes() {
+    for value in ["gpt-4o", "sha256:abc/def+1", "model@v2", "~!#$%^&*()_+"] {
+        validate_model(FIELD, value).unwrap_or_else(|_| panic!("`{value}` is visible ASCII"));
+        validate_revision(FIELD, value).unwrap_or_else(|_| panic!("`{value}` is visible ASCII"));
+    }
+    for value in [
+        "model\u{0000}",
+        "model\u{007f}",
+        "mod\u{00e9}l",
+        "model\u{200b}",
+        "model space",
+        "model\ttab",
+        "model\nnewline",
+    ] {
+        validate_model(FIELD, value).expect_err("not visible ASCII");
+        validate_revision(FIELD, value).expect_err("not visible ASCII");
+    }
+}

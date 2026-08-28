@@ -102,9 +102,9 @@ pub(crate) fn validate_name(field: &str, value: &str) -> Result<(), FabricConfig
 pub(super) fn validate_revision(field: &str, value: &str) -> Result<(), FabricConfigError> {
     validate_nonempty(field, value)?;
     if value.len() > 128
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_graphic() && !byte.is_ascii_whitespace())
+        // `is_ascii_graphic` is 0x21..=0x7E, which already excludes every
+        // whitespace byte, so no separate whitespace test is needed.
+        || !value.bytes().all(|byte| byte.is_ascii_graphic())
     {
         return Err(invalid(
             field,
@@ -125,9 +125,9 @@ pub(super) fn validate_nonempty(field: &str, value: &str) -> Result<(), FabricCo
 pub(super) fn validate_model(field: &str, value: &str) -> Result<(), FabricConfigError> {
     validate_nonempty(field, value)?;
     if value.len() > MAX_MODEL_BYTES
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_graphic() && !byte.is_ascii_whitespace())
+        // `is_ascii_graphic` is 0x21..=0x7E, which already excludes every
+        // whitespace byte, so no separate whitespace test is needed.
+        || !value.bytes().all(|byte| byte.is_ascii_graphic())
     {
         return Err(invalid(
             field,
