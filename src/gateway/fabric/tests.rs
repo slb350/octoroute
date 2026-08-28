@@ -34,19 +34,21 @@ fn repository_example_parses() {
     let config = example();
     assert_eq!(config.default_model, "auto-route");
     assert_eq!(config.local_pools["workers"].members.len(), 3);
+    assert!(matches!(
+        config.providers["kimi"].runtime,
+        ProviderRuntimeConfig::Http {
+            protocol: ProviderProtocol::Anthropic,
+            ..
+        }
+    ));
     assert_eq!(
-        config.providers["kimi"].protocol,
-        Some(ProviderProtocol::Anthropic)
+        config.providers["codex"].runtime.kind(),
+        ProviderKind::CodexCli
     );
-    assert_eq!(config.providers["codex"].kind, ProviderKind::CodexCli);
-    assert_eq!(
-        config.providers["zai"]
-            .endpoint
-            .as_ref()
-            .expect("z.ai endpoint")
-            .path(),
-        "/api/coding/paas/v4/"
-    );
+    let ProviderRuntimeConfig::Http { endpoint, .. } = &config.providers["zai"].runtime else {
+        panic!("z.ai is an HTTP provider");
+    };
+    assert_eq!(endpoint.path(), "/api/coding/paas/v4/");
 }
 
 #[test]
@@ -206,10 +208,10 @@ fn anthropic_provider_requires_a_bounded_default_max_tokens() {
 #[test]
 fn codex_provider_accepts_only_an_executable_override() {
     let config = example();
-    assert_eq!(
-        config.providers["codex"].executable.as_deref(),
-        Some("codex")
-    );
+    let ProviderRuntimeConfig::CodexCli { executable } = &config.providers["codex"].runtime else {
+        panic!("codex is a CLI provider");
+    };
+    assert_eq!(executable, "codex");
 
     let input = config_with(
         "executable = \"codex\"",

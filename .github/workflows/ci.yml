@@ -110,8 +110,8 @@ jobs:
       - name: Audit locked dependencies
         run: cargo audit --deny warnings
 
-  bench:
-    name: Benchmark Compilation
+  mutants:
+    name: Mutation Testing
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -128,32 +128,16 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-mutants-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Check benchmark targets compile
-        run: cargo bench --locked --all-features --no-run
-
-  docs:
-    name: Documentation Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d # v2.87.0
         with:
-          toolchain: stable
+          tool: cargo-mutants@27.1.0
 
-      - name: Cache cargo
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build documentation
-        run: cargo doc --locked --all-features --no-deps
-        env:
-          RUSTDOCFLAGS: -D warnings
+      # A GitHub runner cannot reach the LAN, so the sweep runs locally here.
+      # Survivors print as `MISSED <file>:<line>: <mutation>` straight into the
+      # job log; the verdict comes from missed.txt, not the exit code, which is
+      # what scripts/mutants-run.sh exists to decide.
+      - name: Run mutation sweep
+        run: ./scripts/mutants-run.sh

@@ -15,8 +15,9 @@ mod transport;
 pub use config::{
     FABRIC_CONFIG_VERSION, FabricConfig, FabricConfigError, FabricObservabilityConfig,
     FabricServerConfig, FallbackTrigger, LocalCapability, LocalMemberConfig, LocalPoolConfig,
-    PoolStrategy, ProviderConfig, ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort,
-    RoutePrivacy, RouteTarget, VirtualRoute,
+    PoolStrategy, ProviderConfig, ProviderCredentialConfig, ProviderKind, ProviderProfile,
+    ProviderProtocol, ProviderRuntimeConfig, ReasoningEffort, RoutePrivacy, RouteTarget,
+    VirtualRoute,
 };
 pub use http::fabric_gateway_app;
 pub use local_pool::{

@@ -161,12 +161,15 @@ pub enum PoolStrategy {
 pub struct ProviderConfig {
     pub name: String,
     pub enabled: bool,
-    pub kind: ProviderKind,
-    pub endpoint: Option<Url>,
-    pub protocol: Option<ProviderProtocol>,
+    /// Which runtime this provider uses, and the fields only that runtime has.
+    ///
+    /// The validator has always enforced a sum type here: an `http` provider
+    /// must have an endpoint, a protocol, and exactly one credential source; a
+    /// `codex_cli` provider must have an executable and none of those. Encoding
+    /// it as a product of `Option`s meant the runtime had to recover the
+    /// discriminant with `expect`, including on the request path.
+    pub runtime: ProviderRuntimeConfig,
     pub model: String,
-    pub api_key_env: Option<String>,
-    pub api_key_command: Option<Vec<String>>,
     pub max_in_flight: usize,
     pub timeout_ms: u64,
     /// Optional deadline for the first upstream body byte. See
@@ -178,7 +181,38 @@ pub struct ProviderConfig {
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
     pub profile: ProviderProfile,
-    pub executable: Option<String>,
+}
+
+/// The runtime-specific half of a provider, as the validator enforces it.
+#[derive(Debug, Clone)]
+pub enum ProviderRuntimeConfig {
+    /// An HTTP API reached over one of the supported wire protocols.
+    Http {
+        endpoint: Url,
+        protocol: ProviderProtocol,
+        credential: ProviderCredentialConfig,
+    },
+    /// A locally installed, subscription-backed Codex CLI.
+    CodexCli { executable: String },
+}
+
+impl ProviderRuntimeConfig {
+    /// The declared kind, for metrics and configuration reporting.
+    pub const fn kind(&self) -> ProviderKind {
+        match self {
+            Self::Http { .. } => ProviderKind::Http,
+            Self::CodexCli { .. } => ProviderKind::CodexCli,
+        }
+    }
+}
+
+/// Where a provider's credential comes from. Exactly one source, never both.
+#[derive(Debug, Clone)]
+pub enum ProviderCredentialConfig {
+    /// Name of an environment variable holding the credential.
+    Environment(String),
+    /// Argv of a command whose stdout is the credential.
+    Command(Vec<String>),
 }
 
 /// Concrete execution path for a provider.
@@ -701,7 +735,7 @@ fn validate_providers(
             ));
         }
 
-        let (endpoint, protocol) = match raw.kind {
+        let runtime = match raw.kind {
             ProviderKind::Http => {
                 if raw.executable.is_some() {
                     return Err(invalid(
@@ -749,10 +783,18 @@ fn validate_providers(
                         "is required for Anthropic-compatible providers",
                     ));
                 }
-                (
-                    Some(validate_url("fabric.providers.endpoint", endpoint, true)?),
-                    Some(protocol),
-                )
+                let credential = match (raw.api_key_env, raw.api_key_command) {
+                    (Some(name), None) => ProviderCredentialConfig::Environment(name),
+                    (None, Some(command)) => ProviderCredentialConfig::Command(command),
+                    // The `has_env == has_command` check above already rejected
+                    // both and neither.
+                    _ => unreachable!("exactly one credential source was validated"),
+                };
+                ProviderRuntimeConfig::Http {
+                    endpoint: validate_url("fabric.providers.endpoint", endpoint, true)?,
+                    protocol,
+                    credential,
+                }
             }
             ProviderKind::CodexCli => {
                 if raw.endpoint.is_some()
@@ -774,7 +816,11 @@ fn validate_providers(
                         .as_deref()
                         .unwrap_or(DEFAULT_CODEX_EXECUTABLE),
                 )?;
-                (None, None)
+                ProviderRuntimeConfig::CodexCli {
+                    executable: raw
+                        .executable
+                        .unwrap_or_else(|| DEFAULT_CODEX_EXECUTABLE.to_string()),
+                }
             }
         };
 
@@ -782,12 +828,8 @@ fn validate_providers(
         let provider = ProviderConfig {
             name: raw.name,
             enabled: raw.enabled,
-            kind: raw.kind,
-            endpoint,
-            protocol,
+            runtime,
             model: raw.model,
-            api_key_env: raw.api_key_env,
-            api_key_command: raw.api_key_command,
             max_in_flight: raw.max_in_flight,
             timeout_ms: raw.timeout_ms,
             readiness_ttl_ms: raw.readiness_ttl_ms,
@@ -797,10 +839,6 @@ fn validate_providers(
             temperature: raw.temperature,
             max_tokens: raw.max_tokens,
             profile: raw.profile,
-            executable: (raw.kind == ProviderKind::CodexCli).then(|| {
-                raw.executable
-                    .unwrap_or_else(|| DEFAULT_CODEX_EXECUTABLE.to_string())
-            }),
         };
         if providers.insert(name.clone(), provider).is_some() {
             return Err(invalid(

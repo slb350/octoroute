@@ -1,5 +1,6 @@
 use super::{
-    FabricConfig, FabricGatewayService, FallbackTrigger, ProviderAdmissionState, RouteTarget,
+    FabricConfig, FabricGatewayService, FallbackTrigger, ProviderAdmissionState,
+    ProviderRuntimeConfig, RouteTarget,
 };
 use crate::gateway::env::Environment;
 use axum::{
@@ -72,6 +73,30 @@ async fn response_body(response: Response<Body>) -> Bytes {
         .expect("response body")
 }
 
+/// Repoint an HTTP provider at a mock server, preserving its protocol and
+/// credential source.
+fn set_provider_endpoint(config: &mut FabricConfig, provider: &str, endpoint: Url) {
+    let runtime = &mut config
+        .providers
+        .get_mut(provider)
+        .expect("configured provider")
+        .runtime;
+    match runtime {
+        ProviderRuntimeConfig::Http {
+            protocol,
+            credential,
+            ..
+        } => {
+            *runtime = ProviderRuntimeConfig::Http {
+                endpoint,
+                protocol: *protocol,
+                credential: credential.clone(),
+            };
+        }
+        ProviderRuntimeConfig::CodexCli { .. } => panic!("{provider} is not an HTTP provider"),
+    }
+}
+
 fn local_config(server: &MockServer) -> FabricConfig {
     let mut config = FabricConfig::from_toml(include_str!("../../../config.toml")).expect("config");
     let workers = config.local_pools.get_mut("workers").expect("workers pool");
@@ -83,11 +108,7 @@ fn local_config(server: &MockServer) -> FabricConfig {
 fn single_provider_config(server: &MockServer, provider: &str) -> FabricConfig {
     let mut config = local_config(server);
     let endpoint = Url::parse(&format!("{}/", server.uri())).expect("mock provider URL");
-    config
-        .providers
-        .get_mut(provider)
-        .expect("configured provider")
-        .endpoint = Some(endpoint);
+    set_provider_endpoint(&mut config, provider, endpoint);
     config
         .routes
         .get_mut("cloud-sota")
@@ -380,12 +401,8 @@ async fn missing_provider_credential_surfaces_instead_of_rerouting_spend() {
 
     let mut config = local_config(&server);
     let endpoint = Url::parse(&format!("{}/", server.uri())).expect("mock provider URL");
-    config.providers.get_mut("zai").expect("zai").endpoint = Some(endpoint.clone());
-    config
-        .providers
-        .get_mut("openrouter")
-        .expect("openrouter")
-        .endpoint = Some(endpoint);
+    set_provider_endpoint(&mut config, "zai", endpoint.clone());
+    set_provider_endpoint(&mut config, "openrouter", endpoint);
     config
         .routes
         .get_mut("cloud-sota")
@@ -446,12 +463,8 @@ async fn unauthenticated_fallback_is_available_when_explicitly_configured() {
 
     let mut config = local_config(&server);
     let endpoint = Url::parse(&format!("{}/", server.uri())).expect("mock provider URL");
-    config.providers.get_mut("zai").expect("zai").endpoint = Some(endpoint.clone());
-    config
-        .providers
-        .get_mut("openrouter")
-        .expect("openrouter")
-        .endpoint = Some(endpoint);
+    set_provider_endpoint(&mut config, "zai", endpoint.clone());
+    set_provider_endpoint(&mut config, "openrouter", endpoint);
     let route = config.routes.get_mut("cloud-sota").expect("cloud route");
     route.steps = vec![
         RouteTarget::Provider("zai".to_string()),
@@ -520,12 +533,8 @@ async fn provider_response_fallback_obeys_the_closed_trigger_set() {
 
         let mut config = local_config(&server);
         let endpoint = Url::parse(&format!("{}/", server.uri())).expect("mock provider URL");
-        config.providers.get_mut("zai").expect("zai").endpoint = Some(endpoint.clone());
-        config
-            .providers
-            .get_mut("openrouter")
-            .expect("openrouter")
-            .endpoint = Some(endpoint);
+        set_provider_endpoint(&mut config, "zai", endpoint.clone());
+        set_provider_endpoint(&mut config, "openrouter", endpoint);
         let route = config.routes.get_mut("cloud-sota").expect("cloud route");
         route.steps = vec![
             RouteTarget::Provider("zai".to_string()),
@@ -810,7 +819,9 @@ async fn codex_cli_dispatch_is_ephemeral_filtered_and_open_ai_compatible() {
     }
     let codex = config.providers.get_mut("codex").expect("codex provider");
     codex.enabled = true;
-    codex.executable = Some(executable.to_string_lossy().into_owned());
+    codex.runtime = ProviderRuntimeConfig::CodexCli {
+        executable: executable.to_string_lossy().into_owned(),
+    };
     config
         .routes
         .get_mut("cloud-sota")

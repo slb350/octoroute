@@ -1,7 +1,8 @@
 //! Lazy, credential-isolated runtime registry for configured inference providers.
 
 use super::{
-    ProviderConfig, ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort, anthropic,
+    ProviderConfig, ProviderCredentialConfig, ProviderProfile, ProviderProtocol,
+    ProviderRuntimeConfig, ReasoningEffort, anthropic,
     codex::{self, ChildEnvironment, CodexRequest},
     metrics::FabricMetrics,
     transport::UpstreamDeadlines,
@@ -121,6 +122,7 @@ enum ProviderRuntime {
 
 struct HttpProvider {
     config: ProviderConfig,
+    protocol: ProviderProtocol,
     request_url: Url,
     models_url: Url,
     credential: CachedCredential,
@@ -235,18 +237,28 @@ impl ProviderRegistry {
                     metrics: Arc::clone(&metrics),
                 }
             } else {
-                match config.kind {
-                    ProviderKind::Http => ProviderRuntime::Http(Arc::new(HttpProvider::new(
+                match &config.runtime {
+                    ProviderRuntimeConfig::Http {
+                        endpoint,
+                        protocol,
+                        credential,
+                    } => ProviderRuntime::Http(Arc::new(HttpProvider::new(
                         config,
+                        endpoint,
+                        *protocol,
+                        credential,
                         Arc::clone(&environment),
                         client.clone(),
                         Arc::clone(&metrics),
                     )?)),
-                    ProviderKind::CodexCli => ProviderRuntime::Codex(Arc::new(CodexProvider::new(
-                        config,
-                        codex_environment.clone(),
-                        Arc::clone(&metrics),
-                    ))),
+                    ProviderRuntimeConfig::CodexCli { executable } => {
+                        ProviderRuntime::Codex(Arc::new(CodexProvider::new(
+                            config,
+                            executable,
+                            codex_environment.clone(),
+                            Arc::clone(&metrics),
+                        )))
+                    }
                 }
             };
             providers.insert(name.clone(), runtime);
@@ -303,15 +315,13 @@ impl ProviderRegistry {
 impl HttpProvider {
     fn new(
         config: &ProviderConfig,
+        endpoint: &Url,
+        protocol: ProviderProtocol,
+        credential: &ProviderCredentialConfig,
         environment: Arc<dyn Environment + Send + Sync>,
         client: Client,
         metrics: Arc<FabricMetrics>,
     ) -> Result<Self, ProviderRegistryBuildError> {
-        let endpoint = config
-            .endpoint
-            .as_ref()
-            .ok_or_else(|| invalid_provider(config))?;
-        let protocol = config.protocol.ok_or_else(|| invalid_provider(config))?;
         let path = match protocol {
             ProviderProtocol::OpenAi => CHAT_COMPLETIONS_PATH,
             ProviderProtocol::Anthropic => ANTHROPIC_MESSAGES_PATH,
@@ -319,19 +329,19 @@ impl HttpProvider {
         let request_url = endpoint_url(endpoint, path).ok_or_else(|| invalid_provider(config))?;
         let models_url =
             endpoint_url(endpoint, MODELS_PATH).ok_or_else(|| invalid_provider(config))?;
-        let credential = match (&config.api_key_env, &config.api_key_command) {
-            (Some(name), None) => ProviderCredentialSource::Environment {
+        let credential = match credential {
+            ProviderCredentialConfig::Environment(name) => ProviderCredentialSource::Environment {
                 name: name.clone(),
                 environment,
             },
-            (None, Some(command)) => ProviderCredentialSource::Command {
+            ProviderCredentialConfig::Command(command) => ProviderCredentialSource::Command {
                 command: command.clone(),
                 environment: ChildEnvironment::current(),
             },
-            _ => return Err(invalid_provider(config)),
         };
         Ok(Self {
             config: config.clone(),
+            protocol,
             request_url,
             models_url,
             credential: CachedCredential::new(credential),
@@ -354,11 +364,7 @@ impl HttpProvider {
                 ));
             }
         };
-        let adapter = match self
-            .config
-            .protocol
-            .expect("validated HTTP providers have a protocol")
-        {
+        let adapter = match self.protocol {
             ProviderProtocol::OpenAi => ProviderHttpAdapter::OpenAi,
             ProviderProtocol::Anthropic => ProviderHttpAdapter::Anthropic {
                 stream: request
@@ -444,12 +450,11 @@ impl HttpProvider {
         }
         let state = match self.credential.resolve().await {
             Ok(api_key) => {
-                let protocol = self
-                    .config
-                    .protocol
-                    .expect("validated HTTP providers have a protocol");
-                let request =
-                    authorize_http(self.client.get(self.models_url.clone()), &api_key, protocol);
+                let request = authorize_http(
+                    self.client.get(self.models_url.clone()),
+                    &api_key,
+                    self.protocol,
+                );
                 match tokio::time::timeout(
                     Duration::from_millis(self.config.readiness_timeout_ms),
                     request.send(),
@@ -487,17 +492,13 @@ impl HttpProvider {
 impl CodexProvider {
     fn new(
         config: &ProviderConfig,
+        executable: &str,
         environment: ChildEnvironment,
         metrics: Arc<FabricMetrics>,
     ) -> Self {
         Self {
             config: config.clone(),
-            executable: PathBuf::from(
-                config
-                    .executable
-                    .as_deref()
-                    .expect("validated codex_cli providers have an executable"),
-            ),
+            executable: PathBuf::from(executable),
             environment,
             permits: Arc::new(Semaphore::new(config.max_in_flight)),
             readiness: Mutex::new(CachedReadiness::default()),
@@ -520,6 +521,7 @@ impl CodexProvider {
         };
         let request = match codex::build_request(
             &self.config,
+            &self.executable,
             request,
             route_reasoning_effort,
             self.environment.clone(),

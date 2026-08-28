@@ -71,12 +71,21 @@ clean:
 ci: check test
     @echo "CI checks passed!"
 
+# Mutation-test the whole tree (offloaded to strix.local when reachable)
+mutants:
+    @echo "Running full mutation sweep..."
+    ./scripts/mutants-remote.sh
+
+# Mutation-test only the staged Rust changes
+mutants-staged:
+    ./scripts/mutants-staged.sh
+
 # Audit locked dependencies against RustSec
 audit:
     cargo audit
 
 # Full validation
-validate: check test audit docs
+validate: check test audit docs mutants
     @echo "Full validation passed!"
 
 # Watch tests (requires cargo-watch)

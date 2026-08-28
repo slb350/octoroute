@@ -67,6 +67,7 @@ pub(super) struct CodexRequest {
 
 pub(super) fn build_request(
     config: &ProviderConfig,
+    executable: &Path,
     request: &GatewayRequest,
     route_effort: ReasoningEffort,
     environment: ChildEnvironment,
@@ -101,12 +102,7 @@ pub(super) fn build_request(
     }))
     .map_err(|_| CodexAdapterError::Contract)?;
     Ok(CodexRequest {
-        executable: PathBuf::from(
-            config
-                .executable
-                .as_deref()
-                .expect("validated codex_cli providers have an executable"),
-        ),
+        executable: PathBuf::from(executable),
         environment,
         model: config.model.clone(),
         effort: config.reasoning_effort.unwrap_or(route_effort),
