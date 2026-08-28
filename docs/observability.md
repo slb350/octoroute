@@ -44,8 +44,8 @@ octoroute_fabric_provider_probes_total{provider="openrouter",state="ready"} 0
 octoroute_fabric_pool_admissions_total{pool="workers",state="admitted"} 0
 octoroute_fabric_pool_fallbacks_total{pool="workers",trigger="busy"} 0
 octoroute_fabric_routing_duration_seconds_bucket{le="0.05"} 0
-octoroute_fabric_anthropic_unknown_types_total 0
-octoroute_fabric_codex_unknown_events_total 0
+octoroute_fabric_unknown_upstream_types_total{adapter="anthropic"} 0
+octoroute_fabric_unknown_upstream_types_total{adapter="codex"} 0
 ```
 
 `octoroute_fabric_pool_fallbacks_total` is the signal that local capacity is
@@ -56,9 +56,10 @@ and body construction - up to the moment that step's lease is held, excluding
 its upstream call. A request that falls forward contributes one observation per
 step it reaches, so `_count` counts admissions rather than requests.
 
-The two `unknown` counters record content blocks, events, and deltas Octoroute
-skipped as unrecognized. A rising count means an upstream added something this
-release does not translate.
+`octoroute_fabric_unknown_upstream_types_total` records content blocks, events,
+and deltas Octoroute skipped as unrecognized. A rising count means an upstream
+added something this release does not translate. It is process-global rather
+than per-configuration, because the translation functions are pure.
 
 Pool and provider labels come only from validated configuration. Prompt text,
 model output, credentials, session IDs, and provider error strings must never

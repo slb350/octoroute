@@ -11,6 +11,7 @@ mod policy;
 mod provider;
 mod service;
 mod transport;
+mod unknown_types;
 
 pub use config::{
     FABRIC_CONFIG_VERSION, FabricConfig, FabricConfigError, FabricObservabilityConfig,

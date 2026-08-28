@@ -256,16 +256,20 @@ where
     /// can amplify one cheap request into a subprocess spawn and a set of
     /// outbound requests, as fast as it can issue them.
     pub async fn cached_readiness(&self) -> FabricReadiness {
+        // The guard is held across the probe, and the TTL re-checked after
+        // acquiring it, so concurrent callers coalesce onto one pass instead of
+        // each running their own. Dropping the lock first would leave the
+        // amplification this cache exists to prevent: N simultaneous requests
+        // would still produce N `codex doctor` spawns and N probe sets.
+        // `Member::refresh_health` uses the same shape.
+        let mut cached = self.readiness_cache.lock().await;
+        if let Some((probed_at, readiness)) = cached.as_ref()
+            && probed_at.elapsed() < READINESS_SNAPSHOT_TTL
         {
-            let cached = self.readiness_cache.lock().await;
-            if let Some((probed_at, readiness)) = cached.as_ref()
-                && probed_at.elapsed() < READINESS_SNAPSHOT_TTL
-            {
-                return readiness.clone();
-            }
+            return readiness.clone();
         }
         let readiness = self.readiness().await;
-        *self.readiness_cache.lock().await = Some((Instant::now(), readiness.clone()));
+        *cached = Some((Instant::now(), readiness.clone()));
         readiness
     }
 

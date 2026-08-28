@@ -8,7 +8,6 @@ mod events;
 #[cfg(test)]
 mod tests;
 
-pub(super) use events::ignored_unknown_events;
 use events::{parse_events, render_open_ai_reply};
 
 use crate::gateway::fabric::{ProviderConfig, ReasoningEffort};
@@ -167,8 +166,7 @@ pub(super) async fn execute(request: CodexRequest) -> Result<Bytes, CodexAdapter
     if !output.status.success() {
         return Err(CodexAdapterError::Process);
     }
-    let reply = parse_events(&output.stdout)?;
-    let (reply, usage) = reply;
+    let (reply, usage) = parse_events(&output.stdout)?;
     render_open_ai_reply(&request.model, request.stream, reply, usage)
 }
 

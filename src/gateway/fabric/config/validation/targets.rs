@@ -1,8 +1,8 @@
 //! Provider and route validation.
 
 use super::fields::{
-    invalid, validate_command, validate_env_name, validate_executable, validate_model,
-    validate_name, validate_u64_range, validate_url, validate_usize_range,
+    invalid, validate_command, validate_env_name, validate_executable, validate_first_byte_timeout,
+    validate_model, validate_name, validate_u64_range, validate_url, validate_usize_range,
 };
 use super::{
     DEFAULT_CODEX_EXECUTABLE, MAX_CONCURRENCY, MAX_PROVIDER_READINESS_TIMEOUT_MS,
@@ -32,13 +32,11 @@ pub(super) fn validate_providers(
             raw.timeout_ms,
             MAX_UPSTREAM_TIMEOUT_MS,
         )?;
-        if let Some(first_byte_timeout_ms) = raw.first_byte_timeout_ms {
-            validate_u64_range(
-                "fabric.providers.first_byte_timeout_ms",
-                first_byte_timeout_ms,
-                raw.timeout_ms,
-            )?;
-        }
+        validate_first_byte_timeout(
+            "fabric.providers.first_byte_timeout_ms",
+            raw.timeout_ms,
+            raw.first_byte_timeout_ms,
+        )?;
         validate_u64_range(
             "fabric.providers.readiness_ttl_ms",
             raw.readiness_ttl_ms,

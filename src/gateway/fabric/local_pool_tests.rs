@@ -103,7 +103,7 @@ async fn mount_ready(server: &MockServer, input_tokens: u32, output_tokens: u32)
 ///
 /// Selection tests dispatch to one member of several, so the members that lose
 /// the selection legitimately receive probes but no token count.
-async fn mount_available(server: &MockServer, input_tokens: u32, output_tokens: u32) {
+async fn mount_available(server: &MockServer, input_tokens: u32) {
     Mock::given(method("GET"))
         .and(path("/health"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
@@ -114,7 +114,6 @@ async fn mount_available(server: &MockServer, input_tokens: u32, output_tokens: 
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])))
         .mount(server)
         .await;
-    let _ = output_tokens;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions/input_tokens"))
         .respond_with(
@@ -274,7 +273,7 @@ async fn lower_priority_number_is_preferred_over_rotation() {
         MockServer::start().await,
     ];
     for server in &servers {
-        mount_available(server, 20_000, 16_000).await;
+        mount_available(server, 20_000).await;
     }
     let mut config = worker_pool(&servers);
     // worker-2 is the least preferred by rotation and the most preferred by
@@ -340,7 +339,7 @@ async fn busier_member_loses_to_an_idle_one_even_when_rotation_favours_it() {
         MockServer::start().await,
     ];
     for server in &servers {
-        mount_available(server, 20_000, 16_000).await;
+        mount_available(server, 20_000).await;
     }
     // worker-0 keeps spare capacity so it stays selectable while holding a lease;
     // load, not capacity, is what must exclude it.

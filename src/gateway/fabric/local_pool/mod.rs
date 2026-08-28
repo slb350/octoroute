@@ -98,8 +98,8 @@ impl std::fmt::Debug for PoolLease {
             .field("pool", &self.pool)
             .field("member", &self.member)
             .field("model_revision", &self.model_revision)
-            .field("request_body", &"<redacted>")
-            .field("api_key", &"<redacted>")
+            .field("request_body", &"[REDACTED]")
+            .field("api_key", &"[REDACTED]")
             .finish()
     }
 }
@@ -324,13 +324,10 @@ impl LlamaCppPool {
             })));
         }
 
-        Ok(PoolAdmissionOutcome::Rejected(if saw_busy {
-            PoolAdmissionState::Busy
-        } else if saw_token_count_unavailable {
-            PoolAdmissionState::TokenCountUnavailable
-        } else {
-            PoolAdmissionState::Unhealthy
-        }))
+        Ok(PoolAdmissionOutcome::Rejected(degraded_state(
+            saw_busy,
+            saw_token_count_unavailable,
+        )))
     }
 
     /// Return whether any member could accept a request now, without reserving it.
@@ -365,13 +362,7 @@ impl LlamaCppPool {
                 MemberState::Unhealthy => {}
             }
         }
-        if saw_busy {
-            PoolAdmissionState::Busy
-        } else if saw_token_count_unavailable {
-            PoolAdmissionState::TokenCountUnavailable
-        } else {
-            PoolAdmissionState::Unhealthy
-        }
+        degraded_state(saw_busy, saw_token_count_unavailable)
     }
 
     /// Smallest well-formed body that exercises the token-count endpoint.
@@ -426,6 +417,21 @@ impl LlamaCppPool {
             .into_iter()
             .map(|(_, _, _, index, member)| (index, member))
             .collect()
+    }
+}
+
+/// Collapse "nothing could be admitted" into one bounded state.
+///
+/// `try_admit` and `readiness_state` exist to agree with each other, so the
+/// precedence between busy, token-count-unavailable, and unhealthy is stated
+/// once rather than asserted separately in each.
+const fn degraded_state(saw_busy: bool, saw_token_count_unavailable: bool) -> PoolAdmissionState {
+    if saw_busy {
+        PoolAdmissionState::Busy
+    } else if saw_token_count_unavailable {
+        PoolAdmissionState::TokenCountUnavailable
+    } else {
+        PoolAdmissionState::Unhealthy
     }
 }
 

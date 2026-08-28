@@ -37,7 +37,7 @@ impl std::fmt::Debug for GatewayRequest {
         formatter
             .debug_struct("GatewayRequest")
             .field("model", &self.model)
-            .field("body", &"<redacted>")
+            .field("body", &"[REDACTED]")
             .finish()
     }
 }

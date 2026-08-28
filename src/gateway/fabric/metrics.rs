@@ -1,7 +1,7 @@
 //! Bounded in-memory metrics for the v3 provider runtime.
 
 use super::{
-    FabricConfig, FallbackTrigger, PoolAdmissionState, ProviderAdmissionState, anthropic, codex,
+    FabricConfig, FallbackTrigger, PoolAdmissionState, ProviderAdmissionState, unknown_types,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -259,20 +259,7 @@ impl FabricMetrics {
             &counters.probes,
         );
         render_routing_histogram(&mut output, &counters);
-        output.push_str(&format!(
-            "# HELP octoroute_fabric_anthropic_unknown_types_total Anthropic content blocks, \
-             events, and deltas skipped as unrecognized.\n\
-             # TYPE octoroute_fabric_anthropic_unknown_types_total counter\n\
-             octoroute_fabric_anthropic_unknown_types_total {}\n",
-            anthropic::ignored_unknown_types()
-        ));
-        output.push_str(&format!(
-            "# HELP octoroute_fabric_codex_unknown_events_total Codex CLI events and items \
-             skipped as unrecognized.\n\
-             # TYPE octoroute_fabric_codex_unknown_events_total counter\n\
-             octoroute_fabric_codex_unknown_events_total {}\n",
-            codex::ignored_unknown_events()
-        ));
+        render_unknown_types(&mut output);
         output
     }
 
@@ -343,6 +330,22 @@ fn render_family(
     }
 }
 
+/// Render the per-adapter skipped-unknown-variant counter.
+fn render_unknown_types(output: &mut String) {
+    const METRIC: &str = "octoroute_fabric_unknown_upstream_types_total";
+    output.push_str(&format!(
+        "# HELP {METRIC} Upstream content blocks, events, and deltas skipped as unrecognized.\n\
+         # TYPE {METRIC} counter\n"
+    ));
+    for adapter in unknown_types::Adapter::ALL {
+        output.push_str(&format!(
+            "{METRIC}{{adapter=\"{}\"}} {}\n",
+            adapter.as_str(),
+            unknown_types::count(adapter)
+        ));
+    }
+}
+
 /// Render the routing-latency histogram in Prometheus text format.
 fn render_routing_histogram(output: &mut String, counters: &MetricCounters) {
     const METRIC: &str = "octoroute_fabric_routing_duration_seconds";
@@ -373,7 +376,7 @@ pub(super) const fn pool_state_label(state: PoolAdmissionState) -> &'static str 
     }
 }
 
-const fn provider_state(state: ProviderAdmissionState) -> &'static str {
+pub(super) const fn provider_state(state: ProviderAdmissionState) -> &'static str {
     match state {
         ProviderAdmissionState::Ready => "ready",
         ProviderAdmissionState::Disabled => "disabled",
@@ -393,5 +396,41 @@ pub(super) const fn fallback_trigger_label(trigger: FallbackTrigger) -> &'static
         FallbackTrigger::RateLimited => "rate_limited",
         FallbackTrigger::PrecommitFailure => "precommit_failure",
         FallbackTrigger::Unauthenticated => "unauthenticated",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every adapter emits a series even at zero. An omitted series is
+    /// indistinguishable on a dashboard from a condition that never occurs, so
+    /// the exposition iterates `Adapter::ALL` rather than only what has fired.
+    #[test]
+    fn unknown_upstream_types_emits_a_series_per_adapter() {
+        let mut output = String::new();
+        render_unknown_types(&mut output);
+        assert!(output.contains("# TYPE octoroute_fabric_unknown_upstream_types_total counter"));
+        for adapter in unknown_types::Adapter::ALL {
+            assert!(
+                output.contains(&format!(
+                    "octoroute_fabric_unknown_upstream_types_total{{adapter=\"{}\"}}",
+                    adapter.as_str()
+                )),
+                "missing series for {}",
+                adapter.as_str()
+            );
+        }
+    }
+
+    /// The counter is per adapter, not shared.
+    #[test]
+    fn each_adapter_counts_separately() {
+        let before = unknown_types::count(unknown_types::Adapter::Anthropic);
+        unknown_types::record(unknown_types::Adapter::Anthropic);
+        assert_eq!(
+            unknown_types::count(unknown_types::Adapter::Anthropic),
+            before + 1
+        );
     }
 }

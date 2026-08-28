@@ -4,9 +4,8 @@ use super::http_support::{
     MetadataAuthorizationError, metadata_authorization_error as build_metadata_authorization_error,
     security_headers,
 };
-use super::{
-    FabricGatewayService, FabricUpstreamTransport, PoolAdmissionState, ProviderAdmissionState,
-};
+use super::metrics::provider_state;
+use super::{FabricGatewayService, FabricUpstreamTransport, PoolAdmissionState};
 use axum::{
     Json, Router,
     body::Body,
@@ -181,16 +180,5 @@ fn pool_state(state: PoolAdmissionState) -> &'static str {
         // admission. Rendering them as `unavailable` keeps the readiness label
         // set closed rather than silently adding request-scoped values to it.
         PoolAdmissionState::Incompatible | PoolAdmissionState::ContextOverflow => "unavailable",
-    }
-}
-
-fn provider_state(state: ProviderAdmissionState) -> &'static str {
-    match state {
-        ProviderAdmissionState::Ready => "ready",
-        ProviderAdmissionState::Disabled => "disabled",
-        ProviderAdmissionState::Incompatible => "incompatible",
-        ProviderAdmissionState::Busy => "busy",
-        ProviderAdmissionState::Unauthenticated => "unauthenticated",
-        ProviderAdmissionState::Unavailable => "unavailable",
     }
 }

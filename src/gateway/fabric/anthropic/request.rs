@@ -117,33 +117,45 @@ fn reject_unsupported_request_fields(
                     .and_then(Value::as_str)
                     != Some("text")
             })
-        || UNMAPPED_OPEN_AI_FIELDS
-            .iter()
-            .any(|field| source.get(*field).is_some_and(|value| !value.is_null()))
+        || source.keys().any(|field| {
+            !MAPPED_OPEN_AI_FIELDS.contains(&field.as_str())
+                && source.get(field).is_some_and(|value| !value.is_null())
+        })
     {
         return Err(AnthropicAdapterError::Incompatible("request feature"));
     }
     Ok(())
 }
 
-/// OpenAI request fields with no verified Anthropic Messages equivalent.
+/// Every OpenAI request field this adapter understands.
 ///
-/// Every one of these changes what the caller gets back, so a request carrying
-/// one is incompatible with this provider and falls through to the next route
-/// step rather than being answered by a silently different request.
-const UNMAPPED_OPEN_AI_FIELDS: [&str; 12] = [
-    "logprobs",
-    "top_logprobs",
-    "audio",
-    "seed",
-    "frequency_penalty",
-    "presence_penalty",
-    "logit_bias",
-    "stream_options",
-    "parallel_tool_calls",
-    "user",
-    "metadata",
-    "service_tier",
+/// An allowlist, deliberately. The contract is that a feature without a
+/// verified mapping fails as `incompatible`, and a denylist of unmapped fields
+/// cannot keep that promise: it accepts and silently drops whatever OpenAI adds
+/// next, so a caller gets a plausible answer to a request that was quietly
+/// altered. Failing closed instead sends the request to the next route step.
+///
+/// Adding a field here is a claim that `build_request` reads it, or that
+/// dropping it cannot change what the caller receives.
+const MAPPED_OPEN_AI_FIELDS: [&str; 16] = [
+    // Translated into the Anthropic request.
+    "model",
+    "messages",
+    "max_tokens",
+    "max_completion_tokens",
+    "stream",
+    "stop",
+    "tools",
+    "tool_choice",
+    "reasoning_effort",
+    "reasoning",
+    "temperature",
+    "top_p",
+    "top_k",
+    // Recognized, and constrained to the single value that maps cleanly.
+    "n",
+    "modalities",
+    "response_format",
 ];
 
 /// Reject a `system` or `developer` turn that appears after conversation content.

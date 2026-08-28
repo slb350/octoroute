@@ -6,7 +6,7 @@ use super::{
     codex,
     provider::{HttpProviderDispatch, ProviderDispatch, ProviderHttpAdapter},
 };
-use crate::gateway::http_client::{authorized, build};
+use crate::gateway::http_client::authorized;
 use async_trait::async_trait;
 use axum::{
     body::Body,
@@ -34,6 +34,14 @@ use tokio::sync::OwnedSemaphorePermit;
 const OPENROUTER_TITLE: &str = "x-openrouter-title";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const MAX_TRANSLATED_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Bound on an upstream error body.
+///
+/// `open_ai_error_body` keeps at most `MAX_ERROR_MESSAGE_BYTES` of it, and this
+/// path is taken by every request during an outage, so reading it under the
+/// 16 MiB success bound would buy nothing and cost a full read of whatever error
+/// page the provider emits.
+const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
 
 /// The two deadlines one upstream attempt is bounded by.
 ///
@@ -89,13 +97,11 @@ pub struct FabricTransport {
 }
 
 impl FabricTransport {
-    pub fn new() -> Result<Self, FabricTransportError> {
-        Ok(Self::with_client(
-            build().map_err(FabricTransportError::HttpClient)?,
-        ))
-    }
-
     /// Build a transport over the gateway's one pooled client.
+    ///
+    /// The only constructor: every upstream shares one client, so a transport
+    /// that builds its own would defeat the shared connection and TLS session
+    /// pool.
     pub(crate) fn with_client(client: Client) -> Self {
         Self { client }
     }
@@ -253,7 +259,7 @@ async fn prepare_anthropic(
             _ if status.is_server_error() => "provider_server_error",
             _ => "provider_request_failed",
         };
-        let upstream = read_bounded(response, MAX_TRANSLATED_RESPONSE_BYTES)
+        let upstream = read_bounded(response, MAX_ERROR_RESPONSE_BYTES)
             .await
             .unwrap_or_default();
         let body = anthropic::open_ai_error_body(code, &upstream);

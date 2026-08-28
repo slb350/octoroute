@@ -40,16 +40,19 @@ impl CachedCredential {
     }
 
     pub(super) async fn resolve(&self) -> Result<SecretString, ProviderCredentialError> {
+        // Held across the resolve, TTL re-checked after acquiring. Dropping the
+        // guard first meant every request in flight when the TTL lapsed spawned
+        // its own `op`/`pass`/`gcloud`, which is the per-request spawn this
+        // cache exists to avoid - just once per expiry instead of always. The
+        // wait is bounded by CREDENTIAL_COMMAND_TIMEOUT.
+        let mut cached = self.cached.lock().await;
+        if let Some((resolved_at, value)) = cached.as_ref()
+            && resolved_at.elapsed() < CREDENTIAL_CACHE_TTL
         {
-            let cached = self.cached.lock().await;
-            if let Some((resolved_at, value)) = cached.as_ref()
-                && resolved_at.elapsed() < CREDENTIAL_CACHE_TTL
-            {
-                return Ok(value.clone());
-            }
+            return Ok(value.clone());
         }
         let value = self.source.resolve().await?;
-        *self.cached.lock().await = Some((Instant::now(), value.clone()));
+        *cached = Some((Instant::now(), value.clone()));
         Ok(value)
     }
 

@@ -41,8 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer shares the two-second health-probe deadline.
 - Add `octoroute_fabric_pool_admissions_total{pool,state}`,
   `octoroute_fabric_pool_fallbacks_total{pool,trigger}`,
-  `octoroute_fabric_routing_duration_seconds`, and counters for skipped unknown
-  Anthropic and Codex types. Local spillover to the next route step now emits a
+  `octoroute_fabric_routing_duration_seconds`, and
+  `octoroute_fabric_unknown_upstream_types_total{adapter}`. Local spillover to the next route step now emits a
   tracing warning.
 - Add `ProviderAdmissionState::Unauthenticated` and the matching
   `unauthenticated` fallback trigger, outside the default trigger set, so an

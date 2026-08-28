@@ -174,6 +174,21 @@ pub(super) fn validate_command(field: &str, command: &[String]) -> Result<(), Fa
     Ok(())
 }
 
+/// A first-byte deadline, when set, must fit inside the total deadline.
+///
+/// Stated once: both local pools and providers carry the pair, and a rule split
+/// across two call sites is a rule that can be changed in one of them.
+pub(super) fn validate_first_byte_timeout(
+    field: &str,
+    timeout_ms: u64,
+    first_byte_timeout_ms: Option<u64>,
+) -> Result<(), FabricConfigError> {
+    match first_byte_timeout_ms {
+        Some(first_byte_timeout_ms) => validate_u64_range(field, first_byte_timeout_ms, timeout_ms),
+        None => Ok(()),
+    }
+}
+
 pub(super) fn validate_executable(field: &str, executable: &str) -> Result<(), FabricConfigError> {
     if executable.trim().is_empty()
         || executable.len() > 4096

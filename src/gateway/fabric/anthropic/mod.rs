@@ -13,23 +13,12 @@ mod tests;
 pub(super) use request::build_request;
 pub(super) use response::{AnthropicSseTranslator, open_ai_error_body, translate_message_response};
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use crate::gateway::fabric::unknown_types;
 use thiserror::Error;
-
-/// Count of Anthropic content blocks, SSE events, and deltas Octoroute did not
-/// recognize and skipped. Forward compatibility is deliberate: a provider adding
-/// a block or event type must not truncate a committed stream. The counter is
-/// unlabeled so it cannot carry provider or prompt-derived values.
-static IGNORED_UNKNOWN_TYPES: AtomicU64 = AtomicU64::new(0);
 
 /// Skip one unrecognized Anthropic type, recording it for `/metrics`.
 fn ignore_unknown_type() {
-    IGNORED_UNKNOWN_TYPES.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Read the ignored-unknown-type counter for the Prometheus registry.
-pub(super) fn ignored_unknown_types() -> u64 {
-    IGNORED_UNKNOWN_TYPES.load(Ordering::Relaxed)
+    unknown_types::record(unknown_types::Adapter::Anthropic);
 }
 
 #[derive(Debug, Error)]

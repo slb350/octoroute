@@ -13,8 +13,9 @@ mod tests;
 
 pub(super) use fields::{invalid, safe_parse_error, validate_name};
 use fields::{
-    validate_env_name, validate_local_member_url, validate_log_level, validate_model,
-    validate_revision, validate_u32_range, validate_u64_range, validate_url, validate_usize_range,
+    validate_env_name, validate_first_byte_timeout, validate_local_member_url, validate_log_level,
+    validate_model, validate_revision, validate_u32_range, validate_u64_range, validate_url,
+    validate_usize_range,
 };
 use targets::{validate_providers, validate_routes};
 
@@ -307,13 +308,11 @@ fn validate_local_pools(
             raw.token_count_timeout_ms,
             MAX_TOKEN_COUNT_TIMEOUT_MS,
         )?;
-        if let Some(first_byte_timeout_ms) = raw.first_byte_timeout_ms {
-            validate_u64_range(
-                "fabric.local_pools.first_byte_timeout_ms",
-                first_byte_timeout_ms,
-                raw.timeout_ms,
-            )?;
-        }
+        validate_first_byte_timeout(
+            "fabric.local_pools.first_byte_timeout_ms",
+            raw.timeout_ms,
+            raw.first_byte_timeout_ms,
+        )?;
         if !raw.capabilities.contains(&LocalCapability::Chat) {
             return Err(invalid(
                 "fabric.local_pools.capabilities",

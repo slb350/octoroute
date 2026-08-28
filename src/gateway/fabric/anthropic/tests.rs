@@ -234,6 +234,10 @@ fn tool_choice_none_keeps_the_tools_array() {
 
 /// Every OpenAI field without a verified Anthropic mapping is incompatible, so
 /// the route falls through instead of answering a silently different request.
+///
+/// The last entry is the one that matters: a field this adapter has never heard
+/// of must fail too. A denylist of known-unmapped fields would accept it and
+/// silently drop it, which is the failure direction the contract forbids.
 #[test]
 fn unmapped_open_ai_fields_fail_closed() {
     let config = config();
@@ -247,6 +251,9 @@ fn unmapped_open_ai_fields_fail_closed() {
         "user",
         "metadata",
         "service_tier",
+        "logprobs",
+        "audio",
+        "a_field_openai_has_not_invented_yet",
     ] {
         let mut body = chat(json!({}));
         body.as_object_mut()

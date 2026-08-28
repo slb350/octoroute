@@ -1,12 +1,12 @@
 //! Codex CLI event-stream parsing and OpenAI response rendering.
 
 use super::{CodexAdapterError, EVENT_LINE_MAX_BYTES};
+use crate::gateway::fabric::unknown_types;
 use bytes::Bytes;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     borrow::Cow,
-    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
@@ -68,16 +68,8 @@ pub(super) fn parse_events(
     Ok((reply, usage))
 }
 
-/// Count of Codex CLI event and item types Octoroute skipped as unrecognized.
-static IGNORED_CODEX_EVENTS: AtomicU64 = AtomicU64::new(0);
-
 fn ignore_unknown_event() {
-    IGNORED_CODEX_EVENTS.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Read the skipped-event counter for the Prometheus registry.
-pub(crate) fn ignored_unknown_events() -> u64 {
-    IGNORED_CODEX_EVENTS.load(Ordering::Relaxed)
+    unknown_types::record(unknown_types::Adapter::Codex);
 }
 
 /// Token accounting reported by `turn.completed`.
