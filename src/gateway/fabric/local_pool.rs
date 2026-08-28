@@ -1,5 +1,6 @@
 //! Runtime admission for a pool of equivalent llama.cpp servers.
 
+use super::transport::UpstreamDeadlines;
 use super::{LocalCapability, LocalPoolConfig};
 use crate::gateway::{
     env::Environment,
@@ -79,7 +80,7 @@ pub struct PoolLease {
     chat_url: Url,
     api_key: Option<SecretString>,
     request_body: Bytes,
-    timeout: Duration,
+    deadlines: UpstreamDeadlines,
     _permit: OwnedSemaphorePermit,
 }
 
@@ -129,14 +130,14 @@ impl PoolLease {
         Url,
         Option<SecretString>,
         Bytes,
-        Duration,
+        UpstreamDeadlines,
         OwnedSemaphorePermit,
     ) {
         (
             self.chat_url,
             self.api_key,
             self.request_body,
-            self.timeout,
+            self.deadlines,
             self._permit,
         )
     }
@@ -371,7 +372,10 @@ impl LlamaCppPool {
                 chat_url: member.chat_url.clone(),
                 api_key: member.api_key.clone(),
                 request_body,
-                timeout: Duration::from_millis(self.inner.config.timeout_ms),
+                deadlines: UpstreamDeadlines::new(
+                    self.inner.config.timeout_ms,
+                    self.inner.config.first_byte_timeout_ms,
+                ),
                 _permit: permit,
             })));
         }

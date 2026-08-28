@@ -4,6 +4,7 @@ use super::{
     ProviderConfig, ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort, anthropic,
     codex::{self, ChildEnvironment, CodexRequest},
     metrics::FabricMetrics,
+    transport::UpstreamDeadlines,
 };
 use crate::gateway::{
     env::Environment,
@@ -67,7 +68,7 @@ pub struct ProviderLease {
     provider: String,
     model: String,
     dispatch: ProviderDispatch,
-    timeout: Duration,
+    deadlines: UpstreamDeadlines,
     _permit: OwnedSemaphorePermit,
 }
 
@@ -80,8 +81,10 @@ impl ProviderLease {
         &self.model
     }
 
-    pub(super) fn into_transport_parts(self) -> (ProviderDispatch, Duration, OwnedSemaphorePermit) {
-        (self.dispatch, self.timeout, self._permit)
+    pub(super) fn into_transport_parts(
+        self,
+    ) -> (ProviderDispatch, UpstreamDeadlines, OwnedSemaphorePermit) {
+        (self.dispatch, self.deadlines, self._permit)
     }
 }
 
@@ -404,7 +407,10 @@ impl HttpProvider {
                     adapter,
                     openrouter_profile: self.config.profile == ProviderProfile::OpenRouterAuto,
                 }),
-                timeout: Duration::from_millis(self.config.timeout_ms),
+                deadlines: UpstreamDeadlines::new(
+                    self.config.timeout_ms,
+                    self.config.first_byte_timeout_ms,
+                ),
                 _permit: permit,
             },
         )))
@@ -531,7 +537,10 @@ impl CodexProvider {
                 provider: self.config.name.clone(),
                 model: self.config.model.clone(),
                 dispatch: ProviderDispatch::Codex(request),
-                timeout: Duration::from_millis(self.config.timeout_ms),
+                deadlines: UpstreamDeadlines::new(
+                    self.config.timeout_ms,
+                    self.config.first_byte_timeout_ms,
+                ),
                 _permit: permit,
             },
         )))

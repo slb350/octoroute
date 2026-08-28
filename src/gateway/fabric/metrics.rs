@@ -1,6 +1,8 @@
 //! Bounded in-memory metrics for the v3 provider runtime.
 
-use super::{FabricConfig, FallbackTrigger, PoolAdmissionState, ProviderAdmissionState, anthropic};
+use super::{
+    FabricConfig, FallbackTrigger, PoolAdmissionState, ProviderAdmissionState, anthropic, codex,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Mutex, MutexGuard, PoisonError},
@@ -262,6 +264,13 @@ impl FabricMetrics {
              # TYPE octoroute_fabric_anthropic_unknown_types_total counter\n\
              octoroute_fabric_anthropic_unknown_types_total {}\n",
             anthropic::ignored_unknown_types()
+        ));
+        output.push_str(&format!(
+            "# HELP octoroute_fabric_codex_unknown_events_total Codex CLI events and items \
+             skipped as unrecognized.\n\
+             # TYPE octoroute_fabric_codex_unknown_events_total counter\n\
+             octoroute_fabric_codex_unknown_events_total {}\n",
+            codex::ignored_unknown_events()
         ));
         output
     }

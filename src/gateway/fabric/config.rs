@@ -123,6 +123,13 @@ pub struct LocalPoolConfig {
     /// materially longer than a `/health` or `/slots` probe, so this has its own
     /// budget rather than sharing the fixed probe deadline.
     pub token_count_timeout_ms: u64,
+    /// Optional deadline for the first upstream body byte.
+    ///
+    /// `timeout_ms` covers the whole response, which is legitimately long for a
+    /// large generation. Without a separate first-byte bound a hung member holds
+    /// its member permit and the inbound permit for that entire window before
+    /// the route can fall forward. Left unset, Octoroute invents no deadline.
+    pub first_byte_timeout_ms: Option<u64>,
     pub capabilities: BTreeSet<LocalCapability>,
     pub strategy: PoolStrategy,
     pub default_reasoning_effort: ReasoningEffort,
@@ -162,6 +169,9 @@ pub struct ProviderConfig {
     pub api_key_command: Option<Vec<String>>,
     pub max_in_flight: usize,
     pub timeout_ms: u64,
+    /// Optional deadline for the first upstream body byte. See
+    /// [`LocalPoolConfig::first_byte_timeout_ms`].
+    pub first_byte_timeout_ms: Option<u64>,
     pub readiness_ttl_ms: u64,
     pub readiness_timeout_ms: u64,
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -361,6 +371,8 @@ struct RawLocalPoolConfig {
     timeout_ms: u64,
     #[serde(default = "default_token_count_timeout_ms")]
     token_count_timeout_ms: u64,
+    #[serde(default)]
+    first_byte_timeout_ms: Option<u64>,
     capabilities: BTreeSet<LocalCapability>,
     #[serde(default)]
     strategy: PoolStrategy,
@@ -400,6 +412,8 @@ struct RawProviderConfig {
     max_in_flight: usize,
     #[serde(default = "default_provider_timeout_ms")]
     timeout_ms: u64,
+    #[serde(default)]
+    first_byte_timeout_ms: Option<u64>,
     #[serde(default = "default_provider_readiness_ttl_ms")]
     readiness_ttl_ms: u64,
     #[serde(default = "default_provider_readiness_timeout_ms")]
@@ -554,6 +568,13 @@ fn validate_local_pools(
             raw.token_count_timeout_ms,
             MAX_TOKEN_COUNT_TIMEOUT_MS,
         )?;
+        if let Some(first_byte_timeout_ms) = raw.first_byte_timeout_ms {
+            validate_u64_range(
+                "fabric.local_pools.first_byte_timeout_ms",
+                first_byte_timeout_ms,
+                raw.timeout_ms,
+            )?;
+        }
         if !raw.capabilities.contains(&LocalCapability::Chat) {
             return Err(invalid(
                 "fabric.local_pools.capabilities",
@@ -614,6 +635,7 @@ fn validate_local_pools(
             default_max_output_tokens: raw.default_max_output_tokens,
             timeout_ms: raw.timeout_ms,
             token_count_timeout_ms: raw.token_count_timeout_ms,
+            first_byte_timeout_ms: raw.first_byte_timeout_ms,
             capabilities: raw.capabilities,
             strategy: raw.strategy,
             default_reasoning_effort: raw.default_reasoning_effort,
@@ -646,6 +668,13 @@ fn validate_providers(
             raw.timeout_ms,
             MAX_UPSTREAM_TIMEOUT_MS,
         )?;
+        if let Some(first_byte_timeout_ms) = raw.first_byte_timeout_ms {
+            validate_u64_range(
+                "fabric.providers.first_byte_timeout_ms",
+                first_byte_timeout_ms,
+                raw.timeout_ms,
+            )?;
+        }
         validate_u64_range(
             "fabric.providers.readiness_ttl_ms",
             raw.readiness_ttl_ms,
@@ -763,6 +792,7 @@ fn validate_providers(
             timeout_ms: raw.timeout_ms,
             readiness_ttl_ms: raw.readiness_ttl_ms,
             readiness_timeout_ms: raw.readiness_timeout_ms,
+            first_byte_timeout_ms: raw.first_byte_timeout_ms,
             reasoning_effort: raw.reasoning_effort,
             temperature: raw.temperature,
             max_tokens: raw.max_tokens,

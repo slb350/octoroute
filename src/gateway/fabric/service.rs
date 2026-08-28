@@ -28,10 +28,10 @@ use secrecy::{ExposeSecret, SecretString};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use thiserror::Error;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 const DESTINATION_HEADER: &str = "x-octoroute-destination";
@@ -54,7 +54,11 @@ pub struct FabricGatewayService<T> {
     transport: T,
     inbound_permits: Arc<Semaphore>,
     rate_limiter: FixedWindowRateLimiter,
+    readiness_cache: Mutex<Option<(Instant, FabricReadiness)>>,
 }
+
+/// How long an unauthenticated readiness answer may be reused.
+const READINESS_SNAPSHOT_TTL: Duration = Duration::from_secs(5);
 
 /// Bounded v3 readiness snapshot.
 #[derive(Debug, Clone)]
@@ -141,6 +145,7 @@ where
             providers,
             metrics,
             transport,
+            readiness_cache: Mutex::new(None),
         })
     }
 
@@ -213,6 +218,27 @@ where
         let mut models = BTreeSet::from(["auto".to_string()]);
         models.extend(self.config.routes.keys().cloned());
         models.into_iter().collect()
+    }
+
+    /// Return a readiness snapshot, reusing a recent one when it is fresh.
+    ///
+    /// `/health/ready` and `/health` are unauthenticated by contract, and a
+    /// readiness pass spawns `codex doctor` and sends credentialed `/models`
+    /// probes. Without this an anonymous caller on the default `0.0.0.0` bind
+    /// can amplify one cheap request into a subprocess spawn and a set of
+    /// outbound requests, as fast as it can issue them.
+    pub async fn cached_readiness(&self) -> FabricReadiness {
+        {
+            let cached = self.readiness_cache.lock().await;
+            if let Some((probed_at, readiness)) = cached.as_ref()
+                && probed_at.elapsed() < READINESS_SNAPSHOT_TTL
+            {
+                return readiness.clone();
+            }
+        }
+        let readiness = self.readiness().await;
+        *self.readiness_cache.lock().await = Some((Instant::now(), readiness.clone()));
+        readiness
     }
 
     /// Probe all configured local pools and providers concurrently.

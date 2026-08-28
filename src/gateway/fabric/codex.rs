@@ -5,6 +5,7 @@ use crate::gateway::request::{GatewayRequest, RequestFeature};
 use bytes::Bytes;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     borrow::Cow,
     collections::BTreeMap,
@@ -163,7 +164,8 @@ pub(super) async fn execute(request: CodexRequest) -> Result<Bytes, CodexAdapter
         return Err(CodexAdapterError::Process);
     }
     let reply = parse_events(&output.stdout)?;
-    render_open_ai_reply(&request.model, request.stream, reply)
+    let (reply, usage) = reply;
+    render_open_ai_reply(&request.model, request.stream, reply, usage)
 }
 
 fn invocation_args(
@@ -433,8 +435,9 @@ struct AuthDetails<'a> {
     stored_auth_mode: Option<&'a str>,
 }
 
-fn parse_events(input: &[u8]) -> Result<CodexReply, CodexAdapterError> {
+fn parse_events(input: &[u8]) -> Result<(CodexReply, Option<CodexUsage>), CodexAdapterError> {
     let mut final_message: Option<Cow<'_, str>> = None;
+    let mut usage: Option<CodexUsage> = None;
     let mut completed = false;
     for line in input.split(|byte| *byte == b'\n') {
         if line.iter().all(u8::is_ascii_whitespace) {
@@ -454,7 +457,6 @@ fn parse_events(input: &[u8]) -> Result<CodexReply, CodexAdapterError> {
             "item.started" | "item.updated" | "item.completed" => {
                 let item = event.item.ok_or(CodexAdapterError::Contract)?;
                 match item.kind.as_deref() {
-                    Some("reasoning" | "todo_list") => {}
                     Some("agent_message") if kind != "item.completed" => {}
                     Some("agent_message") => {
                         if final_message.is_some() {
@@ -462,12 +464,20 @@ fn parse_events(input: &[u8]) -> Result<CodexReply, CodexAdapterError> {
                         }
                         final_message = Some(item.text.ok_or(CodexAdapterError::Contract)?);
                     }
-                    _ => return Err(CodexAdapterError::Contract),
+                    // Item types Octoroute does not consume, including any the
+                    // CLI adds later. Failing here would turn every request into
+                    // a 502 on the next Codex release.
+                    _ => ignore_unknown_event(),
                 }
             }
-            "turn.completed" if final_message.is_some() => completed = true,
+            "turn.completed" if final_message.is_some() => {
+                usage = event.usage.map(CodexUsage::from);
+                completed = true;
+            }
             "error" | "turn.failed" => return Err(CodexAdapterError::Process),
-            _ => return Err(CodexAdapterError::Contract),
+            // As above: an unrecognized event type is skipped, not fatal. The
+            // `turn.completed` requirement below still rejects a truncated run.
+            _ => ignore_unknown_event(),
         }
     }
     if !completed {
@@ -477,7 +487,48 @@ fn parse_events(input: &[u8]) -> Result<CodexReply, CodexAdapterError> {
         serde_json::from_str(final_message.ok_or(CodexAdapterError::Contract)?.as_ref())
             .map_err(|_| CodexAdapterError::Contract)?;
     reply.validate()?;
-    Ok(reply)
+    Ok((reply, usage))
+}
+
+/// Count of Codex CLI event and item types Octoroute skipped as unrecognized.
+static IGNORED_CODEX_EVENTS: AtomicU64 = AtomicU64::new(0);
+
+fn ignore_unknown_event() {
+    IGNORED_CODEX_EVENTS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Read the skipped-event counter for the Prometheus registry.
+pub(super) fn ignored_unknown_events() -> u64 {
+    IGNORED_CODEX_EVENTS.load(Ordering::Relaxed)
+}
+
+/// Token accounting reported by `turn.completed`.
+///
+/// Cost-tracking clients read `usage`, and omitting it makes Codex traffic
+/// invisible to them.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct CodexUsage {
+    prompt_tokens: u64,
+    completion_tokens: u64,
+}
+
+impl From<RawCodexUsage> for CodexUsage {
+    fn from(usage: RawCodexUsage) -> Self {
+        Self {
+            prompt_tokens: usage.input_tokens.unwrap_or_default(),
+            completion_tokens: usage.output_tokens.unwrap_or_default(),
+        }
+    }
+}
+
+impl CodexUsage {
+    fn to_value(self) -> Value {
+        json!({
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.prompt_tokens.saturating_add(self.completion_tokens)
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -486,6 +537,13 @@ struct Event<'a> {
     kind: Option<Cow<'a, str>>,
     #[serde(borrow)]
     item: Option<EventItem<'a>>,
+    usage: Option<RawCodexUsage>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct RawCodexUsage {
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -537,6 +595,7 @@ fn render_open_ai_reply(
     model: &str,
     stream: bool,
     reply: CodexReply,
+    usage: Option<CodexUsage>,
 ) -> Result<Bytes, CodexAdapterError> {
     let id = format!("chatcmpl-{}", Uuid::new_v4());
     let created = SystemTime::now()
@@ -566,7 +625,7 @@ fn render_open_ai_reply(
         if !stream_tool_calls.is_empty() {
             delta["tool_calls"] = Value::Array(stream_tool_calls);
         }
-        let chunk = json!({
+        let mut chunk = json!({
             "id": id,
             "object": "chat.completion.chunk",
             "created": created,
@@ -577,6 +636,9 @@ fn render_open_ai_reply(
                 "finish_reason": reply.finish_reason
             }]
         });
+        if let Some(usage) = usage {
+            chunk["usage"] = usage.to_value();
+        }
         let mut bytes = Vec::from(&b"data: "[..]);
         serde_json::to_writer(&mut bytes, &chunk).map_err(|_| CodexAdapterError::Contract)?;
         bytes.extend_from_slice(b"\n\ndata: [DONE]\n\n");
@@ -601,7 +663,7 @@ fn render_open_ai_reply(
                     .collect(),
             );
         }
-        json!({
+        let mut completion = json!({
             "id": id,
             "object": "chat.completion",
             "created": created,
@@ -611,7 +673,11 @@ fn render_open_ai_reply(
                 "message": message,
                 "finish_reason": reply.finish_reason
             }]
-        })
+        });
+        if let Some(usage) = usage {
+            completion["usage"] = usage.to_value();
+        }
+        completion
     };
     serde_json::to_vec(&value)
         .map(Bytes::from)
@@ -793,11 +859,56 @@ mod tests {
             "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"content\\\":\\\"answer\\\",\\\"reasoning_content\\\":null,\\\"tool_calls\\\":[],\\\"finish_reason\\\":\\\"stop\\\"}\"}}\n",
             "{\"type\":\"turn.completed\"}\n"
         );
-        let reply = parse_events(events.as_bytes()).expect("Codex reply");
-        let rendered = render_open_ai_reply("gpt-test", true, reply).expect("OpenAI stream");
+        let (reply, usage) = parse_events(events.as_bytes()).expect("Codex reply");
+        let rendered = render_open_ai_reply("gpt-test", true, reply, usage).expect("OpenAI stream");
         let rendered = std::str::from_utf8(&rendered).expect("UTF-8");
         assert!(rendered.contains("chat.completion.chunk"), "{rendered}");
         assert!(rendered.contains("data: [DONE]"), "{rendered}");
+    }
+
+    /// `turn.completed` carries token accounting, and cost-tracking clients read it.
+    #[test]
+    fn codex_usage_is_reported_in_both_response_shapes() {
+        let events = concat!(
+            "{\"type\":\"thread.started\"}\n",
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"content\\\":\\\"answer\\\",\\\"reasoning_content\\\":null,\\\"tool_calls\\\":[],\\\"finish_reason\\\":\\\"stop\\\"}\"}}\n",
+            "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":41,\"output_tokens\":7}}\n"
+        );
+        let (reply, usage) = parse_events(events.as_bytes()).expect("Codex reply");
+        let rendered = render_open_ai_reply("gpt-test", false, reply, usage).expect("response");
+        let rendered: Value = serde_json::from_slice(&rendered).expect("response JSON");
+        assert_eq!(rendered["usage"]["prompt_tokens"], 41);
+        assert_eq!(rendered["usage"]["completion_tokens"], 7);
+        assert_eq!(rendered["usage"]["total_tokens"], 48);
+    }
+
+    /// A Codex release adding an event or item type must not turn every request
+    /// into a 502.
+    #[test]
+    fn unknown_codex_event_and_item_types_are_skipped() {
+        let events = concat!(
+            "{\"type\":\"thread.started\"}\n",
+            "{\"type\":\"future.event\",\"detail\":\"unknown\"}\n",
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"future_item\"}}\n",
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"content\\\":\\\"answer\\\",\\\"reasoning_content\\\":null,\\\"tool_calls\\\":[],\\\"finish_reason\\\":\\\"stop\\\"}\"}}\n",
+            "{\"type\":\"turn.completed\"}\n"
+        );
+        let (reply, _) = parse_events(events.as_bytes()).expect("unknown types must be skipped");
+        assert_eq!(reply.content.as_deref(), Some("answer"));
+    }
+
+    /// A truncated run is still rejected: skipping unknown events must not
+    /// weaken the completion requirement.
+    #[test]
+    fn a_run_without_turn_completed_is_still_rejected() {
+        let events = concat!(
+            "{\"type\":\"thread.started\"}\n",
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"content\\\":\\\"answer\\\",\\\"reasoning_content\\\":null,\\\"tool_calls\\\":[],\\\"finish_reason\\\":\\\"stop\\\"}\"}}\n"
+        );
+        assert!(matches!(
+            parse_events(events.as_bytes()),
+            Err(CodexAdapterError::Contract)
+        ));
     }
 
     #[test]
@@ -812,7 +923,8 @@ mod tests {
             }],
             finish_reason: "tool_calls".to_string(),
         };
-        let rendered = render_open_ai_reply("gpt-test", false, reply).expect("OpenAI response");
+        let rendered =
+            render_open_ai_reply("gpt-test", false, reply, None).expect("OpenAI response");
         let rendered: Value = serde_json::from_slice(&rendered).expect("response JSON");
         let call = &rendered["choices"][0]["message"]["tool_calls"][0];
         assert!(call.get("index").is_none());

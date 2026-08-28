@@ -22,6 +22,7 @@ use secrecy::ExposeSecret;
 use std::{
     collections::VecDeque,
     convert::Infallible,
+    future::Future,
     io,
     pin::Pin,
     task::{Context, Poll},
@@ -33,6 +34,40 @@ use tokio::sync::OwnedSemaphorePermit;
 const OPENROUTER_TITLE: &str = "x-openrouter-title";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const MAX_TRANSLATED_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+/// The two deadlines one upstream attempt is bounded by.
+///
+/// `total` covers the complete response and is legitimately long. `first_byte`
+/// bounds how long a hung upstream may hold the member and inbound permits
+/// before the route falls forward; it is `None` when the operator has not
+/// measured one, and Octoroute then invents no deadline.
+#[derive(Debug, Clone, Copy)]
+pub struct UpstreamDeadlines {
+    pub total: Duration,
+    pub first_byte: Option<Duration>,
+}
+
+impl UpstreamDeadlines {
+    pub(super) fn new(total_ms: u64, first_byte_ms: Option<u64>) -> Self {
+        Self {
+            total: Duration::from_millis(total_ms),
+            first_byte: first_byte_ms.map(Duration::from_millis),
+        }
+    }
+
+    /// Await `operation` under the first-byte deadline, if one is configured.
+    async fn hold_first_byte<T>(
+        self,
+        operation: impl Future<Output = Result<T, FabricTransportError>>,
+    ) -> Result<T, FabricTransportError> {
+        match self.first_byte {
+            Some(deadline) => tokio::time::timeout(deadline, operation)
+                .await
+                .map_err(|_| FabricTransportError::FirstByteTimeout)?,
+            None => operation.await,
+        }
+    }
+}
 
 /// Testable v3 transport contract shared by every backend.
 #[async_trait]
@@ -71,11 +106,11 @@ impl FabricUpstreamTransport for FabricTransport {
     type Error = FabricTransportError;
 
     async fn local(&self, lease: PoolLease) -> Result<PreparedUpstreamResponse, Self::Error> {
-        let (chat_url, api_key, request_body, timeout, permit) = lease.into_transport_parts();
+        let (chat_url, api_key, request_body, deadlines, permit) = lease.into_transport_parts();
         let request = authorized(
             self.client
                 .post(chat_url)
-                .timeout(timeout)
+                .timeout(deadlines.total)
                 .header(CONTENT_TYPE, "application/json")
                 .body(request_body),
             api_key.as_ref(),
@@ -88,8 +123,8 @@ impl FabricUpstreamTransport for FabricTransport {
             .await
             .map_err(FabricTransportError::Send)?;
         reject_redirect(&response)?;
-        PendingUpstreamResponse::new(response, permit)
-            .prepare_passthrough()
+        deadlines
+            .hold_first_byte(PendingUpstreamResponse::new(response, permit).prepare_passthrough())
             .await
     }
 
@@ -97,11 +132,11 @@ impl FabricUpstreamTransport for FabricTransport {
         &self,
         lease: ProviderLease,
     ) -> Result<PreparedUpstreamResponse, Self::Error> {
-        let (dispatch, timeout, permit) = lease.into_transport_parts();
+        let (dispatch, deadlines, permit) = lease.into_transport_parts();
         let operation = async {
             match dispatch {
                 ProviderDispatch::Http(dispatch) => {
-                    dispatch_http(&self.client, dispatch, timeout, permit).await
+                    dispatch_http(&self.client, dispatch, deadlines, permit).await
                 }
                 ProviderDispatch::Codex(request) => {
                     let stream = request.stream;
@@ -121,7 +156,7 @@ impl FabricUpstreamTransport for FabricTransport {
                 }
             }
         };
-        tokio::time::timeout(timeout, operation)
+        tokio::time::timeout(deadlines.total, operation)
             .await
             .map_err(|_| FabricTransportError::ProviderTimeout)?
     }
@@ -130,12 +165,12 @@ impl FabricUpstreamTransport for FabricTransport {
 async fn dispatch_http(
     client: &Client,
     dispatch: HttpProviderDispatch,
-    timeout: Duration,
+    deadlines: UpstreamDeadlines,
     permit: OwnedSemaphorePermit,
 ) -> Result<PreparedUpstreamResponse, FabricTransportError> {
     let mut request = client
         .post(dispatch.url)
-        .timeout(timeout)
+        .timeout(deadlines.total)
         .header(CONTENT_TYPE, "application/json")
         .body(dispatch.body);
     request = match dispatch.adapter {
@@ -157,12 +192,16 @@ async fn dispatch_http(
     reject_redirect(&response)?;
     match dispatch.adapter {
         ProviderHttpAdapter::OpenAi => {
-            PendingUpstreamResponse::new(response, permit)
-                .prepare_passthrough()
+            deadlines
+                .hold_first_byte(
+                    PendingUpstreamResponse::new(response, permit).prepare_passthrough(),
+                )
                 .await
         }
         ProviderHttpAdapter::Anthropic { stream } => {
-            prepare_anthropic(response, &dispatch.model, stream, permit).await
+            deadlines
+                .hold_first_byte(prepare_anthropic(response, &dispatch.model, stream, permit))
+                .await
         }
     }
 }
@@ -423,6 +462,8 @@ pub enum FabricTransportError {
     Codex,
     #[error("upstream answered with a redirect to an unconfigured host")]
     UnexpectedRedirect,
+    #[error("configured first-byte deadline elapsed before the response committed")]
+    FirstByteTimeout,
 }
 
 /// Refuse a 3xx before any adapter treats it as a real answer.
@@ -466,4 +507,111 @@ fn safe_response_headers(source: &HeaderMap) -> HeaderMap {
         }
     }
     headers
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The header allowlist is the only thing preventing an upstream
+    /// `set-cookie` or `www-authenticate` from reaching the client. Replacing
+    /// the function body with `source.clone()` must fail this test.
+    #[test]
+    fn upstream_credential_and_session_headers_never_reach_the_client() {
+        let mut source = HeaderMap::new();
+        for (name, value) in [
+            ("set-cookie", "session=secret; HttpOnly"),
+            ("www-authenticate", "Bearer realm=\"upstream\""),
+            ("authorization", "Bearer upstream-key"),
+            ("proxy-authenticate", "Basic realm=\"proxy\""),
+            ("x-api-key", "upstream-key"),
+            ("server", "upstream/1.2.3"),
+            ("strict-transport-security", "max-age=31536000"),
+            ("access-control-allow-origin", "*"),
+        ] {
+            source.append(
+                HeaderName::from_static(name),
+                HeaderValue::from_str(value).expect("header value"),
+            );
+        }
+
+        let safe = safe_response_headers(&source);
+        for name in [
+            "set-cookie",
+            "www-authenticate",
+            "authorization",
+            "proxy-authenticate",
+            "x-api-key",
+            "server",
+            "strict-transport-security",
+            "access-control-allow-origin",
+        ] {
+            assert!(
+                !safe.contains_key(name),
+                "`{name}` must not be forwarded to the client"
+            );
+        }
+        assert!(safe.is_empty(), "only allowlisted headers may survive");
+    }
+
+    /// Safe diagnostics are preserved: request IDs and rate-limit fields are
+    /// what a client needs to correlate and back off.
+    #[test]
+    fn safe_diagnostic_headers_are_preserved() {
+        let mut source = HeaderMap::new();
+        for (name, value) in [
+            ("content-type", "text/event-stream"),
+            ("retry-after", "30"),
+            ("x-request-id", "req-1"),
+            ("x-generation-id", "gen-1"),
+            ("x-ratelimit-remaining-tokens", "1000"),
+        ] {
+            source.append(
+                HeaderName::from_static(name),
+                HeaderValue::from_str(value).expect("header value"),
+            );
+        }
+
+        let safe = safe_response_headers(&source);
+        assert_eq!(
+            safe.get("content-type").expect("content-type"),
+            "text/event-stream"
+        );
+        assert_eq!(safe.get("retry-after").expect("retry-after"), "30");
+        assert_eq!(safe.get("x-request-id").expect("x-request-id"), "req-1");
+        assert_eq!(
+            safe.get("x-generation-id").expect("x-generation-id"),
+            "gen-1"
+        );
+        assert_eq!(
+            safe.get("x-ratelimit-remaining-tokens")
+                .expect("rate limit header"),
+            "1000"
+        );
+    }
+
+    /// A missing first-byte deadline must not invent one, and a configured one
+    /// must bound how long a hung upstream holds its permits.
+    #[tokio::test]
+    async fn first_byte_deadline_is_applied_only_when_configured() {
+        let unbounded = UpstreamDeadlines::new(60_000, None);
+        let slow = async {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            Ok::<_, FabricTransportError>(())
+        };
+        unbounded
+            .hold_first_byte(slow)
+            .await
+            .expect("no deadline was configured");
+
+        let bounded = UpstreamDeadlines::new(60_000, Some(10));
+        let hung = async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok::<_, FabricTransportError>(())
+        };
+        assert!(matches!(
+            bounded.hold_first_byte(hung).await,
+            Err(FabricTransportError::FirstByteTimeout)
+        ));
+    }
 }
