@@ -67,6 +67,22 @@ impl Stream for GuardedResponseBody {
     }
 }
 
+/// Process-global fixed-window request limiter.
+///
+/// The semantics are deliberately coarse, and worth stating exactly:
+///
+/// - It is **one counter for the whole gateway**, not one per caller. Every
+///   client authenticates with the same configured bearer, so Octoroute has no
+///   client identity to key a bucket on; the limit is a bound on total inbound
+///   work, and one busy caller can consume the whole window and make every
+///   other caller wait for it.
+/// - The window is **fixed, not sliding**: the counter resets 60s after the
+///   window opened. A caller that spends the limit at the end of one window and
+///   again at the start of the next sends up to twice the limit within a single
+///   60-second span.
+///
+/// Neither is a bug to route around here: per-caller fairness needs per-caller
+/// credentials, which the configuration does not have.
 pub(super) struct FixedWindowRateLimiter {
     limit: u32,
     state: Mutex<RateWindow>,
@@ -181,11 +197,20 @@ pub(super) fn rate_limit_response(message: &str, code: &str, request_id: &str) -
     response
 }
 
+/// Set one gateway-owned response header, or set nothing at all.
+///
+/// Every value here comes from validated configuration or a generated id, so an
+/// invalid one is unreachable today. It is unreachable by validator discipline
+/// alone, though, and a looser validator later would turn this into a panic on
+/// the request path. Dropping the header degrades a diagnostic; panicking loses
+/// the response.
 pub(super) fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) {
-    let name = HeaderName::from_static(name);
-    let value =
-        HeaderValue::from_str(value).expect("configuration produced an invalid HTTP header");
-    headers.insert(name, value);
+    match HeaderValue::from_str(value) {
+        Ok(value) => {
+            headers.insert(HeaderName::from_static(name), value);
+        }
+        Err(_) => tracing::warn!(header = name, "refusing to set an invalid response header"),
+    }
 }
 
 pub(super) async fn security_headers(request: Request<Body>, next: Next) -> Response<Body> {
@@ -225,4 +250,32 @@ pub(super) async fn security_headers(request: Request<Body>, next: Next) -> Resp
             .insert(name, HeaderValue::from_static(value));
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A header value that cannot be represented must cost the header, not the
+    /// response. The values are validated upstream today, so this pins the
+    /// behaviour a future looser validator would otherwise turn into a panic.
+    #[test]
+    fn an_invalid_header_value_is_dropped_rather_than_panicking() {
+        let mut headers = HeaderMap::new();
+        insert_header(&mut headers, REQUEST_ID_HEADER, "line-one\nline-two");
+        assert!(headers.get(REQUEST_ID_HEADER).is_none());
+
+        insert_header(&mut headers, REQUEST_ID_HEADER, "request-1");
+        assert_eq!(headers.get(REQUEST_ID_HEADER).expect("header"), "request-1");
+    }
+
+    /// The window is fixed and process-global: the limit applies to the gateway
+    /// as a whole and resets only when the window rolls over.
+    #[test]
+    fn the_window_bounds_total_requests_until_it_rolls_over() {
+        let limiter = FixedWindowRateLimiter::new(2);
+        assert!(limiter.allow());
+        assert!(limiter.allow());
+        assert!(!limiter.allow());
+    }
 }

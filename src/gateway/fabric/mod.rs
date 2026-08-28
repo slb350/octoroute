@@ -1,6 +1,7 @@
 //! Octoroute v3 inference-fabric primitives and executable runtime.
 
 mod anthropic;
+mod bounded_response;
 mod codex;
 mod config;
 mod http;
@@ -12,6 +13,9 @@ mod provider;
 mod service;
 mod transport;
 mod unknown_types;
+
+#[cfg(all(test, unix))]
+mod test_support;
 
 pub use config::{
     FABRIC_CONFIG_VERSION, FabricConfig, FabricConfigError, FabricObservabilityConfig,
@@ -34,6 +38,12 @@ pub use transport::{
     FabricTransport, FabricTransportError, FabricUpstreamTransport, PreparedUpstreamResponse,
 };
 
+#[cfg(test)]
+mod local_pool_admission_tests;
+#[cfg(test)]
+mod local_pool_probe_tests;
+#[cfg(test)]
+mod local_pool_selection_tests;
 #[cfg(test)]
 mod local_pool_tests;
 #[cfg(test)]

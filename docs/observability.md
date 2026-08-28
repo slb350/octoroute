@@ -51,10 +51,12 @@ octoroute_fabric_unknown_upstream_types_total{adapter="codex"} 0
 `octoroute_fabric_pool_fallbacks_total` is the signal that local capacity is
 spilling to cloud. Without it the first sign of a degraded local fleet is the
 provider bill. `octoroute_fabric_routing_duration_seconds` measures the admission work for one
-route step - the health, slot, and token-count probes, credential resolution,
-and body construction - up to the moment that step's lease is held, excluding
-its upstream call. A request that falls forward contributes one observation per
-step it reaches, so `_count` counts admissions rather than requests.
+route step: the health, slot, and token-count probes, credential resolution, and
+body construction, excluding that step's upstream call. Every step that reaches
+admission is observed, whether it goes on to hold a lease or is rejected, so the
+histogram keeps reporting during an outage rather than going quiet exactly when
+it is most needed. A request that falls forward contributes one observation per
+step it reaches, so `_count` counts admission attempts rather than requests.
 
 `octoroute_fabric_unknown_upstream_types_total` records content blocks, events,
 and deltas Octoroute skipped as unrecognized. A rising count means an upstream

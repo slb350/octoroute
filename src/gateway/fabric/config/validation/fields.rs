@@ -1,7 +1,8 @@
 //! Shared field validators and safe configuration error construction.
 
 use super::{
-    MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMAND_ARGUMENTS, MAX_COMMAND_BYTES, MAX_MODEL_BYTES,
+    MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMAND_ARGUMENTS, MAX_COMMAND_BYTES, MAX_ENV_NAME_BYTES,
+    MAX_MODEL_BYTES,
 };
 use crate::gateway::fabric::FabricConfigError;
 use reqwest::Url;
@@ -63,8 +64,14 @@ pub(super) fn validate_local_member_url(field: &str, url: &Url) -> Result<(), Fa
         Ok(IpAddr::V4(address)) => {
             address.is_loopback() || address.is_private() || address.is_link_local()
         }
-        // Loopback, or a unique local address (fc00::/7).
-        Ok(IpAddr::V6(address)) => address.is_loopback() || (address.octets()[0] & 0xfe) == 0xfc,
+        // Loopback, a unique local address (fc00::/7), or a link-local address
+        // (fe80::/10). Link-local is trusted in both families or in neither:
+        // 169.254/16 and fe80::/10 are the same class of address, unroutable
+        // past the local link, so a member on one is no more exposed than a
+        // member on the other.
+        Ok(IpAddr::V6(address)) => {
+            address.is_loopback() || address.is_unique_local() || address.is_unicast_link_local()
+        }
         Err(_) => {
             let domain = host.to_ascii_lowercase();
             domain == "localhost"
@@ -137,16 +144,27 @@ pub(super) fn validate_model(field: &str, value: &str) -> Result<(), FabricConfi
     Ok(())
 }
 
+/// An environment variable name, bounded like every other identifier here.
+///
+/// The bound is not cosmetic: an unresolvable credential reports the variable
+/// name it looked for, so an unbounded name is unbounded text in a runtime
+/// error and a log line.
 pub(super) fn validate_env_name(field: &str, value: &str) -> Result<(), FabricConfigError> {
     validate_nonempty(field, value)?;
     let mut bytes = value.bytes();
     let Some(first) = bytes.next() else {
         return Err(invalid(field, "must not be empty"));
     };
-    if !(first.is_ascii_alphabetic() || first == b'_')
+    if value.len() > MAX_ENV_NAME_BYTES
+        || !(first.is_ascii_alphabetic() || first == b'_')
         || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
     {
-        return Err(invalid(field, "must be a valid environment variable name"));
+        return Err(invalid(
+            field,
+            format!(
+                "must be a valid environment variable name of at most {MAX_ENV_NAME_BYTES} bytes"
+            ),
+        ));
     }
     Ok(())
 }
@@ -221,8 +239,16 @@ pub(crate) fn safe_parse_error(input: &str, error: toml::de::Error) -> FabricCon
     FabricConfigError::Parse { line, column }
 }
 
-fn line_column(input: &str, byte_index: usize) -> (usize, usize) {
-    let prefix = &input[..byte_index.min(input.len())];
+pub(super) fn line_column(input: &str, byte_index: usize) -> (usize, usize) {
+    // The index comes from a TOML parser span. No span it produces today lands
+    // mid-character, but slicing on one panics, so the boundary is clamped
+    // rather than assumed: a startup panic is a worse diagnostic than an
+    // approximate column.
+    let mut end = byte_index.min(input.len());
+    while !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    let prefix = &input[..end];
     let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
     let column = prefix
         .rsplit_once('\n')

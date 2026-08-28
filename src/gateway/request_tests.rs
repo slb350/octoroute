@@ -351,3 +351,143 @@ fn output_budget_rejects_zero_or_non_integer_limits() {
         ));
     }
 }
+
+/// llama.cpp's `oaicompat_chat_params_parse` overwrites the `max_tokens`-derived
+/// `n_predict` with an explicit `n_predict`, on the very endpoint Octoroute
+/// proxies. The budget local admission reserves has to be the number the member
+/// will actually generate, not the one the OpenAI aliases suggest.
+#[test]
+fn output_budget_prefers_n_predict_over_the_openai_aliases() {
+    let request = gateway_request(json!({
+        "model": "auto",
+        "messages": [{"role": "user", "content": "hello"}],
+        "n_predict": 500_000
+    }));
+    assert_eq!(
+        request.output_token_budget(4096).expect("n_predict budget"),
+        500_000
+    );
+
+    let request = gateway_request(json!({
+        "model": "auto",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 100,
+        "max_completion_tokens": 200,
+        "n_predict": 500_000
+    }));
+    assert_eq!(
+        request
+            .output_token_budget(4096)
+            .expect("n_predict outranks both aliases"),
+        500_000
+    );
+
+    let request = gateway_request(json!({
+        "model": "auto",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_completion_tokens": 1000,
+        "n_predict": null
+    }));
+    assert_eq!(
+        request
+            .output_token_budget(4096)
+            .expect("null n_predict falls through"),
+        1000
+    );
+}
+
+#[test]
+fn output_budget_rejects_invalid_n_predict_like_the_other_limits() {
+    for value in [json!(1.5), json!("512"), json!(u64::from(u32::MAX) + 1)] {
+        let request = gateway_request(json!({
+            "model": "auto",
+            "messages": [{"role": "user", "content": "hello"}],
+            "n_predict": value
+        }));
+        let error = request
+            .output_token_budget(4096)
+            .expect_err("invalid n_predict");
+        assert!(
+            matches!(
+                error,
+                GatewayRequestError::Invalid { field: ref actual, .. } if actual == "n_predict"
+            ),
+            "expected an invalid `n_predict`, got {error:?}"
+        );
+    }
+}
+
+/// llama.cpp defines `n_predict: -1` as infinity and as its own default, so a
+/// client that sends it is sending the server's default, not a bad request.
+/// There is nothing to reserve for an unbounded generation, so the budget falls
+/// through to the OpenAI aliases and then to the pool default.
+#[test]
+fn a_negative_n_predict_means_unlimited_and_falls_through() {
+    let request = gateway_request(json!({
+        "model": "auto",
+        "messages": [{"role": "user", "content": "hello"}],
+        "n_predict": -1
+    }));
+    assert_eq!(
+        request
+            .output_token_budget(4096)
+            .expect("-1 falls through to the pool default"),
+        4096
+    );
+
+    let request = gateway_request(json!({
+        "model": "auto",
+        "messages": [{"role": "user", "content": "hello"}],
+        "n_predict": -1,
+        "max_tokens": 256
+    }));
+    assert_eq!(
+        request
+            .output_token_budget(4096)
+            .expect("-1 falls through to max_tokens"),
+        256
+    );
+}
+
+/// llama.cpp documents `n_predict: 0` as "evaluate the prompt into the cache
+/// without generating", which is a real reservation of zero output tokens
+/// rather than a malformed limit.
+#[test]
+fn a_zero_n_predict_reserves_no_output_tokens() {
+    let request = gateway_request(json!({
+        "model": "auto",
+        "messages": [{"role": "user", "content": "hello"}],
+        "n_predict": 0,
+        "max_tokens": 4096
+    }));
+    assert_eq!(
+        request
+            .output_token_budget(4096)
+            .expect("zero is a budget, not an error"),
+        0
+    );
+}
+
+/// `include_reasoning` gates the pool's `reasoning` capability, so a caller
+/// using it has stated a reasoning intent. Adding the pool default alongside it
+/// would attach an effort the caller never chose.
+#[test]
+fn include_reasoning_counts_as_a_caller_reasoning_control() {
+    let request = gateway_request(json!({
+        "model": "worker",
+        "messages": [{"role": "user", "content": "hello"}],
+        "include_reasoning": true
+    }));
+    let body: serde_json::Value = serde_json::from_slice(
+        &request
+            .body_bytes_for_model_with_reasoning_default("local-model", "high")
+            .expect("local body"),
+    )
+    .expect("body JSON");
+
+    assert_eq!(body["include_reasoning"], json!(true));
+    assert!(
+        body.get("reasoning_effort").is_none(),
+        "the pool default must not be added beside a caller reasoning control: {body}"
+    );
+}

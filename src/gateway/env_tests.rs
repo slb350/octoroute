@@ -112,3 +112,57 @@ fn empty_process_variable_does_not_shadow_a_dotenv_value() {
         Some("file-key")
     );
 }
+
+/// `KEY=` in a `.env` is the same shape as an exported-but-empty process
+/// variable: a truncated edit or a failed substitution, not a credential. Kept
+/// as an empty secret it surfaces downstream as an upstream 401 ("invalid
+/// credential") instead of the startup-visible "missing credential" it is.
+#[test]
+fn empty_dotenv_values_are_not_values() {
+    let file = dotenv_file("OPENROUTER_API_KEY=\nOCTOROUTE_API_KEY=inbound\n");
+    let environment = DotenvEnvironment::from_path(file.path(), TestEnvironment::default())
+        .expect("valid dotenv file");
+
+    assert!(
+        environment.get("OPENROUTER_API_KEY").is_none(),
+        "an empty dotenv assignment must not resolve to an empty secret"
+    );
+    assert_eq!(
+        environment
+            .get("OCTOROUTE_API_KEY")
+            .as_ref()
+            .map(ExposeSecret::expose_secret),
+        Some("inbound"),
+        "a neighbouring value is unaffected"
+    );
+}
+
+/// A repeated key resolves to the last assignment. An operator rotating a
+/// credential appends the new line; first-wins would keep serving the stale one
+/// with nothing to show for it.
+#[test]
+fn a_repeated_dotenv_key_resolves_to_the_last_assignment() {
+    let file = dotenv_file("OPENROUTER_API_KEY=stale\nOPENROUTER_API_KEY=rotated\n");
+    let environment = DotenvEnvironment::from_path(file.path(), TestEnvironment::default())
+        .expect("valid dotenv file");
+
+    assert_eq!(
+        environment
+            .get("OPENROUTER_API_KEY")
+            .as_ref()
+            .map(ExposeSecret::expose_secret),
+        Some("rotated")
+    );
+}
+
+/// Last-wins and "empty is not a value" compose: a later blank assignment
+/// clears the key rather than leaving the earlier value in place, so the two
+/// rules cannot disagree about which line is authoritative.
+#[test]
+fn a_later_empty_assignment_clears_an_earlier_dotenv_value() {
+    let file = dotenv_file("OPENROUTER_API_KEY=stale\nOPENROUTER_API_KEY=\n");
+    let environment = DotenvEnvironment::from_path(file.path(), TestEnvironment::default())
+        .expect("valid dotenv file");
+
+    assert!(environment.get("OPENROUTER_API_KEY").is_none());
+}

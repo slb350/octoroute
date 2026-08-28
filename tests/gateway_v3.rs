@@ -181,5 +181,146 @@ async fn local_only_busy_response_never_resolves_provider_credentials() {
             .expect("error body"),
     )
     .expect("JSON error");
-    assert_eq!(body["error"]["code"], "local_pool_disabled");
+    // The route's governing rejection, not the last step's state. `workers` is
+    // busy and the pool after it is disabled; reporting `local_pool_disabled`
+    // would hand the caller the state of a pool it was never going to use and
+    // leave the actionable one in the logs only.
+    assert_eq!(body["error"]["code"], "local_busy");
+}
+
+/// Mount everything a pool readiness pass asks of one member, so `/health` and
+/// `/health/ready` answer `ready` deterministically.
+async fn mount_ready_member(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/slots"))
+        .and(query_param("fail_on_no_slot", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])))
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions/input_tokens"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"input_tokens": 8})))
+        .mount(server)
+        .await;
+}
+
+fn metadata_request(uri: &str, credential: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder().method("GET").uri(uri);
+    if let Some(credential) = credential {
+        builder = builder.header(AUTHORIZATION, credential);
+    }
+    builder.body(Body::empty()).expect("request")
+}
+
+/// The authorization split across every non-inference endpoint, stated as a
+/// matrix so an inversion cannot hide behind the two tests that happen to use a
+/// credential. Metadata requires the bearer; health is unauthenticated by
+/// contract, because a load balancer probing it has no credential to offer.
+#[tokio::test]
+async fn metadata_requires_the_bearer_while_health_stays_anonymous() {
+    let server = MockServer::start().await;
+    mount_ready_member(&server).await;
+    let mut config = config(&server);
+    // Providers would reach their real endpoints during a readiness pass.
+    for provider in config.providers.values_mut() {
+        provider.enabled = false;
+    }
+    let app = fabric_gateway_app(
+        FabricGatewayService::from_config(config, TestEnvironment::gateway()).expect("service"),
+    );
+
+    for (endpoint, credential, expected) in [
+        ("/v1/models", None, StatusCode::UNAUTHORIZED),
+        (
+            "/v1/models",
+            Some("Bearer wrong-secret"),
+            StatusCode::UNAUTHORIZED,
+        ),
+        ("/v1/models", Some("Bearer inbound-secret"), StatusCode::OK),
+        ("/metrics", None, StatusCode::UNAUTHORIZED),
+        (
+            "/metrics",
+            Some("Bearer wrong-secret"),
+            StatusCode::UNAUTHORIZED,
+        ),
+        ("/metrics", Some("Bearer inbound-secret"), StatusCode::OK),
+        ("/health/live", None, StatusCode::OK),
+        ("/health/live", Some("Bearer wrong-secret"), StatusCode::OK),
+        (
+            "/health/live",
+            Some("Bearer inbound-secret"),
+            StatusCode::OK,
+        ),
+        ("/health/ready", None, StatusCode::OK),
+        ("/health/ready", Some("Bearer wrong-secret"), StatusCode::OK),
+        (
+            "/health/ready",
+            Some("Bearer inbound-secret"),
+            StatusCode::OK,
+        ),
+        ("/health", None, StatusCode::OK),
+        ("/health", Some("Bearer wrong-secret"), StatusCode::OK),
+        ("/health", Some("Bearer inbound-secret"), StatusCode::OK),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(metadata_request(endpoint, credential))
+            .await
+            .expect("response");
+        assert_eq!(
+            response.status(),
+            expected,
+            "{endpoint} with credential {credential:?}"
+        );
+    }
+}
+
+/// Health status is public; the per-target breakdown names every configured
+/// pool and provider, so it is disclosed only to an authenticated caller.
+#[tokio::test]
+async fn the_readiness_breakdown_is_disclosed_only_to_an_authenticated_caller() {
+    let server = MockServer::start().await;
+    mount_ready_member(&server).await;
+    let mut config = config(&server);
+    for provider in config.providers.values_mut() {
+        provider.enabled = false;
+    }
+    let app = fabric_gateway_app(
+        FabricGatewayService::from_config(config, TestEnvironment::gateway()).expect("service"),
+    );
+
+    for (credential, discloses) in [
+        (None, false),
+        (Some("Bearer wrong-secret"), false),
+        (Some("Bearer inbound-secret"), true),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(metadata_request("/health/ready", credential))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 65536)
+                .await
+                .expect("readiness body"),
+        )
+        .expect("readiness JSON");
+        assert_eq!(body["status"], "ready");
+        assert_eq!(
+            body.get("pools").is_some(),
+            discloses,
+            "pool breakdown for credential {credential:?}"
+        );
+        assert_eq!(
+            body.get("providers").is_some(),
+            discloses,
+            "provider breakdown for credential {credential:?}"
+        );
+    }
 }

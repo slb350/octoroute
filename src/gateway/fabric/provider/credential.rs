@@ -83,15 +83,23 @@ impl ProviderCredentialSource {
             Self::Command {
                 command,
                 environment,
-            } => resolve_command_credential(command, environment).await,
+            } => resolve_command_credential(command, environment, CREDENTIAL_COMMAND_TIMEOUT).await,
         }
     }
 }
 
+/// Run one credential command under a single wall-clock budget.
+///
+/// `timeout` bounds the whole call, not each half of it. Timing the stdout read
+/// and the `wait` separately let a command that reads slowly and then exits
+/// slowly hold the credential mutex - and with it every request and readiness
+/// probe for this provider - for twice the documented bound.
 async fn resolve_command_credential(
     arguments: &[String],
     environment: &ChildEnvironment,
+    timeout: Duration,
 ) -> Result<SecretString, ProviderCredentialError> {
+    let deadline = tokio::time::Instant::now() + timeout;
     let (program, arguments) = arguments
         .split_first()
         .ok_or(ProviderCredentialError::CommandFailed)?;
@@ -121,7 +129,7 @@ async fn resolve_command_credential(
             .read_to_end(&mut output)
             .await
     };
-    match tokio::time::timeout(CREDENTIAL_COMMAND_TIMEOUT, read).await {
+    match tokio::time::timeout_at(deadline, read).await {
         Ok(Ok(_)) => {}
         Ok(Err(_)) => {
             terminate(&mut child).await;
@@ -136,7 +144,7 @@ async fn resolve_command_credential(
         terminate(&mut child).await;
         return Err(ProviderCredentialError::CommandOutputTooLarge);
     }
-    let status = match tokio::time::timeout(CREDENTIAL_COMMAND_TIMEOUT, child.wait()).await {
+    let status = match tokio::time::timeout_at(deadline, child.wait()).await {
         Ok(Ok(status)) => status,
         Ok(Err(_)) => return Err(ProviderCredentialError::CommandFailed),
         Err(_) => {
@@ -191,5 +199,65 @@ impl ProviderCredentialError {
             Self::CommandTimeout => "command_timeout",
             Self::CommandOutputTooLarge => "command_output_too_large",
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// The one budget is a deadline in the future. A command that answers
+    /// promptly has to resolve, which is the whole point of supporting
+    /// `api_key_command`: `op`/`pass`/`gcloud` return in milliseconds, and a
+    /// deadline computed backwards would time every one of them out and report
+    /// every provider unauthenticated.
+    #[tokio::test]
+    async fn a_prompt_command_resolves_within_its_budget() {
+        let command = [
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "printf 'resolved-key\\n'".to_string(),
+        ];
+
+        let resolved = resolve_command_credential(
+            &command,
+            &ChildEnvironment::default(),
+            CREDENTIAL_COMMAND_TIMEOUT,
+        )
+        .await
+        .expect("a command that answers at once must resolve");
+
+        // The trailing newline a shell command emits is not part of the key.
+        assert_eq!(resolved.expose_secret(), "resolved-key");
+    }
+
+    /// The credential mutex is held across the whole resolve, so the command's
+    /// budget has to be a single wall-clock bound. A per-half bound lets a
+    /// command that reads slowly and then exits slowly hold it for twice as
+    /// long as the timeout says.
+    #[tokio::test]
+    async fn a_slow_command_is_bounded_in_total_not_per_phase() {
+        let timeout = Duration::from_millis(500);
+        let command = [
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            // Writes and closes stdout part-way through the budget, so the read
+            // returns, and then outlives any second budget of the same size.
+            "sleep 0.4; printf secret-key; exec 1>&-; sleep 30".to_string(),
+        ];
+        let started = Instant::now();
+        let result =
+            resolve_command_credential(&command, &ChildEnvironment::default(), timeout).await;
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(result, Err(ProviderCredentialError::CommandTimeout)),
+            "a command that never exits must time out"
+        );
+        // Per-phase bounds would allow the 0.4s read and then a fresh 0.5s
+        // wait; one budget cuts the whole call at 0.5s.
+        assert!(
+            elapsed < timeout + Duration::from_millis(200),
+            "the read and the wait share one budget; took {elapsed:?}"
+        );
     }
 }

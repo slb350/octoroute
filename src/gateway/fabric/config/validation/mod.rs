@@ -49,6 +49,7 @@ pub(super) const MAX_COMMAND_ARGUMENTS: usize = 32;
 pub(super) const MAX_COMMAND_ARGUMENT_BYTES: usize = 4 * 1024;
 pub(super) const MAX_COMMAND_BYTES: usize = 16 * 1024;
 pub(super) const MAX_MODEL_BYTES: usize = 512;
+pub(super) const MAX_ENV_NAME_BYTES: usize = 128;
 pub(super) const DEFAULT_PRIORITY: u16 = 100;
 pub(super) const DEFAULT_CODEX_EXECUTABLE: &str = "codex";
 

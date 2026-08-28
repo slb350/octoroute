@@ -123,14 +123,32 @@ fn load_error(path: &Path, error: dotenvy::Error, parsing: bool) -> DotenvLoadEr
     }
 }
 
+/// Read a dotenv file into secrets, last assignment wins.
+///
+/// Two rules, chosen together so they cannot disagree about which line is
+/// authoritative:
+///
+/// A repeated key resolves to its last assignment. Rotating a credential means
+/// appending the new line, and first-wins would keep serving the stale value
+/// with nothing in the log to say so.
+///
+/// An empty assignment is not a value, matching how an exported-but-empty
+/// process variable is treated in [`DotenvEnvironment::get`]. `KEY=` is what a
+/// truncated edit or a failed substitution leaves behind; stored as an empty
+/// secret it reaches the upstream and returns as "invalid credential" rather
+/// than the "missing credential" it actually is. Under last-wins a later blank
+/// assignment therefore clears the key instead of silently deferring to the
+/// earlier line.
 fn load_values(path: &Path) -> Result<HashMap<String, SecretString>, DotenvLoadError> {
     let iterator = dotenvy::from_path_iter(path).map_err(|error| load_error(path, error, false))?;
     let mut file_values = HashMap::new();
     for item in iterator {
         let (name, value) = item.map_err(|error| load_error(path, error, true))?;
-        file_values
-            .entry(name)
-            .or_insert_with(|| SecretString::from(value));
+        if value.is_empty() {
+            file_values.remove(&name);
+        } else {
+            file_values.insert(name, SecretString::from(value));
+        }
     }
     Ok(file_values)
 }

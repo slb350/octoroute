@@ -8,6 +8,9 @@ mod events;
 #[cfg(test)]
 mod tests;
 
+#[cfg(all(test, unix))]
+mod process_tests;
+
 use events::{parse_events, render_open_ai_reply};
 
 use crate::gateway::fabric::{ProviderConfig, ReasoningEffort};
@@ -112,6 +115,11 @@ pub(super) fn build_request(
         executable: PathBuf::from(executable),
         environment,
         model: config.model.clone(),
+        // Deliberately not the "inject reasoning_effort only into providers
+        // configured for it" rule: nothing is injected into the caller's body
+        // here. `codex exec` requires a `model_reasoning_effort` value on every
+        // invocation, so the route default supplies the one argument the CLI
+        // cannot be run without when the provider does not set its own.
         effort: config.reasoning_effort.unwrap_or(route_effort),
         timeout: Duration::from_millis(config.timeout_ms),
         input,
@@ -141,6 +149,15 @@ pub(super) async fn probe(
     parse_diagnostic(&output.stdout)
 }
 
+/// Run one hardened `codex exec` and translate its event stream.
+///
+/// Two deadlines cover this call, and only one of them is this module's.
+/// `request.timeout` is the sole bound on [`probe`], where it is also what
+/// reaps the child through [`stop`]. On this path the transport's own
+/// `first_byte`/`total` deadlines are the tighter pair and fire first; when
+/// they do, this future is dropped, and `kill_on_drop` reaps the child. The
+/// inner timeout stays as the backstop for a direct caller that has no
+/// transport around it.
 pub(super) async fn execute(request: CodexRequest) -> Result<Bytes, CodexAdapterError> {
     let workspace = tempfile::Builder::new()
         .prefix("octoroute-codex-")
@@ -314,10 +331,13 @@ async fn run_process(
         loop {
             tokio::select! {
                 results = &mut completion => return Ok::<_, CodexAdapterError>(results),
+                // The bound has to be enforced while the child runs, not only
+                // after it exits: a `codex exec` that streams without ever
+                // finishing is exactly the case the capture bound exists for,
+                // and waiting for its exit would let it write for the whole
+                // timeout window.
                 _ = poll.tick() => {
-                    if stdout.exceeds(stdout_limit).unwrap_or(true)
-                        || stderr.exceeds(STDERR_CAPTURE_MAX_BYTES).unwrap_or(true)
-                    {
+                    if capture_exceeded(&stdout, &stderr, stdout_limit) {
                         return Err(CodexAdapterError::OutputTooLarge);
                     }
                 }
@@ -336,9 +356,7 @@ async fn run_process(
         }
     };
     let status = status.map_err(|_| CodexAdapterError::Process)?;
-    if stdout.exceeds(stdout_limit).unwrap_or(true)
-        || stderr.exceeds(STDERR_CAPTURE_MAX_BYTES).unwrap_or(true)
-    {
+    if capture_exceeded(&stdout, &stderr, stdout_limit) {
         return Err(CodexAdapterError::OutputTooLarge);
     }
     if status.success() && stdin_result.is_err() {
@@ -348,6 +366,18 @@ async fn run_process(
         .read_bounded(stdout_limit)
         .map_err(|_| CodexAdapterError::OutputTooLarge)?;
     Ok(ProcessOutput { stdout, status })
+}
+
+/// Whether either captured stream has outgrown its bound.
+///
+/// Both streams are bounded, and stderr is not the lesser half: the CLI writes
+/// its progress and diagnostics there, and nothing downstream ever reads it, so
+/// an unbounded stderr is a child filling the disk with output no one will look
+/// at. A capture whose size cannot be read is treated as over budget, because
+/// the alternative is capturing without a bound at all.
+fn capture_exceeded(stdout: &BoundedCapture, stderr: &BoundedCapture, stdout_limit: usize) -> bool {
+    stdout.exceeds(stdout_limit).unwrap_or(true)
+        || stderr.exceeds(STDERR_CAPTURE_MAX_BYTES).unwrap_or(true)
 }
 
 async fn stop(child: &mut tokio::process::Child) {

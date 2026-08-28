@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg(unix)]
+use crate::gateway::fabric::test_support::write_executable_fixture;
+
 #[tokio::test]
 async fn incompatible_codex_request_fails_closed_without_launching_the_cli() {
     let server = MockServer::start().await;
@@ -53,37 +56,33 @@ async fn incompatible_codex_request_fails_closed_without_launching_the_cli() {
     assert_eq!(environment_audit.reads(), vec!["OCTOROUTE_API_KEY"]);
 }
 
-#[tokio::test]
-async fn codex_cli_dispatch_is_ephemeral_filtered_and_open_ai_compatible() {
-    use std::os::unix::fs::PermissionsExt as _;
+/// A `codex doctor --json` diagnostic with the requested stored auth mode.
+#[cfg(unix)]
+fn diagnostic_json(auth_mode: &str, chatgpt_tokens: &str) -> String {
+    format!(
+        "{{\"schemaVersion\":1,\"codexVersion\":\"0.148.0\",\"checks\":{{\"auth.credentials\":{{\"details\":{{\"stored ChatGPT tokens\":\"{chatgpt_tokens}\",\"stored auth mode\":\"{auth_mode}\"}}}}}}}}"
+    )
+}
 
-    let server = MockServer::start().await;
-    let directory = tempfile::tempdir().expect("temporary Codex fixture");
-    let executable = directory.path().join("fake-codex");
-    std::fs::write(
-        &executable,
+/// A `codex doctor` payload with the requested stored auth mode.
+#[cfg(unix)]
+fn doctor_branch(auth_mode: &str, chatgpt_tokens: &str) -> String {
+    format!(
         concat!(
             "#!/bin/sh\n",
-            "if [ \"${1:-}\" = doctor ]; then\n",
-            "  printf '%s' '{\"schemaVersion\":1,\"codexVersion\":\"0.148.0\",\"checks\":{\"auth.credentials\":{\"details\":{\"stored ChatGPT tokens\":\"true\",\"stored auth mode\":\"chatgpt\"}}}}'\n",
+            "if [ \"${{1:-}}\" = doctor ]; then\n",
+            "  printf '%s' '{diagnostic}'\n",
             "  exit 0\n",
-            "fi\n",
-            "sed -n '1,$p' >/dev/null\n",
-            "printf '%s\\n' \\\n",
-            "  '{\"type\":\"thread.started\",\"thread_id\":\"redacted\"}' \\\n",
-            "  '{\"type\":\"turn.started\"}' \\\n",
-            "  '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"content\\\":\\\"Codex answer\\\",\\\"reasoning_content\\\":null,\\\"tool_calls\\\":[],\\\"finish_reason\\\":\\\"stop\\\"}\"}}' \\\n",
-            "  '{\"type\":\"turn.completed\"}'\n"
+            "fi\n"
         ),
+        diagnostic = diagnostic_json(auth_mode, chatgpt_tokens)
     )
-    .expect("fake Codex executable");
-    let mut permissions = std::fs::metadata(&executable)
-        .expect("fake Codex metadata")
-        .permissions();
-    permissions.set_mode(0o700);
-    std::fs::set_permissions(&executable, permissions).expect("fake Codex permissions");
+}
 
-    let mut config = local_config(&server);
+/// Point the `codex` provider at a fake CLI and make it the only cloud step.
+#[cfg(unix)]
+fn codex_only_config(server: &MockServer, executable: &std::path::Path) -> FabricConfig {
+    let mut config = local_config(server);
     for provider in config.providers.values_mut() {
         provider.enabled = false;
     }
@@ -97,8 +96,33 @@ async fn codex_cli_dispatch_is_ephemeral_filtered_and_open_ai_compatible() {
         .get_mut("cloud-sota")
         .expect("cloud route")
         .steps = vec![RouteTarget::Provider("codex".to_string())];
+    config
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_cli_dispatch_is_ephemeral_filtered_and_open_ai_compatible() {
+    let server = MockServer::start().await;
+    let directory = tempfile::tempdir().expect("temporary Codex fixture");
+    let executable = write_executable_fixture(
+        directory.path(),
+        "fake-codex",
+        &format!(
+            "{}{}",
+            doctor_branch("chatgpt", "true"),
+            concat!(
+                "sed -n '1,$p' >/dev/null\n",
+                "printf '%s\\n' \\\n",
+                "  '{\"type\":\"thread.started\",\"thread_id\":\"redacted\"}' \\\n",
+                "  '{\"type\":\"turn.started\"}' \\\n",
+                "  '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"content\\\":\\\"Codex answer\\\",\\\"reasoning_content\\\":null,\\\"tool_calls\\\":[],\\\"finish_reason\\\":\\\"stop\\\"}\"}}' \\\n",
+                "  '{\"type\":\"turn.completed\"}'\n"
+            )
+        ),
+    );
+
     let service = FabricGatewayService::from_config(
-        config,
+        codex_only_config(&server, &executable),
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
     .expect("service");
@@ -201,4 +225,169 @@ fn shipped_cloud_route_falls_forward_on_an_incompatible_first_step() {
         Some(&RouteTarget::Provider("codex".to_string()))
     );
     assert!(route.fallback_on.contains(&FallbackTrigger::Incompatible));
+}
+
+/// A Codex CLI logged in with an API key instead of a ChatGPT subscription is
+/// an operator error, not an outage. Reporting it as `Unavailable` maps it to
+/// the `unhealthy` trigger, which is in the default fallback set, so every
+/// request and its spend would spill silently to the next step.
+#[cfg(unix)]
+#[tokio::test]
+async fn api_key_codex_auth_reports_unauthenticated_rather_than_unavailable() {
+    let server = MockServer::start().await;
+    let directory = tempfile::tempdir().expect("temporary Codex fixture");
+    let executable = write_executable_fixture(
+        directory.path(),
+        "fake-codex",
+        &format!("{}exit 0\n", doctor_branch("api", "false")),
+    );
+    let service = FabricGatewayService::from_config(
+        codex_only_config(&server, &executable),
+        TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
+    )
+    .expect("service");
+
+    let readiness = service.readiness().await;
+    assert_eq!(
+        readiness.providers().get("codex"),
+        Some(&ProviderAdmissionState::Unauthenticated)
+    );
+}
+
+/// A doctor payload that is not the contract Octoroute checks is the same class
+/// of misconfiguration, and must not read as a transient outage either.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unparseable_codex_diagnostic_reports_unauthenticated() {
+    let server = MockServer::start().await;
+    let directory = tempfile::tempdir().expect("temporary Codex fixture");
+    let executable = write_executable_fixture(
+        directory.path(),
+        "fake-codex",
+        "#!/bin/sh\nif [ \"${1:-}\" = doctor ]; then\n  printf '%s' 'not json'\n  exit 0\nfi\nexit 0\n",
+    );
+    let service = FabricGatewayService::from_config(
+        codex_only_config(&server, &executable),
+        TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
+    )
+    .expect("service");
+
+    assert_eq!(
+        service.readiness().await.providers().get("codex"),
+        Some(&ProviderAdmissionState::Unauthenticated)
+    );
+}
+
+/// A CLI that never answers must not hold the provider and inbound permits for
+/// the whole 30-minute total timeout: `first_byte_timeout_ms` is configurable
+/// for a `codex_cli` provider and has to actually bound the run.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_hung_codex_run_is_bounded_by_the_first_byte_deadline() {
+    let server = MockServer::start().await;
+    let directory = tempfile::tempdir().expect("temporary Codex fixture");
+    let executable = write_executable_fixture(
+        directory.path(),
+        "fake-codex",
+        &format!("{}sleep 30\n", doctor_branch("chatgpt", "true")),
+    );
+    let mut config = codex_only_config(&server, &executable);
+    let codex = config.providers.get_mut("codex").expect("codex provider");
+    codex.first_byte_timeout_ms = Some(250);
+    let service = FabricGatewayService::from_config(
+        config,
+        TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
+    )
+    .expect("service");
+    let body = Bytes::from(
+        serde_json::to_vec(&json!({
+            "model": "cloud-sota",
+            "messages": [{"role": "user", "content": "review this change"}]
+        }))
+        .expect("JSON"),
+    );
+
+    let started = std::time::Instant::now();
+    let response = service.handle_chat(&headers(), body).await;
+    let elapsed = started.elapsed();
+    assert_ne!(response.status(), 200);
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "the deadline must cut the run short; took {elapsed:?}"
+    );
+}
+
+/// A `codex doctor` that answers differently the second time it is asked.
+///
+/// The first probe reports a ChatGPT subscription; every later one reports an
+/// API-key login. That makes a second probe visible in the readiness verdict
+/// itself, with no counter to read back, and the `exec` branch fails so a
+/// dispatch through this CLI is a dispatch failure.
+#[cfg(unix)]
+fn doctor_that_changes_its_answer(marker: &std::path::Path) -> String {
+    format!(
+        concat!(
+            "#!/bin/sh\n",
+            "if [ \"${{1:-}}\" = doctor ]; then\n",
+            "  if [ -e {marker} ]; then\n",
+            "    printf '%s' '{api}'\n",
+            "  else\n",
+            "    : > {marker}\n",
+            "    printf '%s' '{chatgpt}'\n",
+            "  fi\n",
+            "  exit 0\n",
+            "fi\n",
+            "exit 7\n"
+        ),
+        marker = marker.display(),
+        api = diagnostic_json("api", "false"),
+        chatgpt = diagnostic_json("chatgpt", "true")
+    )
+}
+
+/// A dispatch that fails has to discard the cached readiness verdict it just
+/// contradicted.
+///
+/// Readiness is otherwise re-probed only on its TTL, which defaults to thirty
+/// seconds and is configurable up to an hour: without invalidation a Codex CLI
+/// that lost its subscription mid-window keeps reporting `ready` on `/health`
+/// for the rest of it, while every request through it fails.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failed_codex_dispatch_discards_the_cached_readiness_verdict() {
+    let directory = tempfile::tempdir().expect("temporary Codex fixture");
+    let server = MockServer::start().await;
+    let executable = write_executable_fixture(
+        directory.path(),
+        "fake-codex",
+        &doctor_that_changes_its_answer(&directory.path().join("probed")),
+    );
+    let service = FabricGatewayService::from_config(
+        codex_only_config(&server, &executable),
+        TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
+    )
+    .expect("service");
+
+    assert_eq!(
+        service.readiness().await.providers().get("codex"),
+        Some(&ProviderAdmissionState::Ready),
+        "the first probe caches a ready verdict"
+    );
+
+    let body = Bytes::from(
+        serde_json::to_vec(&json!({
+            "model": "cloud-sota",
+            "messages": [{"role": "user", "content": "review this change"}]
+        }))
+        .expect("JSON"),
+    );
+    assert_ne!(service.handle_chat(&headers(), body).await.status(), 200);
+
+    // The verdict can only change if the failed dispatch discarded the cached
+    // one: the TTL has not come close to elapsing.
+    assert_eq!(
+        service.readiness().await.providers().get("codex"),
+        Some(&ProviderAdmissionState::Unauthenticated),
+        "a failed dispatch must retire the cached verdict rather than let it stand for the TTL"
+    );
 }

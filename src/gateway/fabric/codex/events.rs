@@ -28,7 +28,30 @@ pub(super) fn parse_events(
             serde_json::from_slice(line).map_err(|_| CodexAdapterError::Contract)?;
         let kind = event.kind.ok_or(CodexAdapterError::Contract)?;
         if completed {
-            return Err(CodexAdapterError::Contract);
+            match kind.as_ref() {
+                "error" | "turn.failed" => return Err(CodexAdapterError::Process),
+                // A duplicate completion is a contract violation, not a new
+                // event type.
+                "turn.completed" => return Err(CodexAdapterError::Contract),
+                // The isolation check does not stop at the end of the turn.
+                // Evidence that a disabled integration ran is the same evidence
+                // whether it arrives before the completion or one line after
+                // it, and skipping it here would hand the caller an answer the
+                // contract says was produced without side effects.
+                _ if event
+                    .item
+                    .as_ref()
+                    .is_some_and(|item| reports_disabled_integration(item.kind.as_deref())) =>
+                {
+                    return Err(CodexAdapterError::Contract);
+                }
+                // Anything else trailing the completed turn is skipped for the
+                // same forward-compatibility reason unknown events are: a
+                // future CLI that appends one more event must not turn every
+                // request into a 502.
+                _ => ignore_unknown_event(),
+            }
+            continue;
         }
         match kind.as_ref() {
             "thread.started" | "turn.started" => {}
@@ -42,6 +65,9 @@ pub(super) fn parse_events(
                         }
                         final_message = Some(item.text.ok_or(CodexAdapterError::Contract)?);
                     }
+                    kind if reports_disabled_integration(kind) => {
+                        return Err(CodexAdapterError::Contract);
+                    }
                     // Item types Octoroute does not consume, including any the
                     // CLI adds later. Failing here would turn every request into
                     // a 502 on the next Codex release.
@@ -49,9 +75,14 @@ pub(super) fn parse_events(
                 }
             }
             "turn.completed" if final_message.is_some() => {
-                usage = event.usage.map(CodexUsage::from);
+                usage = event.usage.and_then(CodexUsage::from_raw);
                 completed = true;
             }
+            // A completion before any agent message is the contract being
+            // violated, not an event type Octoroute has never seen. Counting it
+            // as unknown would pollute the unknown-upstream-type metric with a
+            // known event in the wrong place.
+            "turn.completed" => return Err(CodexAdapterError::Contract),
             "error" | "turn.failed" => return Err(CodexAdapterError::Process),
             // As above: an unrecognized event type is skipped, not fatal. The
             // `turn.completed` requirement below still rejects a truncated run.
@@ -68,6 +99,19 @@ pub(super) fn parse_events(
     Ok((reply, usage))
 }
 
+/// Whether an item reports that one of the disabled integrations ran.
+///
+/// The invocation disables shell, exec, apps, MCP, and web search, so an item
+/// naming one of them means the isolation Octoroute promises did not hold. The
+/// answer was produced with side effects the contract says never happened, so
+/// it fails closed instead of being skipped.
+fn reports_disabled_integration(kind: Option<&str>) -> bool {
+    matches!(
+        kind,
+        Some("command_execution" | "file_change" | "mcp_tool_call" | "web_search")
+    )
+}
+
 fn ignore_unknown_event() {
     unknown_types::record(unknown_types::Adapter::Codex);
 }
@@ -82,16 +126,22 @@ pub(crate) struct CodexUsage {
     completion_tokens: u64,
 }
 
-impl From<RawCodexUsage> for CodexUsage {
-    fn from(usage: RawCodexUsage) -> Self {
-        Self {
+impl CodexUsage {
+    /// Build usage from a `turn.completed` payload, or nothing at all.
+    ///
+    /// A `usage` object carrying neither count is absent accounting, and
+    /// rendering it as zeros would tell a cost-tracking client the turn was
+    /// free. Omitting the key says what is true: the CLI did not report.
+    fn from_raw(usage: RawCodexUsage) -> Option<Self> {
+        if usage.input_tokens.is_none() && usage.output_tokens.is_none() {
+            return None;
+        }
+        Some(Self {
             prompt_tokens: usage.input_tokens.unwrap_or_default(),
             completion_tokens: usage.output_tokens.unwrap_or_default(),
-        }
+        })
     }
-}
 
-impl CodexUsage {
     fn to_value(self) -> Value {
         json!({
             "prompt_tokens": self.prompt_tokens,

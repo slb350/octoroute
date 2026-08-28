@@ -51,17 +51,143 @@ fn diagnostic_accepts_only_chatgpt_managed_auth() {
     ));
 }
 
+const VALID_AGENT_MESSAGE: &str = "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"content\\\":\\\"answer\\\",\\\"reasoning_content\\\":null,\\\"tool_calls\\\":[],\\\"finish_reason\\\":\\\"stop\\\"}\"}}\n";
+
+/// Every tool integration is disabled on the command line, so an item saying
+/// one ran means the isolation failed. The reply payload here is valid and the
+/// run is complete, so the only thing that can reject it is the tool item.
 #[test]
 fn event_contract_rejects_internal_tool_activity() {
-    let events = concat!(
-        "{\"type\":\"item.completed\",\"item\":{\"type\":\"command_execution\"}}\n",
-        "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{}\"}}\n",
-        "{\"type\":\"turn.completed\"}\n"
+    for item in [
+        "command_execution",
+        "file_change",
+        "mcp_tool_call",
+        "web_search",
+    ] {
+        let events = format!(
+            "{{\"type\":\"item.completed\",\"item\":{{\"type\":\"{item}\"}}}}\n{VALID_AGENT_MESSAGE}{{\"type\":\"turn.completed\"}}\n"
+        );
+        assert!(
+            matches!(
+                parse_events(events.as_bytes()),
+                Err(CodexAdapterError::Contract)
+            ),
+            "`{item}` proves the Codex sandbox did not hold"
+        );
+    }
+
+    // The same stream without the tool item is accepted, so the rejection above
+    // is the item and not the surrounding events.
+    let clean = format!("{VALID_AGENT_MESSAGE}{{\"type\":\"turn.completed\"}}\n");
+    assert!(parse_events(clean.as_bytes()).is_ok());
+}
+
+/// The same evidence one line later. Codex writes its items and its completion
+/// onto one stream, so a tool item can land after `turn.completed` - and the
+/// answer it accompanies was still produced with side effects the contract says
+/// never happened. Forward-compatible skipping of trailing events must not
+/// swallow the one trailing event that means the sandbox failed.
+#[test]
+fn a_tool_item_after_the_turn_completed_still_fails_closed() {
+    for item in [
+        "command_execution",
+        "file_change",
+        "mcp_tool_call",
+        "web_search",
+    ] {
+        let events = format!(
+            "{VALID_AGENT_MESSAGE}{{\"type\":\"turn.completed\"}}\n{{\"type\":\"item.completed\",\"item\":{{\"type\":\"{item}\"}}}}\n"
+        );
+        assert!(
+            matches!(
+                parse_events(events.as_bytes()),
+                Err(CodexAdapterError::Contract)
+            ),
+            "`{item}` after the completion proves the Codex sandbox did not hold"
+        );
+    }
+}
+
+/// A future CLI release appending one more event after `turn.completed` must
+/// not fail an otherwise complete run.
+#[test]
+fn trailing_events_after_completion_are_skipped_not_fatal() {
+    let events = format!(
+        "{VALID_AGENT_MESSAGE}{{\"type\":\"turn.completed\"}}\n{{\"type\":\"future.trailer\",\"detail\":\"unknown\"}}\n"
+    );
+    let (reply, _) = parse_events(events.as_bytes()).expect("a trailing event is not fatal");
+    assert_eq!(reply.content.as_deref(), Some("answer"));
+
+    // A trailing failure is still fatal, and so is a second completion.
+    let failed = format!(
+        "{VALID_AGENT_MESSAGE}{{\"type\":\"turn.completed\"}}\n{{\"type\":\"turn.failed\"}}\n"
+    );
+    assert!(matches!(
+        parse_events(failed.as_bytes()),
+        Err(CodexAdapterError::Process)
+    ));
+    let duplicated = format!(
+        "{VALID_AGENT_MESSAGE}{{\"type\":\"turn.completed\"}}\n{{\"type\":\"turn.completed\"}}\n"
+    );
+    assert!(matches!(
+        parse_events(duplicated.as_bytes()),
+        Err(CodexAdapterError::Contract)
+    ));
+}
+
+/// A `turn.completed` before any agent message is the contract being violated.
+/// Skipping it as an unknown type both pollutes the unknown-type metric and
+/// lets a later completion rescue the run.
+#[test]
+fn a_completion_before_the_agent_message_is_a_contract_violation() {
+    let events = format!(
+        "{{\"type\":\"turn.completed\"}}\n{VALID_AGENT_MESSAGE}{{\"type\":\"turn.completed\"}}\n"
     );
     assert!(matches!(
         parse_events(events.as_bytes()),
         Err(CodexAdapterError::Contract)
     ));
+}
+
+/// The early completion is rejected where it appears, not left to be caught by
+/// the missing final message at the end of the stream.
+///
+/// Accepting it would latch the run as completed, and every later event would
+/// then be read through the post-completion arms - so a run that violated the
+/// contract at its second line would be reported as a failed turn instead,
+/// naming the wrong fault and hiding a CLI that emits its events out of order.
+#[test]
+fn an_early_completion_is_rejected_before_any_later_event_is_read() {
+    let events = concat!(
+        "{\"type\":\"turn.completed\"}\n",
+        "{\"type\":\"turn.failed\",\"error\":{\"message\":\"upstream refused\"}}\n"
+    );
+    assert!(matches!(
+        parse_events(events.as_bytes()),
+        Err(CodexAdapterError::Contract)
+    ));
+}
+
+/// Present-but-empty accounting is absent accounting. Reporting zeros would
+/// tell a cost-tracking client the turn was free.
+#[test]
+fn empty_codex_usage_omits_the_key_rather_than_reporting_zeros() {
+    let events = format!("{VALID_AGENT_MESSAGE}{{\"type\":\"turn.completed\",\"usage\":{{}}}}\n");
+    let (reply, usage) = parse_events(events.as_bytes()).expect("Codex reply");
+    assert!(usage.is_none());
+    let rendered = render_open_ai_reply("gpt-test", false, reply, usage).expect("response");
+    let rendered: Value = serde_json::from_slice(&rendered).expect("response JSON");
+    assert!(
+        rendered.get("usage").is_none(),
+        "empty usage must be omitted: {rendered}"
+    );
+
+    // A half-reported usage object is still reported: the CLI said something.
+    let partial = format!(
+        "{VALID_AGENT_MESSAGE}{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":9}}}}\n"
+    );
+    let (_, usage) = parse_events(partial.as_bytes()).expect("Codex reply");
+    assert!(usage.is_some());
 }
 
 #[test]
@@ -77,6 +203,14 @@ fn final_codex_json_becomes_an_open_ai_stream() {
     let rendered = std::str::from_utf8(&rendered).expect("UTF-8");
     assert!(rendered.contains("chat.completion.chunk"), "{rendered}");
     assert!(rendered.contains("data: [DONE]"), "{rendered}");
+    // Codex answers in one final message, so a streaming request gets exactly
+    // one chunk plus the terminator. Octoroute does not claim token-by-token
+    // streaming, and this pins that it never fabricates extra chunks.
+    assert_eq!(
+        rendered.matches("data: ").count(),
+        2,
+        "one chunk plus [DONE]: {rendered}"
+    );
 }
 
 /// `turn.completed` carries token accounting, and cost-tracking clients read it.

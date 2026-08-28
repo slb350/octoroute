@@ -4,7 +4,7 @@ use super::http_support::{
     MetadataAuthorizationError, metadata_authorization_error as build_metadata_authorization_error,
     security_headers,
 };
-use super::metrics::provider_state;
+use super::metrics::{PROVIDER_RUNTIME, provider_state};
 use super::{FabricGatewayService, FabricUpstreamTransport, PoolAdmissionState};
 use axum::{
     Json, Router,
@@ -141,7 +141,7 @@ where
         );
         body.insert(
             "provider_runtime".to_string(),
-            Value::String("complete".to_string()),
+            Value::String(PROVIDER_RUNTIME.to_string()),
         );
     }
     (status, Json(Value::Object(body))).into_response()
@@ -176,9 +176,34 @@ fn pool_state(state: PoolAdmissionState) -> &'static str {
         PoolAdmissionState::Busy => "busy",
         PoolAdmissionState::Unhealthy => "unavailable",
         PoolAdmissionState::TokenCountUnavailable => "token_count_unavailable",
+        PoolAdmissionState::Unauthenticated => "unauthenticated",
         // `readiness_state` never produces these; they belong to per-request
         // admission. Rendering them as `unavailable` keeps the readiness label
         // set closed rather than silently adding request-scoped values to it.
         PoolAdmissionState::Incompatible | PoolAdmissionState::ContextOverflow => "unavailable",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_pool_admission_state_has_the_exact_readiness_label() {
+        for (state, expected) in [
+            (PoolAdmissionState::Ready, "ready"),
+            (PoolAdmissionState::Disabled, "disabled"),
+            (PoolAdmissionState::Busy, "busy"),
+            (PoolAdmissionState::Unhealthy, "unavailable"),
+            (
+                PoolAdmissionState::TokenCountUnavailable,
+                "token_count_unavailable",
+            ),
+            (PoolAdmissionState::Unauthenticated, "unauthenticated"),
+            (PoolAdmissionState::Incompatible, "unavailable"),
+            (PoolAdmissionState::ContextOverflow, "unavailable"),
+        ] {
+            assert_eq!(pool_state(state), expected, "{state:?}");
+        }
     }
 }

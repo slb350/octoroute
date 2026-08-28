@@ -65,12 +65,21 @@ async fn open_ai_provider_rewrites_only_destination_and_supplies_bounded_headers
             .and_then(|value| value.to_str().ok()),
         Some("cloud")
     );
+    // The upstream sent its own `x-request-id`; the gateway's must win, and the
+    // two correlation headers must agree.
+    let request_id = response
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("gateway request id")
+        .to_string();
+    assert_ne!(request_id, "provider-request-id");
     assert_eq!(
         response
             .headers()
-            .get("x-request-id")
+            .get("x-octoroute-request-id")
             .and_then(|value| value.to_str().ok()),
-        Some("provider-request-id")
+        Some(request_id.as_str())
     );
     let body = to_bytes(response.into_body(), 1024 * 1024)
         .await
@@ -202,10 +211,20 @@ async fn unauthenticated_fallback_is_available_when_explicitly_configured() {
 #[tokio::test]
 async fn provider_response_fallback_obeys_the_closed_trigger_set() {
     for (first_status, remove_trigger, expected_status, expected_provider, falls_forward) in [
-        (429, None, 200, "openrouter", true),
-        (429, Some(FallbackTrigger::RateLimited), 429, "zai", false),
-        (503, None, 200, "openrouter", true),
-        (401, None, 401, "zai", false),
+        (429, None, 200, Some("openrouter"), true),
+        (
+            429,
+            Some(FallbackTrigger::RateLimited),
+            429,
+            Some("zai"),
+            false,
+        ),
+        (503, None, 200, Some("openrouter"), true),
+        // `unauthenticated` is outside the default set, so this route commits.
+        // The upstream's own 401 is not passed through: to the client it would
+        // read as its own gateway credential failing, so the credential
+        // rejection is reported as an upstream fault instead.
+        (401, None, 502, None, false),
     ] {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -266,7 +285,7 @@ async fn provider_response_fallback_obeys_the_closed_trigger_set() {
                 .headers()
                 .get("x-octoroute-provider")
                 .and_then(|value| value.to_str().ok()),
-            Some(expected_provider)
+            expected_provider
         );
         drop(response);
     }
@@ -336,13 +355,7 @@ async fn provider_readiness_probes_auth_once_per_cache_window() {
         .mount(&server)
         .await;
 
-    let mut config = single_provider_config(&server, "zai");
-    for pool in config.local_pools.values_mut() {
-        pool.enabled = false;
-    }
-    for (name, provider) in &mut config.providers {
-        provider.enabled = name == "zai";
-    }
+    let config = single_enabled_provider_config(&server, "zai");
     let environment = TestEnvironment::default()
         .with("OCTOROUTE_API_KEY", "inbound-test-key")
         .with("ZAI_API_KEY", "zai-test-key");
@@ -465,4 +478,32 @@ async fn opencode_style_anthropic_tools_stream_as_open_ai_chunks() {
     assert!(body.contains("tool_calls"), "{body}");
     assert!(body.contains("src/main.rs"), "{body}");
     assert!(body.contains("data: [DONE]"), "{body}");
+}
+
+/// A 5xx from `/models` is an outage and must still report as one, so the 404
+/// behavior covered in `service_tests::readiness` is specific to that status
+/// rather than to every failure.
+#[tokio::test]
+async fn a_failing_models_endpoint_still_reports_unavailable() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(502))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let config = single_enabled_provider_config(&server, "zai");
+    let service = FabricGatewayService::from_config(
+        config,
+        TestEnvironment::default()
+            .with("OCTOROUTE_API_KEY", "inbound-test-key")
+            .with("ZAI_API_KEY", "zai-test-key"),
+    )
+    .expect("service");
+
+    assert_eq!(
+        service.readiness().await.providers().get("zai"),
+        Some(&ProviderAdmissionState::Unavailable)
+    );
 }

@@ -1,11 +1,11 @@
 use super::{
     FabricConfig, FabricGatewayService, FallbackTrigger, ProviderAdmissionState,
-    ProviderRuntimeConfig, RouteTarget,
+    ProviderRuntimeConfig, RoutePrivacy, RouteTarget,
 };
 use crate::gateway::env::Environment;
 use axum::{
     body::{Body, Bytes, to_bytes},
-    http::{HeaderMap, HeaderValue, Response, header::AUTHORIZATION},
+    http::{HeaderMap, HeaderValue, Request, Response, header::AUTHORIZATION},
 };
 use reqwest::Url;
 use secrecy::SecretString;
@@ -118,6 +118,18 @@ fn single_provider_config(server: &MockServer, provider: &str) -> FabricConfig {
     config
 }
 
+/// Point one provider at `server` and disable every other readiness target.
+fn single_enabled_provider_config(server: &MockServer, provider: &str) -> FabricConfig {
+    let mut config = single_provider_config(server, provider);
+    for pool in config.local_pools.values_mut() {
+        pool.enabled = false;
+    }
+    for (name, configured) in &mut config.providers {
+        configured.enabled = name == provider;
+    }
+    config
+}
+
 async fn mount_ready_local(server: &MockServer) {
     let request_body = json!({
         "model": "coding-worker-model",
@@ -162,6 +174,57 @@ async fn mount_ready_local(server: &MockServer) {
         .await;
 }
 
+/// Mount the probes one local admission runs against a member that admits:
+/// healthy, one free slot, and a bounded token count.
+///
+/// The dispatch response is left to the caller, so a test can decide what the
+/// member does *after* it has been admitted.
+async fn mount_local_admission(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/slots"))
+        .and(query_param("fail_on_no_slot", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])))
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions/input_tokens"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"input_tokens": 128})))
+        .mount(server)
+        .await;
+}
+
+/// The shared local-route request body used by the dispatch tests.
+fn local_request(model: &str) -> Bytes {
+    Bytes::from(
+        serde_json::to_vec(&json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "implement the bounded task"}]
+        }))
+        .expect("JSON"),
+    )
+}
+
 mod codex;
+mod commit_boundary;
+mod credential;
+mod credential_isolation;
 mod local;
+mod preflight;
 mod provider;
+mod readiness;
+mod redirect;
+/// A protocol-neutral cloud body accepted by every provider adapter.
+fn portable_cloud_request() -> Bytes {
+    Bytes::from(
+        serde_json::to_vec(&json!({
+            "model": "cloud-sota",
+            "messages": [{"role": "user", "content": "review the architecture"}]
+        }))
+        .expect("JSON"),
+    )
+}

@@ -1,8 +1,11 @@
 //! Anthropic Messages response and SSE translation back to OpenAI shape.
 
+mod usage;
+
+use self::usage::{AnthropicUsage, read_usage};
 use super::{AnthropicAdapterError, ignore_unknown_type};
 use bytes::Bytes;
-use serde_json::{Map, Number, Value, json};
+use serde_json::{Map, Value, json};
 use std::{
     collections::BTreeMap,
     time::{SystemTime, UNIX_EPOCH},
@@ -98,7 +101,7 @@ pub(crate) fn translate_message_response(
             "finish_reason": finish_reason(message.get("stop_reason").and_then(Value::as_str))
         }],
     });
-    if let Some(usage) = translate_usage(message.get("usage")) {
+    if let Some(usage) = read_usage(message.get("usage")).map(AnthropicUsage::into_open_ai) {
         response["usage"] = usage;
     }
     serde_json::to_vec(&response)
@@ -166,7 +169,7 @@ pub(crate) struct AnthropicSseTranslator {
     id: String,
     model: String,
     created: u64,
-    input_tokens: u64,
+    prompt_usage: AnthropicUsage,
     tool_indices: BTreeMap<u64, u64>,
     next_tool_index: u64,
     done: bool,
@@ -179,7 +182,7 @@ impl AnthropicSseTranslator {
             id: format!("chatcmpl-{}", Uuid::new_v4()),
             model: model.to_string(),
             created: unix_timestamp(),
-            input_tokens: 0,
+            prompt_usage: AnthropicUsage::default(),
             tool_indices: BTreeMap::new(),
             next_tool_index: 0,
             done: false,
@@ -195,6 +198,13 @@ impl AnthropicSseTranslator {
         while let Some((end, delimiter)) = event_boundary(&self.buffer) {
             let event = self.buffer.drain(..end).collect::<Vec<_>>();
             self.buffer.drain(..delimiter);
+            // `message_stop` already emitted `data: [DONE]`, which terminates
+            // an OpenAI stream. A later event cannot be appended without
+            // writing past the terminator, so it is drained and dropped
+            // rather than translated into a chunk no client will read.
+            if self.done {
+                continue;
+            }
             if let Some(translated) = self.translate_event(&event)? {
                 output.push(translated);
             }
@@ -210,15 +220,20 @@ impl AnthropicSseTranslator {
     }
 
     fn translate_event(&mut self, event: &[u8]) -> Result<Option<Bytes>, AnthropicAdapterError> {
-        let data = sse_data(event)?;
-        if data.is_empty() {
+        let event = parse_sse_event(event)?;
+        if event.data.is_empty() {
             return Ok(None);
         }
         let value: Value =
-            serde_json::from_slice(&data).map_err(|_| AnthropicAdapterError::Response)?;
+            serde_json::from_slice(&event.data).map_err(|_| AnthropicAdapterError::Response)?;
+        // Anthropic repeats the kind in the JSON body, so that is the
+        // authoritative field. An Anthropic-compatible endpoint that only
+        // labels the `event:` line would otherwise fail a stream this adapter
+        // can read, so the line is honored as a fallback.
         let kind = value
             .get("type")
             .and_then(Value::as_str)
+            .or(event.name)
             .ok_or(AnthropicAdapterError::Response)?;
         match kind {
             "ping" | "content_block_stop" => Ok(None),
@@ -230,12 +245,7 @@ impl AnthropicSseTranslator {
                     if let Some(model) = message.get("model").and_then(Value::as_str) {
                         self.model = model.to_string();
                     }
-                    self.input_tokens = message
-                        .get("usage")
-                        .and_then(Value::as_object)
-                        .and_then(|usage| usage.get("input_tokens"))
-                        .and_then(Value::as_u64)
-                        .unwrap_or_default();
+                    self.prompt_usage = read_usage(message.get("usage")).unwrap_or_default();
                 }
                 Ok(Some(self.chunk(
                     json!({"role": "assistant"}),
@@ -251,17 +261,11 @@ impl AnthropicSseTranslator {
                     .and_then(Value::as_object)
                     .and_then(|delta| delta.get("stop_reason"))
                     .and_then(Value::as_str);
-                // `message_start` carried the input tokens; `message_delta`
-                // carries the output tokens. The stream reports usage whenever
-                // either half is known.
-                let usage = translate_usage(value.get("usage")).map(|mut usage| {
-                    let output_tokens = usage["completion_tokens"].as_u64().unwrap_or_default();
-                    usage["prompt_tokens"] = Value::Number(Number::from(self.input_tokens));
-                    usage["total_tokens"] = Value::Number(Number::from(
-                        self.input_tokens.saturating_add(output_tokens),
-                    ));
-                    usage
-                });
+                // `message_start` carried the prompt-side counts;
+                // `message_delta` carries the output tokens. Each half is
+                // reported only if some event actually supplied it.
+                let usage = read_usage(value.get("usage"))
+                    .map(|delta| delta.merge(self.prompt_usage).into_open_ai());
                 Ok(Some(self.chunk(
                     json!({}),
                     finish_reason(stop_reason),
@@ -442,18 +446,27 @@ fn event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
-fn sse_data(event: &[u8]) -> Result<Vec<u8>, AnthropicAdapterError> {
+/// One reassembled SSE event: its `event:` label and its concatenated `data:`.
+struct SseEvent<'a> {
+    name: Option<&'a str>,
+    data: Vec<u8>,
+}
+
+fn parse_sse_event(event: &[u8]) -> Result<SseEvent<'_>, AnthropicAdapterError> {
     let text = std::str::from_utf8(event).map_err(|_| AnthropicAdapterError::Response)?;
     let mut data = Vec::new();
+    let mut name = None;
     for line in text.lines() {
         if let Some(value) = line.strip_prefix("data:") {
             if !data.is_empty() {
                 data.push(b'\n');
             }
             data.extend_from_slice(value.strip_prefix(' ').unwrap_or(value).as_bytes());
+        } else if let Some(value) = line.strip_prefix("event:") {
+            name = Some(value.strip_prefix(' ').unwrap_or(value));
         }
     }
-    Ok(data)
+    Ok(SseEvent { name, data })
 }
 
 /// Map an Anthropic `stop_reason` onto an OpenAI `finish_reason`.
@@ -470,25 +483,6 @@ fn finish_reason(reason: Option<&str>) -> Value {
         Some(other) => Value::String(other.to_string()),
         None => Value::Null,
     }
-}
-
-/// Translate Anthropic token accounting, or report nothing when it is absent.
-///
-/// Reporting zeros for an upstream that sent no usage tells a cost-tracking
-/// client the request was free, which is worse than telling it nothing.
-fn translate_usage(usage: Option<&Value>) -> Option<Value> {
-    let usage = usage.and_then(Value::as_object)?;
-    let field = |name: &str| usage.get(name).and_then(Value::as_u64);
-    let (input, output) = (field("input_tokens"), field("output_tokens"));
-    if input.is_none() && output.is_none() {
-        return None;
-    }
-    let (input, output) = (input.unwrap_or_default(), output.unwrap_or_default());
-    Some(json!({
-        "prompt_tokens": input,
-        "completion_tokens": output,
-        "total_tokens": input.saturating_add(output)
-    }))
 }
 
 fn unix_timestamp() -> u64 {

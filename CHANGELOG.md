@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-27
+
 ### Added
 
 - Build the executable v3 runtime with authenticated OpenAI-compatible ingress,
@@ -42,8 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `octoroute_fabric_pool_admissions_total{pool,state}`,
   `octoroute_fabric_pool_fallbacks_total{pool,trigger}`,
   `octoroute_fabric_routing_duration_seconds`, and
-  `octoroute_fabric_unknown_upstream_types_total{adapter}`. Local spillover to the next route step now emits a
-  tracing warning.
+  `octoroute_fabric_unknown_upstream_types_total{adapter}`. Local spillover to
+  the next route step now emits a tracing warning.
 - Add `ProviderAdmissionState::Unauthenticated` and the matching
   `unauthenticated` fallback trigger, outside the default trigger set, so an
   expired credential surfaces instead of silently rerouting traffic and spend.
@@ -107,6 +109,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   service, semantic forecaster, calibration command, session latch, metrics,
   configuration parser, transport, documentation, and tests.
 
+### Fixed
+
+Resolve the PR #11 review: 9 functional and contract findings, 11 test-coverage
+gaps, and 45 smaller findings. The suite grew from 126 tests to 212.
+
+- Honour a caller's `n_predict` as the local output-token budget. llama.cpp's
+  `oaicompat_chat_params_parse` gives `n_predict` precedence over `max_tokens`
+  on the endpoint Octoroute proxies, so a request carrying it was budgeted at
+  the pool default while the member attempted the larger value. The
+  input-plus-output-plus-reserve guarantee did not hold.
+- Treat a request-caused 4xx from `/v1/chat/completions/input_tokens` as a
+  request rejection instead of member incapability. The token-count endpoint
+  applies the chat template, so a template rejection is deterministic across
+  members, yet it was retried against each one, reported as an unhealthy pool,
+  and spilled to a paid provider. A 404 or 501 still reports the endpoint
+  missing.
+- Record `octoroute_fabric_pool_fallbacks_total` when an admitted local member
+  fails before commitment. Only admission-time rejections were counted, so a
+  member that accepted work and then failed was invisible in the one metric
+  that reports local capacity spilling to cloud.
+- Fall forward on a dispatch-time provider 401 or 403 when the route opts into
+  `unauthenticated`, which was previously honoured at credential resolution but
+  not at credential rejection, and stop returning an upstream 401 in a form a
+  client reads as its own credential failing.
+- Map a Codex CLI authenticated with an API key rather than a ChatGPT
+  subscription to `unauthenticated` instead of `unhealthy`, so the
+  misconfiguration surfaces rather than silently redirecting traffic and spend
+  through the default fallback set.
+- Apply the Anthropic adapter's fail-closed rule to nested objects. Unknown keys
+  inside messages, content blocks, tool and function objects, and `reasoning`
+  were dropped, so `reasoning: {"enabled": true}` produced a non-thinking
+  request and `function.strict` was discarded. `reasoning.enabled` and
+  `reasoning.max_tokens` now map onto the thinking budget.
+- Reject a local request whose output reservation cannot fit the context window
+  before probing any member, so a verdict the configuration already determined
+  no longer discloses the prompt.
+- Bound the local probe body reads, the credential-command total wait, and
+  environment variable name length, all of which were unbounded against
+  upstream-controlled or operator-controlled input.
+- Correct a range of error classifications: a local upstream 429 now uses the
+  `rate_limited` trigger, a terminal route error reports the rejection that
+  governed the route rather than the last step's state, `no_eligible_target`
+  carries an error type consistent with its 503, an incomplete request body is
+  no longer reported as too large, and gateway-side translation failures are no
+  longer labelled client errors.
+
+### Security
+
+- Parse route steps before duplicate-checking them, so raw unvalidated
+  configuration text is never interpolated into an error message. A step
+  carrying a planted secret or a newline reached stderr.
+- Add the missing coverage for the upstream redirect refusal. The check that
+  keeps a provider credential from following a 3xx cross-origin had no test, and
+  deleting it passed the whole suite.
+- Assert that the inbound bearer never reaches an upstream. The existing
+  matchers asserted the correct upstream credential was present, not that the
+  inbound one was absent, so a regression forwarding both would have passed.
+- Stop an upstream claiming `x-request-id` on a committed response, and make
+  `insert_header` fail closed rather than panicking on the request path.
 
 ## [2.2.2] - 2026-08-23
 
@@ -451,7 +512,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/slb350/octoroute/compare/v2.2.2...HEAD
+[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/slb350/octoroute/compare/v2.2.2...v3.0.0
 [2.2.2]: https://github.com/slb350/octoroute/compare/v2.2.1...v2.2.2
 [2.2.1]: https://github.com/slb350/octoroute/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/slb350/octoroute/releases/tag/v2.2.0

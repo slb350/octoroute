@@ -142,6 +142,16 @@ Inbound processing applies these controls before route execution:
 
 The inbound permit is also held by the response body stream.
 
+Authentication precedes the body read, so an oversized body from a caller with
+no valid credential is refused without being read.
+
+`requests_per_minute` is one counter for the whole process, not a quota per
+caller: every authenticated client draws on the same allowance, so one client at
+the limit blocks the rest. The window is fixed rather than sliding, which means
+a caller can issue up to twice the limit across a window boundary. Both are
+acceptable for a gateway fronting a known set of clients and are the reason the
+limit is not a substitute for per-tenant quota.
+
 ## Adapter isolation
 
 OpenAI-compatible HTTP, Anthropic-compatible HTTP, and Codex CLI are explicit

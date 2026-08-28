@@ -61,16 +61,46 @@ HTTPS but cannot contain credentials, queries, or fragments. The runtime
 derives `/health`, `/slots?fail_on_no_slot=1`,
 `/v1/chat/completions/input_tokens`, and `/v1/chat/completions` from the base.
 
-Admission requires all of the following:
+A member address must be loopback, private-range, link-local, or a `.local`,
+`.localhost`, `.internal`, or `.home.arpa` name. A public address is refused at
+startup, which is what makes `local-only` a guarantee rather than a convention.
+Carrier-grade NAT (100.64.0.0/10) is not private range, so a member reached over
+a mesh network such as Tailscale is refused; give it a `.local` name or a
+private-range address instead.
 
-1. the pool and member are enabled;
-2. the request uses only declared capabilities;
-3. health and slot probes succeed;
+Admission checks the request first, then each member in turn:
+
+1. the request uses only the pool's declared capabilities;
+2. the output reservation plus safety tokens leave room in the context window.
+   A request that cannot fit whatever its prompt tokenizes to is rejected here,
+   before any member is probed and before the prompt is disclosed;
+3. the pool and member are enabled;
 4. a member concurrency permit is available;
-5. input tokens + output reservation + safety tokens fit the context window.
+5. health and slot probes succeed;
+6. exact input tokens are counted, and input + output + safety fit the window.
 
-When the caller omits both `reasoning_effort` and `reasoning`, local dispatch
-injects the selected pool's `default_reasoning_effort`. Caller controls win.
+Steps 4 and 5 are in that order deliberately: taking the permit first closes the
+window in which two of Octoroute's own requests both see the same free `/slots`
+entry and both claim it. The cost is that the permit is held across the health
+and slot probes (up to 2 seconds) and the token count (`token_count_timeout_ms`,
+15 seconds by default). With `max_in_flight = 1`, a second request arriving
+inside that window is reported `busy` even though the member is healthy and
+idle, and on the default `fallback_on` it spills to the next route step. Raise
+`max_in_flight` above 1 on a member that can genuinely serve concurrent
+requests, and watch `octoroute_fabric_pool_fallbacks_total{trigger="busy"}` to
+see whether the spill is real contention or this window.
+
+The slot check is a snapshot, so it cannot account for other clients of the same
+llama.cpp server. If something outside Octoroute shares a member, the pool can
+over-admit; the request then queues upstream, bounded by `first_byte_timeout_ms`
+if one is configured.
+
+Local dispatch injects the selected pool's `default_reasoning_effort` only when
+the pool declares the `reasoning` capability and the caller sent none of
+`reasoning_effort`, `reasoning`, or `include_reasoning`. Caller controls win, and
+a pool that does not declare `reasoning` sends nothing whatever its
+`default_reasoning_effort` says.
+
 The selected member permit remains held through the complete response body.
 `timeout_ms` is the complete local chat deadline. Local and provider request
 deadlines default to 30 minutes and must be between 1 millisecond and one hour.
@@ -226,9 +256,19 @@ The request header `X-Octoroute-Privacy: local-only` further narrows any route
 to local steps before admission. Repeated, malformed, or unknown privacy values
 are rejected.
 
-Fallback values are `busy`, `unhealthy`, `context_overflow`, `incompatible`,
-`rate_limited`, and `precommit_failure`. Omitting `fallback_on` enables the full
-closed set; specify an explicit subset when a route should stop sooner.
+The closed set of fallback values has seven members: `busy`, `unhealthy`,
+`context_overflow`, `incompatible`, `rate_limited`, `precommit_failure`, and
+`unauthenticated`.
+
+Omitting `fallback_on` enables the first six. `unauthenticated` is deliberately
+excluded from that default and must be requested explicitly. It fires when a
+provider's credential is missing, expired, or rejected, which is an operator
+error rather than a capacity condition: falling forward on it turns a dead key
+into traffic and spend silently redirected to the next provider, discovered on
+the bill. Add it to `fallback_on` only for a route where continuing past a
+rejected credential is genuinely what you want.
+
+Specify an explicit subset when a route should stop sooner.
 
 `model: auto` resolves to `routing.default_model`, so `auto` is reserved and
 cannot also name a virtual route. Other model values must match a configured

@@ -9,6 +9,13 @@ use std::{
     time::Duration,
 };
 
+/// Completeness marker for the v3 provider runtime.
+///
+/// One definition, because it is reported twice: as a label on
+/// `octoroute_fabric_runtime_info` and as a field in the readiness payload. Two
+/// literals would let the two surfaces disagree about the same fact.
+pub(super) const PROVIDER_RUNTIME: &str = "complete";
+
 const ADMISSION_STATES: &[&str] = &[
     "admitted",
     "disabled",
@@ -49,14 +56,16 @@ const POOL_ADMISSION_STATES: &[&str] = &[
     "busy",
     "context_overflow",
     "token_count_unavailable",
+    "unauthenticated",
 ];
 
 /// Upper bounds, in seconds, of the routing-latency histogram.
 ///
 /// One observation is the admission work for one route step, so the buckets span
-/// a sub-millisecond local hit through a probe that reaches its deadline. A
-/// request that falls forward contributes one observation per step it reaches,
-/// so `_count` is admissions, not requests.
+/// a sub-millisecond local hit through a probe that reaches its deadline. Every
+/// step is observed, admitted or refused, and a request that falls forward
+/// contributes one observation per step it reaches, so `_count` is admission
+/// attempts rather than requests or admissions.
 const ROUTING_BUCKETS_SECONDS: &[f64] = &[
     0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 ];
@@ -175,12 +184,12 @@ impl FabricMetrics {
 
     pub(super) fn render(&self, config: &FabricConfig) -> String {
         let counters = self.lock();
-        let mut output = String::from(
+        let mut output = format!(
             "# HELP octoroute_fabric_runtime_info V3 inference-fabric runtime information.\n\
              # TYPE octoroute_fabric_runtime_info gauge\n\
-             octoroute_fabric_runtime_info{config_version=\"3\",provider_runtime=\"complete\"} 1\n\
+             octoroute_fabric_runtime_info{{config_version=\"3\",provider_runtime=\"{PROVIDER_RUNTIME}\"}} 1\n\
              # HELP octoroute_fabric_pool_enabled Whether a configured local pool is enabled.\n\
-             # TYPE octoroute_fabric_pool_enabled gauge\n",
+             # TYPE octoroute_fabric_pool_enabled gauge\n"
         );
         for (name, pool) in &config.local_pools {
             let enabled = u8::from(pool.enabled);
@@ -373,6 +382,7 @@ pub(super) const fn pool_state_label(state: PoolAdmissionState) -> &'static str 
         PoolAdmissionState::Busy => "busy",
         PoolAdmissionState::ContextOverflow => "context_overflow",
         PoolAdmissionState::TokenCountUnavailable => "token_count_unavailable",
+        PoolAdmissionState::Unauthenticated => "unauthenticated",
     }
 }
 
@@ -403,6 +413,25 @@ pub(super) const fn fallback_trigger_label(trigger: FallbackTrigger) -> &'static
 mod tests {
     use super::*;
 
+    #[test]
+    fn every_pool_admission_state_has_the_exact_metric_label() {
+        for (state, expected) in [
+            (PoolAdmissionState::Ready, "admitted"),
+            (PoolAdmissionState::Disabled, "disabled"),
+            (PoolAdmissionState::Unhealthy, "unhealthy"),
+            (PoolAdmissionState::Incompatible, "incompatible"),
+            (PoolAdmissionState::Busy, "busy"),
+            (PoolAdmissionState::ContextOverflow, "context_overflow"),
+            (
+                PoolAdmissionState::TokenCountUnavailable,
+                "token_count_unavailable",
+            ),
+            (PoolAdmissionState::Unauthenticated, "unauthenticated"),
+        ] {
+            assert_eq!(pool_state_label(state), expected, "{state:?}");
+        }
+    }
+
     /// Every adapter emits a series even at zero. An omitted series is
     /// indistinguishable on a dashboard from a condition that never occurs, so
     /// the exposition iterates `Adapter::ALL` rather than only what has fired.
@@ -424,13 +453,38 @@ mod tests {
     }
 
     /// The counter is per adapter, not shared.
+    ///
+    /// Both counters are process-global statics, and the adapter tests in this
+    /// same binary record into them from parallel harness threads, so any
+    /// assertion on an absolute value is a coin flip. Two race-proof claims
+    /// replace it. Recording an adapter must advance that adapter's counter:
+    /// concurrent recorders only ever add, so a strict increase cannot be
+    /// fooled. And there must exist a window in which our own Anthropic record
+    /// left the Codex counter untouched: concurrent recording is finite, so a
+    /// quiet window arrives, while a shared counter can never produce one -
+    /// this test's own record moves it every single time.
     #[test]
     fn each_adapter_counts_separately() {
-        let before = unknown_types::count(unknown_types::Adapter::Anthropic);
-        unknown_types::record(unknown_types::Adapter::Anthropic);
-        assert_eq!(
-            unknown_types::count(unknown_types::Adapter::Anthropic),
-            before + 1
+        const ATTEMPTS: usize = 256;
+
+        let mut isolated = false;
+        for _ in 0..ATTEMPTS {
+            let codex_before = unknown_types::count(unknown_types::Adapter::Codex);
+            let anthropic_before = unknown_types::count(unknown_types::Adapter::Anthropic);
+            unknown_types::record(unknown_types::Adapter::Anthropic);
+            assert!(
+                unknown_types::count(unknown_types::Adapter::Anthropic) > anthropic_before,
+                "recording anthropic must advance the anthropic counter"
+            );
+            if unknown_types::count(unknown_types::Adapter::Codex) == codex_before {
+                isolated = true;
+                break;
+            }
+        }
+        assert!(
+            isolated,
+            "recording anthropic moved the codex counter in every one of {ATTEMPTS} windows: \
+             the adapters are sharing a counter"
         );
     }
 }

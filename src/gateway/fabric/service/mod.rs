@@ -23,10 +23,11 @@ use crate::gateway::{
     request::GatewayRequest,
 };
 use axum::{
-    body::{Body, Bytes, to_bytes},
+    body::{Body, Bytes},
     http::{HeaderMap, Request, Response, StatusCode},
 };
-use futures::future::join_all;
+use bytes::BytesMut;
+use futures::{StreamExt, future::join_all};
 use reqwest::Client;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -208,15 +209,27 @@ where
             Ok(preflight) => preflight,
             Err(response) => return *response,
         };
-        let bytes = match to_bytes(body, self.config.server.max_request_bytes).await {
+        let bytes = match read_bounded_body(body, self.config.server.max_request_bytes).await {
             Ok(bytes) => bytes,
-            Err(_) => {
+            Err(BodyReadError::TooLarge) => {
                 return hold_response_guard(
                     error_response(
                         StatusCode::PAYLOAD_TOO_LARGE,
                         "request body exceeds the configured size limit",
                         "invalid_request_error",
                         "request_too_large",
+                        &request_id,
+                    ),
+                    permit,
+                );
+            }
+            Err(BodyReadError::Incomplete) => {
+                return hold_response_guard(
+                    error_response(
+                        StatusCode::BAD_REQUEST,
+                        "the request body could not be read to completion",
+                        "invalid_request_error",
+                        "request_body_incomplete",
                         &request_id,
                     ),
                     permit,
@@ -385,6 +398,123 @@ impl FabricGatewayService<FabricTransport> {
         let client = build_http_client().map_err(FabricTransportError::HttpClient)?;
         let transport = FabricTransport::with_client(client.clone());
         Self::with_client(config, environment, transport, client)
+    }
+}
+
+/// Why a bounded request body could not be read.
+///
+/// A client that disconnects mid-body and a client that sends more than the
+/// configured limit are different operator problems, and answering both with
+/// 413 tells the first one to shrink a request it never finished sending.
+enum BodyReadError {
+    TooLarge,
+    Incomplete,
+}
+
+/// Read a request body, refusing it as soon as it passes `limit` bytes.
+///
+/// `axum::body::to_bytes` collapses both failures into one opaque error, so the
+/// budget is applied here instead of inferred from it.
+async fn read_bounded_body(body: Body, limit: usize) -> Result<Bytes, BodyReadError> {
+    let mut stream = body.into_data_stream();
+    let Some(first) = stream.next().await else {
+        return Ok(Bytes::new());
+    };
+    let first = first.map_err(|_| BodyReadError::Incomplete)?;
+    if first.len() > limit {
+        return Err(BodyReadError::TooLarge);
+    }
+
+    let Some(second) = stream.next().await else {
+        return Ok(first);
+    };
+    let second = second.map_err(|_| BodyReadError::Incomplete)?;
+    let initial_len = first.len().saturating_add(second.len());
+    if initial_len > limit {
+        return Err(BodyReadError::TooLarge);
+    }
+
+    let mut buffer = BytesMut::with_capacity(initial_len);
+    buffer.extend_from_slice(&first);
+    buffer.extend_from_slice(&second);
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| BodyReadError::Incomplete)?;
+        if buffer.len().saturating_add(chunk.len()) > limit {
+            return Err(BodyReadError::TooLarge);
+        }
+        buffer.extend_from_slice(&chunk);
+    }
+    Ok(buffer.freeze())
+}
+
+#[cfg(test)]
+mod body_boundary_tests {
+    use super::*;
+    use std::convert::Infallible;
+
+    async fn assert_accepted(body: Body, limit: usize) {
+        let bytes = match read_bounded_body(body, limit).await {
+            Ok(bytes) => bytes,
+            Err(_) => panic!("a body within the configured limit must be accepted"),
+        };
+        assert_eq!(bytes, Bytes::from_static(b"abcd"));
+    }
+
+    async fn assert_too_large(body: Body, limit: usize) {
+        assert!(matches!(
+            read_bounded_body(body, limit).await,
+            Err(BodyReadError::TooLarge)
+        ));
+    }
+
+    fn multi_chunk_body() -> Body {
+        Body::from_stream(futures::stream::iter([
+            Ok::<_, Infallible>(Bytes::from_static(b"ab")),
+            Ok::<_, Infallible>(Bytes::from_static(b"cd")),
+        ]))
+    }
+
+    /// Pin both directions of the first-chunk fast-path comparison: a body one
+    /// byte under and exactly at the limit is accepted, while one byte over is
+    /// refused.
+    #[tokio::test]
+    async fn single_chunk_body_size_boundary_is_exact() {
+        assert_accepted(Body::from("abcd"), 5).await;
+        assert_accepted(Body::from("abcd"), 4).await;
+        assert_too_large(Body::from("abcd"), 3).await;
+    }
+
+    /// Pin the same three points after the second chunk forces coalescing, so
+    /// neither comparison can drift independently from the fast path.
+    #[tokio::test]
+    async fn multi_chunk_body_size_boundary_is_exact() {
+        assert_accepted(multi_chunk_body(), 5).await;
+        assert_accepted(multi_chunk_body(), 4).await;
+        assert_too_large(multi_chunk_body(), 3).await;
+    }
+
+    /// Three chunks, so the first two clear the coalescing check and the third
+    /// is measured by the accumulating loop instead.
+    ///
+    /// The two-chunk body above never reaches that loop: its total is decided by
+    /// the `initial_len` comparison. Without a third chunk the loop's own bound
+    /// is unreachable from the tests, and every mutation of it survives.
+    fn three_chunk_body() -> Body {
+        Body::from_stream(futures::stream::iter([
+            Ok::<_, Infallible>(Bytes::from_static(b"ab")),
+            Ok::<_, Infallible>(Bytes::from_static(b"c")),
+            Ok::<_, Infallible>(Bytes::from_static(b"d")),
+        ]))
+    }
+
+    /// Pin the accumulating loop's bound at the same three points. A limit of 4
+    /// is the exact fit the final chunk completes, and 3 is refused only by the
+    /// loop, the first three bytes having already passed every earlier check.
+    #[tokio::test]
+    async fn trailing_chunk_body_size_boundary_is_exact() {
+        assert_accepted(three_chunk_body(), 5).await;
+        assert_accepted(three_chunk_body(), 4).await;
+        assert_too_large(three_chunk_body(), 3).await;
     }
 }
 

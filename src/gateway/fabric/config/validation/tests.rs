@@ -7,9 +7,9 @@
 //! URL.
 
 use super::fields::{
-    validate_command, validate_env_name, validate_executable, validate_local_member_url,
-    validate_log_level, validate_model, validate_name, validate_revision, validate_u32_range,
-    validate_url, validate_usize_range,
+    line_column, validate_command, validate_env_name, validate_executable,
+    validate_local_member_url, validate_log_level, validate_model, validate_name,
+    validate_revision, validate_u32_range, validate_url, validate_usize_range,
 };
 use crate::gateway::fabric::{FabricConfig, FabricConfigError};
 
@@ -304,4 +304,56 @@ fn visible_ascii_validators_reject_non_graphic_bytes() {
         validate_model(FIELD, value).expect_err("not visible ASCII");
         validate_revision(FIELD, value).expect_err("not visible ASCII");
     }
+}
+
+/// An environment variable name is bounded like every other identifier here.
+/// Without a bound a 100KB name validates and is then interpolated into the
+/// runtime error an unresolvable credential produces.
+#[test]
+fn environment_variable_names_are_length_bounded() {
+    validate_env_name(FIELD, &"A".repeat(128)).expect("exactly 128 bytes is accepted");
+    validate_env_name(FIELD, &"A".repeat(129)).expect_err("129 bytes is rejected");
+    validate_env_name(FIELD, &"A".repeat(100_000)).expect_err("an unbounded name is rejected");
+}
+
+/// Link-local is trusted in both address families or in neither. 169.254/16 and
+/// fe80::/10 are the same class of address - unroutable past the local link -
+/// so trusting one and rejecting the other is an accident, not a policy.
+#[test]
+fn link_local_addresses_are_trusted_in_both_families() {
+    const MEMBER: &str = "fabric.local_pools.members.base_url";
+    for trusted in [
+        "http://169.254.10.1:8080/",
+        "http://[fe80::1]:8080/",
+        "http://[fe80::1ff:fe23:4567:890a]:8080/",
+        "http://[febf::1]:8080/",
+    ] {
+        let url = validate_url(MEMBER, trusted, false).expect("parses");
+        validate_local_member_url(MEMBER, &url)
+            .unwrap_or_else(|_| panic!("`{trusted}` is link-local and must be trusted"));
+    }
+    // fec0::/10 was site-local and is deprecated, not link-local: the mask is
+    // fe80::/10, not fe00::/8.
+    for rejected in ["http://[fec0::1]:8080/", "http://[fe00::1]:8080/"] {
+        let url = validate_url(MEMBER, rejected, false).expect("parses");
+        validate_local_member_url(MEMBER, &url)
+            .expect_err(&format!("`{rejected}` is not link-local"));
+    }
+}
+
+/// `line_column` slices the document at a byte index supplied by the TOML
+/// parser. No parser span lands mid-character today, so the guard is cheap
+/// insurance rather than a fix: a mid-character index must clamp, not panic.
+#[test]
+fn line_column_never_slices_across_a_character_boundary() {
+    // `é` is two bytes; index 2 is inside it.
+    let input = "a\u{00e9}b\nsecond";
+    assert_eq!(line_column(input, 2), (1, 2));
+    assert_eq!(line_column(input, 0), (1, 1));
+    assert_eq!(line_column(input, input.len()), (2, 7));
+    assert_eq!(
+        line_column(input, usize::MAX),
+        (2, 7),
+        "an out-of-range index clamps to the end of the document"
+    );
 }

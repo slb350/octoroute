@@ -1,13 +1,20 @@
 //! Lazy, credential-isolated runtime registry for configured inference providers.
 //!
 //! [`credential`] resolves and caches provider credentials; [`body`] builds the
-//! OpenAI-protocol request body.
+//! OpenAI-protocol request body; [`readiness`] owns the cached probes.
 
 mod body;
 mod credential;
+mod readiness;
+
+#[cfg(test)]
+mod tests;
 
 use body::build_open_ai_body;
 use credential::{CachedCredential, ProviderCredentialSource};
+use readiness::CachedReadiness;
+
+pub(super) use readiness::authorize_http;
 
 use super::{
     ProviderConfig, ProviderCredentialConfig, ProviderProfile, ProviderProtocol,
@@ -23,22 +30,20 @@ use crate::gateway::{
 };
 use axum::http::StatusCode;
 use bytes::Bytes;
-use reqwest::{Client, RequestBuilder, Url};
-use secrecy::{ExposeSecret, SecretString};
-use serde_json::Value;
-use std::{
-    collections::BTreeMap,
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use reqwest::{Client, Url};
+use secrecy::SecretString;
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use thiserror::Error;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 const CHAT_COMPLETIONS_PATH: &str = "chat/completions";
 const ANTHROPIC_MESSAGES_PATH: &str = "messages";
 const MODELS_PATH: &str = "models";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// Whether an HTTP provider refused Octoroute's own credential.
+pub(super) const fn is_provider_credential_rejection(status: StatusCode) -> bool {
+    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+}
 
 /// Bounded provider state used by readiness, fallback policy, and error mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +114,20 @@ pub(super) enum ProviderHttpAdapter {
     Anthropic { stream: bool },
 }
 
+impl ProviderHttpAdapter {
+    /// The wire protocol this adapter speaks.
+    ///
+    /// The transport authorizes its dispatch through the same
+    /// [`authorize_http`] the readiness probe uses, so the credential header
+    /// and the Anthropic version are defined once.
+    pub(super) const fn protocol(self) -> ProviderProtocol {
+        match self {
+            Self::OpenAi => ProviderProtocol::OpenAi,
+            Self::Anthropic { .. } => ProviderProtocol::Anthropic,
+        }
+    }
+}
+
 /// Runtime providers keyed only by validated configuration names.
 pub struct ProviderRegistry {
     providers: BTreeMap<String, ProviderRuntime>,
@@ -139,21 +158,6 @@ struct CodexProvider {
     permits: Arc<Semaphore>,
     readiness: Mutex<CachedReadiness>,
     metrics: Arc<FabricMetrics>,
-}
-
-#[derive(Clone, Copy)]
-struct CachedReadiness {
-    checked_at: Option<Instant>,
-    state: ProviderAdmissionState,
-}
-
-impl Default for CachedReadiness {
-    fn default() -> Self {
-        Self {
-            checked_at: None,
-            state: ProviderAdmissionState::Unavailable,
-        }
-    }
 }
 
 impl ProviderRegistry {
@@ -315,11 +319,7 @@ impl HttpProvider {
         let adapter = match self.protocol {
             ProviderProtocol::OpenAi => ProviderHttpAdapter::OpenAi,
             ProviderProtocol::Anthropic => ProviderHttpAdapter::Anthropic {
-                stream: request
-                    .body_value_for_model(&self.config.model)?
-                    .get("stream")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
+                stream: request.is_stream(),
             },
         };
         let body = match adapter {
@@ -368,72 +368,6 @@ impl HttpProvider {
                 _permit: permit,
             },
         )))
-    }
-
-    /// Discard cached readiness after a real dispatch proved it wrong.
-    ///
-    /// Without this a provider that dies right after a successful probe keeps
-    /// reporting `ready` for the whole TTL, which can be an hour.
-    async fn invalidate_readiness(&self, status: Option<StatusCode>) {
-        if matches!(
-            status,
-            Some(StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
-        ) {
-            self.credential.invalidate().await;
-        }
-        *self.readiness.lock().await = CachedReadiness::default();
-    }
-
-    async fn readiness(&self) -> ProviderAdmissionState {
-        if self.permits.available_permits() == 0 {
-            return ProviderAdmissionState::Busy;
-        }
-        let mut cached = self.readiness.lock().await;
-        let ttl = Duration::from_millis(self.config.readiness_ttl_ms);
-        if cached
-            .checked_at
-            .is_some_and(|checked| checked.elapsed() < ttl)
-        {
-            return cached.state;
-        }
-        let state = match self.credential.resolve().await {
-            Ok(api_key) => {
-                let request = authorize_http(
-                    self.client.get(self.models_url.clone()),
-                    &api_key,
-                    self.protocol,
-                );
-                match tokio::time::timeout(
-                    Duration::from_millis(self.config.readiness_timeout_ms),
-                    request.send(),
-                )
-                .await
-                {
-                    Ok(Ok(response)) if response.status().is_success() => {
-                        ProviderAdmissionState::Ready
-                    }
-                    // A credential the provider rejects is an operator error,
-                    // not an outage, and must not be collapsed into it.
-                    Ok(Ok(response)) if matches!(response.status().as_u16(), 401 | 403) => {
-                        self.credential.invalidate().await;
-                        ProviderAdmissionState::Unauthenticated
-                    }
-                    // `/models` is not uniformly implemented. These statuses
-                    // prove the endpoint answered, which is what readiness asks.
-                    Ok(Ok(response)) if matches!(response.status().as_u16(), 405 | 429) => {
-                        ProviderAdmissionState::Ready
-                    }
-                    _ => ProviderAdmissionState::Unavailable,
-                }
-            }
-            Err(_) => ProviderAdmissionState::Unauthenticated,
-        };
-        *cached = CachedReadiness {
-            checked_at: Some(Instant::now()),
-            state,
-        };
-        self.metrics.record_probe(&self.config.name, state);
-        state
     }
 }
 
@@ -495,56 +429,6 @@ impl CodexProvider {
             },
         )))
     }
-
-    /// Discard cached readiness after a real dispatch proved it wrong.
-    async fn invalidate_readiness(&self, _status: Option<StatusCode>) {
-        *self.readiness.lock().await = CachedReadiness::default();
-    }
-
-    async fn readiness(&self) -> ProviderAdmissionState {
-        if self.permits.available_permits() == 0 {
-            return ProviderAdmissionState::Busy;
-        }
-        let mut cached = self.readiness.lock().await;
-        let ttl = Duration::from_millis(self.config.readiness_ttl_ms);
-        if cached
-            .checked_at
-            .is_some_and(|checked| checked.elapsed() < ttl)
-        {
-            return cached.state;
-        }
-        let state = if codex::probe(
-            &self.executable,
-            &self.environment,
-            Duration::from_millis(self.config.readiness_timeout_ms),
-        )
-        .await
-        .is_ok()
-        {
-            ProviderAdmissionState::Ready
-        } else {
-            ProviderAdmissionState::Unavailable
-        };
-        *cached = CachedReadiness {
-            checked_at: Some(Instant::now()),
-            state,
-        };
-        self.metrics.record_probe(&self.config.name, state);
-        state
-    }
-}
-
-fn authorize_http(
-    request: RequestBuilder,
-    api_key: &SecretString,
-    protocol: ProviderProtocol,
-) -> RequestBuilder {
-    match protocol {
-        ProviderProtocol::OpenAi => request.bearer_auth(api_key.expose_secret()),
-        ProviderProtocol::Anthropic => request
-            .header("x-api-key", api_key.expose_secret())
-            .header("anthropic-version", ANTHROPIC_VERSION),
-    }
 }
 
 fn invalid_provider(config: &ProviderConfig) -> ProviderRegistryBuildError {
@@ -575,4 +459,21 @@ pub enum ProviderRequestError {
     Codex,
     #[error(transparent)]
     Request(#[from] GatewayRequestError),
+}
+
+impl ProviderRequestError {
+    /// Whether the caller's request body caused this construction failure.
+    ///
+    /// Serialization and adapter failures belong to the gateway. Classifying
+    /// them here keeps routing policy and HTTP rendering from independently
+    /// inspecting provider internals.
+    pub(super) fn is_client_error(&self) -> bool {
+        matches!(
+            self,
+            Self::InvalidOpenRouterPlugins
+                | Self::Request(
+                    GatewayRequestError::Json { .. } | GatewayRequestError::Invalid { .. }
+                )
+        )
+    }
 }

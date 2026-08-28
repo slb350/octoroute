@@ -198,15 +198,11 @@ pub(super) fn validate_routes(
                 "must include at least one target",
             ));
         }
-        let mut target_names = BTreeSet::new();
-        for step in &raw.steps {
-            if !target_names.insert(step) {
-                return Err(invalid(
-                    "routing.routes.steps",
-                    format!("duplicate target `{step}`"),
-                ));
-            }
-        }
+        // Parse before anything else inspects a step. A raw step is unvalidated
+        // operator text that may carry a pasted credential or a newline, and
+        // `RouteTarget::from_str` is the one place that never interpolates it.
+        // Everything below reports a target by its parsed halves: a static kind
+        // and a name that has passed `validate_name`.
         let steps = raw
             .steps
             .iter()
@@ -251,6 +247,23 @@ pub(super) fn validate_routes(
                         ));
                     }
                 }
+            }
+        }
+
+        // After the cross-reference checks, so a repeated step that names
+        // nothing reports the missing pool or provider - the actionable fault -
+        // rather than the repetition of it.
+        let mut seen = BTreeSet::new();
+        for step in &steps {
+            let (kind, name) = match step {
+                RouteTarget::LocalPool(name) => ("pool", name),
+                RouteTarget::Provider(name) => ("provider", name),
+            };
+            if !seen.insert((kind, name)) {
+                return Err(invalid(
+                    "routing.routes.steps",
+                    format!("duplicate target `{kind}:{name}`"),
+                ));
             }
         }
 

@@ -3,8 +3,12 @@
 use super::{
     PoolLease, ProviderLease,
     anthropic::{self, AnthropicSseTranslator},
+    bounded_response::{self, BoundedResponseError},
     codex,
-    provider::{HttpProviderDispatch, ProviderDispatch, ProviderHttpAdapter},
+    provider::{
+        HttpProviderDispatch, ProviderDispatch, ProviderHttpAdapter, authorize_http,
+        is_provider_credential_rejection,
+    },
 };
 use crate::gateway::http_client::authorized;
 use async_trait::async_trait;
@@ -18,7 +22,6 @@ use axum::{
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use reqwest::Client;
-use secrecy::ExposeSecret;
 use std::{
     collections::VecDeque,
     convert::Infallible,
@@ -32,8 +35,9 @@ use thiserror::Error;
 use tokio::sync::OwnedSemaphorePermit;
 
 const OPENROUTER_TITLE: &str = "x-openrouter-title";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
-const MAX_TRANSLATED_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+/// Bound on a provider response Octoroute has to buffer whole before it can
+/// translate it.
+pub(super) const MAX_TRANSLATED_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Bound on an upstream error body.
 ///
@@ -146,9 +150,19 @@ impl FabricUpstreamTransport for FabricTransport {
                 }
                 ProviderDispatch::Codex(request) => {
                     let stream = request.stream;
-                    let bytes = codex::execute(request)
-                        .await
-                        .map_err(|_| FabricTransportError::Codex)?;
+                    // The CLI answers in one final message, so its first
+                    // client-visible byte is the whole run: `first_byte_timeout_ms`
+                    // bounds how long a stuck `codex exec` may hold the provider
+                    // and inbound permits before the route falls forward. Without
+                    // this the setting is accepted for a `codex_cli` provider and
+                    // silently ignored.
+                    let bytes = deadlines
+                        .hold_first_byte(async {
+                            codex::execute(request)
+                                .await
+                                .map_err(|error| FabricTransportError::Codex(Box::new(error)))
+                        })
+                        .await?;
                     Ok(PreparedUpstreamResponse::from_bytes(
                         StatusCode::OK,
                         if stream {
@@ -179,12 +193,8 @@ async fn dispatch_http(
         .timeout(deadlines.total)
         .header(CONTENT_TYPE, "application/json")
         .body(dispatch.body);
-    request = match dispatch.adapter {
-        ProviderHttpAdapter::OpenAi => request.bearer_auth(dispatch.api_key.expose_secret()),
-        ProviderHttpAdapter::Anthropic { .. } => request
-            .header("x-api-key", dispatch.api_key.expose_secret())
-            .header("anthropic-version", ANTHROPIC_VERSION),
-    };
+    // The same mapping the readiness probe uses; see `provider::authorize_http`.
+    request = authorize_http(request, &dispatch.api_key, dispatch.adapter.protocol());
     if dispatch.openrouter_profile {
         request = request.header(OPENROUTER_TITLE, "Octoroute");
     }
@@ -205,6 +215,12 @@ async fn dispatch_http(
                 .await
         }
         ProviderHttpAdapter::Anthropic { stream } => {
+            // Wider than passthrough on purpose. A non-streaming Anthropic
+            // response has to be read in full before any of it can be
+            // translated, so there is no client-visible first byte until the
+            // whole upstream body has arrived; the deadline therefore bounds
+            // the complete read. Set it from a measured full-response time for
+            // an Anthropic provider, not from a time-to-first-token.
             deadlines
                 .hold_first_byte(prepare_anthropic(response, &dispatch.model, stream, permit))
                 .await
@@ -255,7 +271,7 @@ async fn prepare_anthropic(
     if !status.is_success() {
         let code = match status {
             StatusCode::TOO_MANY_REQUESTS => "provider_rate_limited",
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => "provider_authentication_failed",
+            status if is_provider_credential_rejection(status) => "provider_authentication_failed",
             _ if status.is_server_error() => "provider_server_error",
             _ => "provider_request_failed",
         };
@@ -288,6 +304,16 @@ async fn prepare_anthropic(
         body,
         permit,
     ))
+}
+
+#[cfg(test)]
+pub(super) async fn prepare_anthropic_for_test(
+    response: reqwest::Response,
+    model: &str,
+    stream: bool,
+    permit: OwnedSemaphorePermit,
+) -> Result<PreparedUpstreamResponse, FabricTransportError> {
+    prepare_anthropic(response, model, stream, permit).await
 }
 
 async fn prepare_anthropic_stream(
@@ -364,22 +390,27 @@ impl AnthropicStreamState {
     }
 }
 
-async fn read_bounded(
-    mut response: reqwest::Response,
+/// Read a whole upstream body under `limit`, distinguishing the two ways it can
+/// fail.
+pub(super) async fn read_bounded(
+    response: reqwest::Response,
     limit: usize,
 ) -> Result<Bytes, FabricTransportError> {
-    let mut body = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
+    bounded_response::read(response, limit)
         .await
-        .map_err(FabricTransportError::ReadFirstChunk)?
-    {
-        if body.len().saturating_add(chunk.len()) > limit {
-            return Err(FabricTransportError::ProviderResponseTooLarge);
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(Bytes::from(body))
+        .map_err(|error| match error {
+            // Only a read failure before any byte arrived is a first-byte
+            // failure. A truncated response has a different operator cause.
+            BoundedResponseError::Read {
+                source,
+                after_body: false,
+            } => FabricTransportError::ReadFirstChunk(source),
+            BoundedResponseError::Read {
+                source,
+                after_body: true,
+            } => FabricTransportError::ReadBody(source),
+            BoundedResponseError::TooLarge => FabricTransportError::ProviderResponseTooLarge,
+        })
 }
 
 /// Client-ready upstream response with safe headers and a held body.
@@ -458,6 +489,8 @@ pub enum FabricTransportError {
     Send(#[source] reqwest::Error),
     #[error("upstream response failed before the first body byte")]
     ReadFirstChunk(#[source] reqwest::Error),
+    #[error("upstream response failed part-way through its body")]
+    ReadBody(#[source] reqwest::Error),
     #[error("configured provider deadline elapsed before the first body byte")]
     ProviderTimeout,
     #[error("provider response exceeded its configured bound")]
@@ -465,7 +498,7 @@ pub enum FabricTransportError {
     #[error("provider returned an invalid response before commitment")]
     InvalidProviderResponse,
     #[error("Codex CLI failed before response commitment")]
-    Codex,
+    Codex(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("upstream answered with a redirect to an unconfigured host")]
     UnexpectedRedirect,
     #[error("configured first-byte deadline elapsed before the response committed")]
@@ -488,12 +521,18 @@ fn reject_redirect(response: &reqwest::Response) -> Result<(), FabricTransportEr
     Ok(())
 }
 
+/// Rebuild the client-visible response headers from a fixed allowlist.
+///
+/// `x-request-id` is deliberately absent. The gateway sets its own on every
+/// response and only when the header is not already present, so forwarding the
+/// upstream's would let an upstream claim the gateway's correlation id.
+/// Upstream identifiers still reach the client through `x-generation-id` and
+/// `openai-request-id`.
 pub(super) fn safe_response_headers(source: &HeaderMap) -> HeaderMap {
     let allowed = [
         CONTENT_TYPE,
         CACHE_CONTROL,
         RETRY_AFTER,
-        HeaderName::from_static("x-request-id"),
         HeaderName::from_static("x-generation-id"),
         HeaderName::from_static("openai-request-id"),
         HeaderName::from_static("x-ratelimit-limit"),

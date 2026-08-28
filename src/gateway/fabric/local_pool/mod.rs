@@ -10,7 +10,7 @@ use super::transport::UpstreamDeadlines;
 use super::{LocalCapability, LocalPoolConfig};
 use crate::gateway::{
     env::Environment,
-    http_client::{LOCAL_CHAT_COMPLETIONS_PATH, build, endpoint_url},
+    http_client::{LOCAL_CHAT_COMPLETIONS_PATH, endpoint_url},
     request::{GatewayRequest, GatewayRequestError, RequestFeature},
 };
 use bytes::Bytes;
@@ -75,6 +75,16 @@ pub enum PoolAdmissionState {
     /// `/health` and `/slots` still report a working member, and this state
     /// keeps that case distinguishable from an unreachable one.
     TokenCountUnavailable,
+    /// A member, or a proxy in front of it, rejected the configured credential.
+    ///
+    /// The provider side has carried this distinction from the start. Without
+    /// it here, an operator who rotates a member key on the llama.cpp side and
+    /// not in Octoroute's environment gets members that still answer the
+    /// unauthenticated `/health` and `/slots`, a 401 on every token count, and
+    /// a pool that reads as merely unhealthy - a trigger the default fallback
+    /// set contains, so every request is billed to a paid provider with nothing
+    /// surfaced.
+    Unauthenticated,
 }
 
 /// Lease held through the complete upstream response body.
@@ -172,12 +182,18 @@ struct PoolInner {
 }
 
 impl LlamaCppPool {
-    /// Build a local pool, resolving only the credential names referenced by members.
+    /// Build a local pool over a private client.
+    ///
+    /// Test-only. Production builds every pool with [`Self::with_client`] so
+    /// local probes, local inference, and every provider share the one pooled
+    /// rustls client; a second client here would quietly break that invariant.
+    #[cfg(test)]
     pub fn new(
         config: &LocalPoolConfig,
         environment: &(impl Environment + ?Sized),
     ) -> Result<Self, LlamaCppPoolBuildError> {
-        let client = build().map_err(LlamaCppPoolBuildError::HttpClient)?;
+        let client =
+            crate::gateway::http_client::build().map_err(LlamaCppPoolBuildError::HttpClient)?;
         Self::with_client(config, environment, client)
     }
 
@@ -262,28 +278,36 @@ impl LlamaCppPool {
 
         let output_tokens =
             request.output_token_budget(self.inner.config.default_max_output_tokens)?;
-        let request_body = request.body_bytes_for_model_with_reasoning_default(
-            &self.inner.config.model,
-            self.inner.config.default_reasoning_effort.as_str(),
-        )?;
+        // The reservation alone can already exceed the window, and no token
+        // count can change that. Probing first would disclose the prompt to a
+        // member, and burn a token count per member, to reach a verdict the
+        // configuration had already decided. A non-empty prompt is always at
+        // least one token, so equality overflows too.
+        if u64::from(output_tokens) + u64::from(self.inner.config.context_safety_tokens)
+            >= u64::from(self.inner.config.context_window)
+        {
+            return Ok(PoolAdmissionOutcome::Rejected(
+                PoolAdmissionState::ContextOverflow,
+            ));
+        }
+        let request_body = self.request_body(request)?;
         let candidates = self.candidates();
         if candidates.is_empty() {
             return Ok(PoolAdmissionOutcome::Rejected(PoolAdmissionState::Busy));
         }
 
-        let mut saw_busy = false;
-        let mut saw_token_count_unavailable = false;
+        let mut degraded = Degradations::default();
         for (index, member) in candidates {
             let permit = match Arc::clone(&member.permits).try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(_) => {
-                    saw_busy = true;
+                    degraded.busy = true;
                     continue;
                 }
             };
             match member.availability_state().await {
                 MemberState::Busy => {
-                    saw_busy = true;
+                    degraded.busy = true;
                     continue;
                 }
                 MemberState::Unhealthy => continue,
@@ -293,8 +317,30 @@ impl LlamaCppPool {
                 Ok(input_tokens) => input_tokens,
                 Err(InputTokenError::Transport) => continue,
                 Err(InputTokenError::Unsupported) => {
-                    saw_token_count_unavailable = true;
+                    degraded.token_count_unavailable = true;
                     continue;
+                }
+                Err(InputTokenError::Busy) => {
+                    degraded.busy = true;
+                    continue;
+                }
+                // A rejected credential is the operator's to fix, and every
+                // member of a pool is configured from the same environment.
+                // Trying the rest would turn one visible failure into a pool
+                // that merely looks sick, which the default fallback set spills
+                // to a paid provider.
+                Err(InputTokenError::Unauthenticated) => {
+                    return Ok(PoolAdmissionOutcome::Rejected(
+                        PoolAdmissionState::Unauthenticated,
+                    ));
+                }
+                // Deterministic across equivalent members: retrying would
+                // re-disclose the same prompt for the same refusal, and
+                // reporting it as ill-health spills it to a provider.
+                Err(InputTokenError::RequestRejected) => {
+                    return Ok(PoolAdmissionOutcome::Rejected(
+                        PoolAdmissionState::Incompatible,
+                    ));
                 }
             };
             let used_context = u64::from(input_tokens)
@@ -324,10 +370,7 @@ impl LlamaCppPool {
             })));
         }
 
-        Ok(PoolAdmissionOutcome::Rejected(degraded_state(
-            saw_busy,
-            saw_token_count_unavailable,
-        )))
+        Ok(PoolAdmissionOutcome::Rejected(degraded.state()))
     }
 
     /// Return whether any member could accept a request now, without reserving it.
@@ -341,28 +384,51 @@ impl LlamaCppPool {
             return PoolAdmissionState::Disabled;
         }
         let probe_body = self.token_count_probe_body();
-        let mut saw_busy = false;
-        let mut saw_token_count_unavailable = false;
+        let mut degraded = Degradations::default();
         for (_, member) in self.candidates_with_busy() {
             if member.permits.available_permits() == 0 {
-                saw_busy = true;
+                degraded.busy = true;
                 continue;
             }
             match member.availability_state().await {
                 MemberState::Ready => {
                     match member.token_count_readiness(probe_body.clone()).await {
                         PoolAdmissionState::Ready => return PoolAdmissionState::Ready,
+                        PoolAdmissionState::Unauthenticated => degraded.unauthenticated = true,
+                        PoolAdmissionState::Busy => degraded.busy = true,
                         PoolAdmissionState::TokenCountUnavailable => {
-                            saw_token_count_unavailable = true;
+                            degraded.token_count_unavailable = true;
                         }
                         _ => {}
                     }
                 }
-                MemberState::Busy => saw_busy = true,
+                MemberState::Busy => degraded.busy = true,
                 MemberState::Unhealthy => {}
             }
         }
-        degraded_state(saw_busy, saw_token_count_unavailable)
+        degraded.state()
+    }
+
+    /// Serialize the one body reused for token counting and dispatch.
+    ///
+    /// The pool's `default_reasoning_effort` is injected only when the pool
+    /// declares the `reasoning` capability. Injecting it into a pool that never
+    /// advertised reasoning adds a control the operator did not configure the
+    /// model to accept.
+    fn request_body(&self, request: &GatewayRequest) -> Result<Bytes, GatewayRequestError> {
+        if self
+            .inner
+            .config
+            .capabilities
+            .contains(&LocalCapability::Reasoning)
+        {
+            request.body_bytes_for_model_with_reasoning_default(
+                &self.inner.config.model,
+                self.inner.config.default_reasoning_effort.as_str(),
+            )
+        } else {
+            request.body_bytes_for_model(&self.inner.config.model)
+        }
     }
 
     /// Smallest well-formed body that exercises the token-count endpoint.
@@ -386,6 +452,13 @@ impl LlamaCppPool {
             .collect()
     }
 
+    /// Order members by load first, then `priority`, then rotation, then name.
+    ///
+    /// `priority` is a tiebreaker among equally loaded members, not a
+    /// preference that outranks load: a `priority = 10` member already serving
+    /// a request loses to an idle `priority = 100` one. It cannot pin traffic
+    /// to a member, and it never revives a member that is unhealthy or out of
+    /// permits, both of which are decided after this ordering.
     fn candidates_with_busy(&self) -> Vec<(usize, Arc<Member>)> {
         let cursor = self.inner.cursor.load(Ordering::Relaxed) % self.inner.members.len();
         let count = self.inner.members.len();
@@ -420,18 +493,34 @@ impl LlamaCppPool {
     }
 }
 
-/// Collapse "nothing could be admitted" into one bounded state.
+/// What one pass over the members observed, when none of them could be used.
 ///
 /// `try_admit` and `readiness_state` exist to agree with each other, so the
-/// precedence between busy, token-count-unavailable, and unhealthy is stated
-/// once rather than asserted separately in each.
-const fn degraded_state(saw_busy: bool, saw_token_count_unavailable: bool) -> PoolAdmissionState {
-    if saw_busy {
-        PoolAdmissionState::Busy
-    } else if saw_token_count_unavailable {
-        PoolAdmissionState::TokenCountUnavailable
-    } else {
-        PoolAdmissionState::Unhealthy
+/// precedence between the degraded states is stated once rather than asserted
+/// separately in each.
+#[derive(Debug, Default, Clone, Copy)]
+struct Degradations {
+    unauthenticated: bool,
+    busy: bool,
+    token_count_unavailable: bool,
+}
+
+impl Degradations {
+    /// Collapse "nothing could be admitted" into one bounded state.
+    ///
+    /// A rejected credential outranks everything else: it is the one condition
+    /// here that no amount of waiting fixes and that the default fallback set
+    /// must not route around.
+    const fn state(self) -> PoolAdmissionState {
+        if self.unauthenticated {
+            PoolAdmissionState::Unauthenticated
+        } else if self.busy {
+            PoolAdmissionState::Busy
+        } else if self.token_count_unavailable {
+            PoolAdmissionState::TokenCountUnavailable
+        } else {
+            PoolAdmissionState::Unhealthy
+        }
     }
 }
 
@@ -454,8 +543,21 @@ fn request_capabilities(
     Ok(capabilities)
 }
 
+/// Resolve one member endpoint relative to its configured base URL.
+///
+/// `Url::join` treats a base path without a trailing slash as a file and drops
+/// its last segment, so `http://member/llama` would resolve `health` to
+/// `http://member/health`. `LocalPoolConfig` and `LocalMemberConfig` are public
+/// with public fields, so a pool can be built from a value the configuration
+/// validator never saw; normalizing here keeps resolution correct either way
+/// instead of depending on validation having run.
 fn resolve(base: &Url, path: &str, member: &str) -> Result<Url, LlamaCppPoolBuildError> {
-    endpoint_url(base, path).ok_or_else(|| LlamaCppPoolBuildError::InvalidPath {
+    let mut base = base.clone();
+    if !base.path().ends_with('/') {
+        let with_slash = format!("{}/", base.path());
+        base.set_path(&with_slash);
+    }
+    endpoint_url(&base, path).ok_or_else(|| LlamaCppPoolBuildError::InvalidPath {
         member: member.to_string(),
         path: path.to_string(),
     })

@@ -17,6 +17,7 @@ jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       matrix:
         rust:
@@ -57,6 +58,7 @@ jobs:
   clippy:
     name: Clippy (Linting)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -81,6 +83,7 @@ jobs:
   fmt:
     name: Format Check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -96,6 +99,7 @@ jobs:
   security:
     name: RustSec Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -110,9 +114,71 @@ jobs:
       - name: Audit locked dependencies
         run: cargo audit --deny warnings
 
+  # Mutation testing runs at two scopes. A pull request mutates only the lines it
+  # changes, so the gate stays proportional to the change; a merge to main sweeps
+  # the tree. The split exists because the tree currently yields ~1000 mutants and
+  # each one is a build plus a full test run: an unscoped sweep on every pull
+  # request is a multi-hour gate, and without an explicit timeout it inherits the
+  # 360-minute default and fails the job rather than reporting a verdict.
+  #
+  # A GitHub runner cannot reach the LAN, so both sweeps run locally rather than
+  # through scripts/mutants-remote.sh. Survivors print as
+  # `MISSED <file>:<line>: <mutation>` straight into the job log; the verdict
+  # comes from missed.txt, not the exit code, which is what
+  # scripts/mutants-run.sh exists to decide.
   mutants:
     name: Mutation Testing
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # The full history is needed to diff against the merge base.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-mutants-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d # v2.87.0
+        with:
+          tool: cargo-mutants@27.1.0
+
+      # Mirrors scripts/mutants-staged.sh, which scopes the pre-commit hook to
+      # the staged diff the same way. An empty diff means no Rust changed, and
+      # there is nothing to mutate.
+      - name: Compute the pull request diff
+        id: diff
+        run: |
+          git diff "origin/${{ github.base_ref }}...HEAD" -- '*.rs' > pr.diff
+          if [ -s pr.diff ]; then
+            echo "has_rust_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_rust_changes=false" >> "$GITHUB_OUTPUT"
+            echo "no Rust changes in this pull request; nothing to mutate"
+          fi
+
+      - name: Run mutation sweep (changed lines)
+        if: steps.diff.outputs.has_rust_changes == 'true'
+        run: ./scripts/mutants-run.sh --in-diff pr.diff
+
+  mutants-full:
+    name: Mutation Testing (full sweep)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -135,16 +201,13 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
 
-      # A GitHub runner cannot reach the LAN, so the sweep runs locally here.
-      # Survivors print as `MISSED <file>:<line>: <mutation>` straight into the
-      # job log; the verdict comes from missed.txt, not the exit code, which is
-      # what scripts/mutants-run.sh exists to decide.
       - name: Run mutation sweep
         run: ./scripts/mutants-run.sh
 
   docs:
     name: Documentation Build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

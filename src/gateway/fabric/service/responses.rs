@@ -11,7 +11,7 @@ use crate::gateway::fabric::http_support::{
 use crate::gateway::fabric::metrics::ProviderResponseOutcome;
 use crate::gateway::fabric::{
     FabricRouteError, FallbackTrigger, PoolAdmissionState, PreparedUpstreamResponse,
-    ProviderAdmissionState, RoutePlan,
+    ProviderAdmissionState, ProviderRequestError, RoutePlan,
 };
 use axum::{
     body::Body,
@@ -51,6 +51,10 @@ pub(super) fn fallback_trigger(state: PoolAdmissionState) -> Option<FallbackTrig
         PoolAdmissionState::Disabled
         | PoolAdmissionState::Unhealthy
         | PoolAdmissionState::TokenCountUnavailable => Some(FallbackTrigger::Unhealthy),
+        // Outside the default trigger set, exactly as on the provider side: a
+        // member key the operator forgot to rotate must not read as ill health
+        // and spill every request to a metered provider.
+        PoolAdmissionState::Unauthenticated => Some(FallbackTrigger::Unauthenticated),
         PoolAdmissionState::Incompatible => Some(FallbackTrigger::Incompatible),
         PoolAdmissionState::Busy => Some(FallbackTrigger::Busy),
         PoolAdmissionState::ContextOverflow => Some(FallbackTrigger::ContextOverflow),
@@ -84,26 +88,59 @@ pub(super) fn provider_response_outcome(status: StatusCode) -> ProviderResponseO
 }
 
 pub(super) fn route_error(error: FabricRouteError, request_id: &str) -> Response<Body> {
-    let status = match &error {
+    // The error type has to agree with the status. A 503 typed
+    // `invalid_request_error` tells a client to retry and to fix its request at
+    // the same time, and a client keying on the type acts on the wrong one.
+    let (status, error_type) = match &error {
         FabricRouteError::UnknownModel(_) | FabricRouteError::ContradictoryPrivacy => {
-            StatusCode::BAD_REQUEST
+            (StatusCode::BAD_REQUEST, "invalid_request_error")
         }
-        FabricRouteError::NoEligibleTarget => StatusCode::SERVICE_UNAVAILABLE,
+        FabricRouteError::NoEligibleTarget => (StatusCode::SERVICE_UNAVAILABLE, "upstream_error"),
     };
     error_response(
         status,
         &error.to_string(),
-        "invalid_request_error",
+        error_type,
         "routing_error",
         request_id,
     )
 }
 
-pub(super) fn pool_state_error(
-    state: PoolAdmissionState,
-    pool: &str,
+pub(super) fn provider_request_error(
+    error: &ProviderRequestError,
     request_id: &str,
 ) -> Response<Body> {
+    let (status, error_type, code) = if error.is_client_error() {
+        (
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "provider_request_invalid",
+        )
+    } else {
+        (
+            StatusCode::BAD_GATEWAY,
+            "upstream_error",
+            "provider_translation_failed",
+        )
+    };
+    error_response(status, &error.to_string(), error_type, code, request_id)
+}
+
+/// A provider rejected Octoroute's own credential after admission.
+///
+/// Forwarding the upstream's 401 would tell the caller that the bearer it sent
+/// this gateway was refused, which is a different operator problem entirely.
+pub(super) fn provider_credential_rejected(request_id: &str) -> Response<Body> {
+    error_response(
+        StatusCode::BAD_GATEWAY,
+        "the selected provider rejected the gateway credential",
+        "upstream_error",
+        "provider_credential_rejected",
+        request_id,
+    )
+}
+
+pub(super) fn pool_state_error(state: PoolAdmissionState, request_id: &str) -> Response<Body> {
     let (status, message, code) = match state {
         PoolAdmissionState::Ready => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -140,19 +177,26 @@ pub(super) fn pool_state_error(
             "the request exceeds the selected local pool context budget",
             "local_context_overflow",
         ),
+        PoolAdmissionState::Unauthenticated => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the selected local pool member rejected or could not supply its credential",
+            "local_unauthenticated",
+        ),
     };
-    tracing::info!(
-        request_id,
-        pool,
-        state = ?state,
-        "v3 local route could not be admitted"
-    );
-    error_response(status, message, "invalid_request_error", code, request_id)
+    // Same rule as `route_error`: the type follows the status. Only the two
+    // 4xx states are the caller's request to fix; a busy or disabled pool typed
+    // `invalid_request_error` tells a client keying on the type to stop
+    // retrying and rewrite a request that was fine.
+    let error_type = if status.is_client_error() {
+        "invalid_request_error"
+    } else {
+        "upstream_error"
+    };
+    error_response(status, message, error_type, code, request_id)
 }
 
 pub(super) fn provider_state_error(
     state: ProviderAdmissionState,
-    provider: &str,
     request_id: &str,
 ) -> Response<Body> {
     let (status, message, code) = match state {
@@ -187,12 +231,6 @@ pub(super) fn provider_state_error(
             "provider_unauthenticated",
         ),
     };
-    tracing::info!(
-        request_id,
-        provider,
-        state = ?state,
-        "v3 provider route could not be admitted"
-    );
     error_response(status, message, "upstream_error", code, request_id)
 }
 
