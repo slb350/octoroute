@@ -187,6 +187,25 @@ fn pool_state(state: PoolAdmissionState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+
+    #[tokio::test]
+    async fn liveness_returns_the_exact_v3_payload() {
+        let response = liveness().await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE),
+            Some(&HeaderValue::from_static("application/json"))
+        );
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("liveness body");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("liveness JSON"),
+            json!({"status": "ok", "config_version": 3})
+        );
+    }
 
     #[test]
     fn every_pool_admission_state_has_the_exact_readiness_label() {

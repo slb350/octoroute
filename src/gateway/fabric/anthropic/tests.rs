@@ -11,6 +11,7 @@ mod thinking;
 mod tools;
 mod usage_and_errors;
 
+use super::AnthropicAdapterError;
 use super::request::build_request;
 use super::response::{AnthropicSseTranslator, open_ai_error_body, translate_message_response};
 use crate::gateway::{
@@ -76,4 +77,15 @@ fn provider_with(reasoning_effort: Option<ReasoningEffort>) -> ProviderConfig {
     let mut provider = config().providers["kimi"].clone();
     provider.reasoning_effort = reasoning_effort;
     provider
+}
+
+#[test]
+fn only_incompatible_errors_are_classified_as_incompatible() {
+    for (error, expected) in [
+        (AnthropicAdapterError::Incompatible("test"), true),
+        (AnthropicAdapterError::Serialization, false),
+        (AnthropicAdapterError::Response, false),
+    ] {
+        assert_eq!(error.is_incompatible(), expected, "{error:?}");
+    }
 }

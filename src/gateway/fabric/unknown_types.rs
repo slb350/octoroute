@@ -52,3 +52,15 @@ pub(super) fn record(adapter: Adapter) {
 pub(super) fn count(adapter: Adapter) -> u64 {
     adapter.counter().load(Ordering::Relaxed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Adapter;
+
+    #[test]
+    fn adapter_labels_are_the_bounded_prometheus_values() {
+        for (adapter, expected) in [(Adapter::Anthropic, "anthropic"), (Adapter::Codex, "codex")] {
+            assert_eq!(adapter.as_str(), expected, "{adapter:?}");
+        }
+    }
+}

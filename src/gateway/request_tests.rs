@@ -491,3 +491,94 @@ fn include_reasoning_counts_as_a_caller_reasoning_control() {
         "the pool default must not be added beside a caller reasoning control: {body}"
     );
 }
+
+#[test]
+fn request_debug_identifies_the_route_without_exposing_the_body() {
+    let request = gateway_request(json!({
+        "model": "private-route",
+        "messages": [{"role": "user", "content": "hunter2"}]
+    }));
+
+    assert_eq!(
+        format!("{request:?}"),
+        "GatewayRequest { model: \"private-route\", body: \"[REDACTED]\" }"
+    );
+}
+
+#[test]
+fn only_non_text_modalities_require_non_text_output() {
+    for (modalities, expected) in [(json!(["text"]), false), (json!(["text", "audio"]), true)] {
+        let request = gateway_request(json!({
+            "model": "auto",
+            "messages": [{"role": "user", "content": "hello"}],
+            "modalities": modalities
+        }));
+
+        assert_eq!(
+            request.features().contains(&RequestFeature::NonTextOutput),
+            expected,
+            "unexpected feature inference for {modalities}"
+        );
+    }
+}
+
+#[test]
+fn content_blocks_require_the_verified_shape() {
+    let text = gateway_request(json!({
+        "model": "auto",
+        "messages": [{
+            "role": "user",
+            "content": [{"type": "text", "text": "hello"}]
+        }]
+    }));
+    assert!(
+        !text
+            .features()
+            .contains(&RequestFeature::UnsupportedContent)
+    );
+
+    for (block, capability) in [
+        (
+            json!({"type": "image_url", "image_url": {}}),
+            LocalCapability::ImageInput,
+        ),
+        (
+            json!({"type": "input_audio", "input_audio": {}}),
+            LocalCapability::AudioInput,
+        ),
+        (
+            json!({"type": "input_video", "input_video": {}}),
+            LocalCapability::VideoInput,
+        ),
+    ] {
+        let request = gateway_request(json!({
+            "model": "auto",
+            "messages": [{"role": "user", "content": [block]}]
+        }));
+        assert!(
+            request
+                .features()
+                .contains(&RequestFeature::UnsupportedContent)
+        );
+        assert!(
+            !request
+                .features()
+                .contains(&RequestFeature::Capability(capability))
+        );
+    }
+}
+
+#[test]
+fn destination_model_must_not_be_empty_or_blank() {
+    let request = gateway_request(json!({
+        "model": "auto",
+        "messages": [{"role": "user", "content": "hello"}]
+    }));
+
+    for model in ["", "   "] {
+        assert!(matches!(
+            request.body_bytes_for_model(model),
+            Err(GatewayRequestError::Invalid { ref field, .. }) if field == "model"
+        ));
+    }
+}

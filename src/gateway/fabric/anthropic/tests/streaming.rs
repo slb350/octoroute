@@ -1,6 +1,126 @@
 //! Anthropic SSE reassembly and stream translation.
 
-use super::{AnthropicSseTranslator, STREAM, rendered};
+use super::{AnthropicSseTranslator, STREAM, chunk_json, rendered};
+use crate::gateway::fabric::{
+    anthropic::ignore_unknown_type,
+    unknown_types::{self, Adapter},
+};
+use serde_json::json;
+
+#[test]
+fn sse_event_buffer_accepts_the_exact_limit_and_rejects_one_more_byte() {
+    let mut translator = AnthropicSseTranslator::new("k3");
+    let exact_limit = vec![b' '; 1024 * 1024];
+
+    assert!(
+        translator
+            .push(&exact_limit)
+            .expect("exact limit")
+            .is_empty()
+    );
+    translator
+        .push(b" ")
+        .expect_err("one byte past the event limit must be rejected");
+}
+
+#[test]
+fn recognized_no_output_events_are_not_counted_as_unknown() {
+    const REPETITIONS: u64 = 512;
+
+    let before = unknown_types::count(Adapter::Anthropic);
+    for _ in 0..REPETITIONS {
+        ignore_unknown_type();
+    }
+    let after_unknown = unknown_types::count(Adapter::Anthropic);
+    assert!(
+        after_unknown.wrapping_sub(before) >= REPETITIONS,
+        "an unknown Anthropic type must advance its metric"
+    );
+
+    let mut translator = AnthropicSseTranslator::new("k3");
+    let before_known = unknown_types::count(Adapter::Anthropic);
+    for _ in 0..REPETITIONS {
+        for event in [
+            json!({"type": "ping"}),
+            json!({"type": "content_block_stop", "index": 0}),
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "signature_delta", "signature": "opaque"}
+            }),
+        ] {
+            let frame = format!("data: {event}\n\n");
+            assert!(
+                translator
+                    .push(frame.as_bytes())
+                    .expect("known event")
+                    .is_empty(),
+                "a recognized no-output event must emit no chunk"
+            );
+        }
+    }
+    let after_known = unknown_types::count(Adapter::Anthropic);
+    assert!(
+        after_known.wrapping_sub(before_known) < REPETITIONS,
+        "recognized no-output events must not be classified as unknown"
+    );
+}
+
+#[test]
+fn content_block_starts_preserve_text_and_thinking_payloads() {
+    for (block, field, expected) in [
+        (json!({"type": "text", "text": "hello"}), "content", "hello"),
+        (
+            json!({"type": "thinking", "thinking": "inspect"}),
+            "reasoning_content",
+            "inspect",
+        ),
+    ] {
+        let mut translator = AnthropicSseTranslator::new("k3");
+        let event = json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": block
+        });
+        let output = translator
+            .push(format!("data: {event}\n\n").as_bytes())
+            .expect("content block start");
+
+        assert_eq!(output.len(), 1, "{field}");
+        assert_eq!(
+            chunk_json(&output[0])["choices"][0]["delta"][field],
+            expected
+        );
+    }
+}
+
+#[test]
+fn content_block_deltas_preserve_text_and_thinking_payloads() {
+    for (delta, field, expected) in [
+        (
+            json!({"type": "text_delta", "text": "hello"}),
+            "content",
+            "hello",
+        ),
+        (
+            json!({"type": "thinking_delta", "thinking": "inspect"}),
+            "reasoning_content",
+            "inspect",
+        ),
+    ] {
+        let mut translator = AnthropicSseTranslator::new("k3");
+        let event = json!({"type": "content_block_delta", "index": 0, "delta": delta});
+        let output = translator
+            .push(format!("data: {event}\n\n").as_bytes())
+            .expect("content block delta");
+
+        assert_eq!(output.len(), 1, "{field}");
+        assert_eq!(
+            chunk_json(&output[0])["choices"][0]["delta"][field],
+            expected
+        );
+    }
+}
 
 /// Reassembly is the point, so the stream is fed in fixed-size byte slices that
 /// land inside `data:` lines and between the two newlines of a terminator. One

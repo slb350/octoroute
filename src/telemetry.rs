@@ -31,3 +31,20 @@ pub fn init(default_level: &str) {
             .init();
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialization_installs_the_process_subscriber() {
+        assert!(
+            !tracing::dispatcher::has_been_set(),
+            "no other library test should initialize process telemetry"
+        );
+
+        init("info");
+
+        assert!(tracing::dispatcher::has_been_set());
+    }
+}

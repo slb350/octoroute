@@ -166,3 +166,15 @@ fn a_later_empty_assignment_clears_an_earlier_dotenv_value() {
 
     assert!(environment.get("OPENROUTER_API_KEY").is_none());
 }
+
+#[test]
+fn dotenv_debug_reports_only_the_redacted_entry_count() {
+    let file = dotenv_file("OPENROUTER_API_KEY=hunter2\nOCTOROUTE_API_KEY=private\n");
+    let environment = DotenvEnvironment::from_path(file.path(), TestEnvironment::default())
+        .expect("valid dotenv file");
+
+    assert_eq!(
+        format!("{environment:?}"),
+        "DotenvEnvironment { file_values: [REDACTED; 2], .. }"
+    );
+}

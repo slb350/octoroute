@@ -11,6 +11,10 @@ use super::fields::{
     validate_local_member_url, validate_log_level, validate_model, validate_name,
     validate_revision, validate_u32_range, validate_url, validate_usize_range,
 };
+use super::{
+    DEFAULT_MEMBER_MAX_IN_FLIGHT, DEFAULT_PROVIDER_MAX_IN_FLIGHT,
+    DEFAULT_PROVIDER_READINESS_TIMEOUT_MS,
+};
 use crate::gateway::fabric::{FabricConfig, FabricConfigError};
 
 const FIELD: &str = "fabric.providers.endpoint";
@@ -356,4 +360,86 @@ fn line_column_never_slices_across_a_character_boundary() {
         (2, 7),
         "an out-of-range index clamps to the end of the document"
     );
+}
+
+#[test]
+fn omitted_fields_resolve_to_the_documented_runtime_defaults() {
+    let config = FabricConfig::from_toml(
+        r#"
+config_version = 3
+[server]
+host = "127.0.0.1"
+port = 8081
+api_key_env = "OCTOROUTE_API_KEY"
+[fabric]
+[[fabric.local_pools]]
+name = "local"
+model = "model"
+model_revision = "revision"
+context_window = 65536
+capabilities = ["chat"]
+[[fabric.local_pools.members]]
+name = "member"
+base_url = "http://127.0.0.1:8000"
+[[fabric.providers]]
+name = "cloud"
+kind = "http"
+endpoint = "https://api.example.com/v1"
+protocol = "open_ai"
+model = "model"
+api_key_env = "PROVIDER_API_KEY"
+[routing]
+default_model = "route"
+[[routing.routes]]
+model = "route"
+privacy = "cloud_allowed"
+steps = ["pool:local", "provider:cloud"]
+"#,
+    )
+    .expect("configuration using every assigned default");
+
+    assert_eq!(
+        (
+            config.server.max_request_bytes,
+            config.server.max_header_bytes,
+            config.server.max_in_flight,
+            config.server.requests_per_minute,
+        ),
+        (8_388_608, 32_768, 64, 120)
+    );
+    let pool = &config.local_pools["local"];
+    assert_eq!(
+        (
+            pool.context_safety_tokens,
+            pool.default_max_output_tokens,
+            pool.timeout_ms,
+        ),
+        (2_048, 16_384, 1_800_000)
+    );
+    assert_eq!(pool.members[0].priority, 100);
+    let provider = &config.providers["cloud"];
+    assert_eq!(
+        (provider.timeout_ms, provider.readiness_ttl_ms),
+        (1_800_000, 30_000)
+    );
+    for (field, actual, expected) in [
+        (
+            "member max_in_flight",
+            pool.members[0].max_in_flight as u64,
+            DEFAULT_MEMBER_MAX_IN_FLIGHT as u64,
+        ),
+        (
+            "provider max_in_flight",
+            provider.max_in_flight as u64,
+            DEFAULT_PROVIDER_MAX_IN_FLIGHT as u64,
+        ),
+        (
+            "provider readiness_timeout_ms",
+            provider.readiness_timeout_ms,
+            DEFAULT_PROVIDER_READINESS_TIMEOUT_MS,
+        ),
+    ] {
+        assert_eq!(actual, expected, "omitted {field}");
+    }
+    assert_eq!(config.observability.log_level, "info");
 }

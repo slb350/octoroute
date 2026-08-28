@@ -47,7 +47,7 @@ impl CachedCredential {
         // wait is bounded by CREDENTIAL_COMMAND_TIMEOUT.
         let mut cached = self.cached.lock().await;
         if let Some((resolved_at, value)) = cached.as_ref()
-            && resolved_at.elapsed() < CREDENTIAL_CACHE_TTL
+            && cache_entry_is_fresh_at(*resolved_at, Instant::now())
         {
             return Ok(value.clone());
         }
@@ -60,6 +60,10 @@ impl CachedCredential {
     pub(super) async fn invalidate(&self) {
         self.cached.lock().await.take();
     }
+}
+
+fn cache_entry_is_fresh_at(resolved_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(resolved_at) < CREDENTIAL_CACHE_TTL
 }
 
 pub(super) enum ProviderCredentialSource {
@@ -205,6 +209,106 @@ impl ProviderCredentialError {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    fn output_command(bytes: usize) -> [String; 3] {
+        [
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            format!("/usr/bin/awk 'BEGIN {{ for (i = 0; i < {bytes}; i++) printf \"x\" }}'"),
+        ]
+    }
+
+    #[test]
+    fn credential_cache_expires_exactly_at_its_ttl() {
+        let resolved_at = Instant::now();
+
+        assert!(cache_entry_is_fresh_at(resolved_at, resolved_at));
+        assert!(cache_entry_is_fresh_at(
+            resolved_at,
+            resolved_at + CREDENTIAL_CACHE_TTL - Duration::from_nanos(1)
+        ));
+        assert!(!cache_entry_is_fresh_at(
+            resolved_at,
+            resolved_at + CREDENTIAL_CACHE_TTL
+        ));
+        assert!(!cache_entry_is_fresh_at(
+            resolved_at,
+            resolved_at + CREDENTIAL_CACHE_TTL + Duration::from_nanos(1)
+        ));
+    }
+
+    #[test]
+    fn credential_shape_boundaries_are_exact() {
+        assert_eq!(MAX_CREDENTIAL_BYTES, 4_096);
+        for (value, valid) in [
+            (String::new(), false),
+            ("x".repeat(MAX_CREDENTIAL_BYTES), true),
+            ("x".repeat(MAX_CREDENTIAL_BYTES + 1), false),
+            ("embedded space".to_string(), false),
+            ("line\nfeed".to_string(), false),
+            ("visible-ASCII-~".to_string(), true),
+        ] {
+            assert_eq!(
+                validate_credential(SecretString::from(value)).is_ok(),
+                valid
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn command_output_accepts_the_limit_and_rejects_one_more_byte() {
+        let exact = resolve_command_credential(
+            &output_command(MAX_CREDENTIAL_BYTES),
+            &ChildEnvironment::default(),
+            CREDENTIAL_COMMAND_TIMEOUT,
+        )
+        .await
+        .expect("the exact limit is accepted");
+        assert_eq!(exact.expose_secret().len(), MAX_CREDENTIAL_BYTES);
+
+        let oversized = resolve_command_credential(
+            &output_command(MAX_CREDENTIAL_BYTES + 1),
+            &ChildEnvironment::default(),
+            CREDENTIAL_COMMAND_TIMEOUT,
+        )
+        .await;
+        assert!(matches!(
+            oversized,
+            Err(ProviderCredentialError::CommandOutputTooLarge)
+        ));
+    }
+
+    #[tokio::test]
+    async fn terminate_kills_and_reaps_the_child_before_returning() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "exec /bin/sleep 30"])
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn child");
+
+        terminate(&mut child).await;
+
+        assert!(
+            child.try_wait().expect("poll child").is_some(),
+            "terminate must reap the child before returning"
+        );
+    }
+
+    #[test]
+    fn every_credential_error_has_its_exact_safe_code() {
+        for (error, expected) in [
+            (ProviderCredentialError::Missing, "missing"),
+            (ProviderCredentialError::Invalid, "invalid"),
+            (ProviderCredentialError::CommandFailed, "command_failed"),
+            (ProviderCredentialError::CommandTimeout, "command_timeout"),
+            (
+                ProviderCredentialError::CommandOutputTooLarge,
+                "command_output_too_large",
+            ),
+        ] {
+            assert_eq!(error.code(), expected);
+        }
+    }
 
     /// The one budget is a deadline in the future. A command that answers
     /// promptly has to resolve, which is the whole point of supporting

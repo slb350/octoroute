@@ -5,8 +5,9 @@ use super::fields::{
     validate_model, validate_name, validate_u64_range, validate_url, validate_usize_range,
 };
 use super::{
-    DEFAULT_CODEX_EXECUTABLE, MAX_CONCURRENCY, MAX_PROVIDER_READINESS_TIMEOUT_MS,
-    MAX_PROVIDER_READINESS_TTL_MS, MAX_UPSTREAM_TIMEOUT_MS, RawProviderConfig, RawVirtualRoute,
+    DEFAULT_CODEX_EXECUTABLE, DEFAULT_PROVIDER_MAX_IN_FLIGHT, MAX_CONCURRENCY,
+    MAX_PROVIDER_READINESS_TIMEOUT_MS, MAX_PROVIDER_READINESS_TTL_MS, MAX_UPSTREAM_TIMEOUT_MS,
+    RawProviderConfig, RawVirtualRoute,
 };
 use crate::gateway::fabric::{
     FabricConfigError, LocalPoolConfig, ProviderConfig, ProviderCredentialConfig, ProviderKind,
@@ -22,9 +23,10 @@ pub(super) fn validate_providers(
     for raw in raw_providers {
         validate_name("fabric.providers.name", &raw.name)?;
         validate_model("fabric.providers.model", &raw.model)?;
+        let max_in_flight = raw.max_in_flight.unwrap_or(DEFAULT_PROVIDER_MAX_IN_FLIGHT);
         validate_usize_range(
             "fabric.providers.max_in_flight",
-            raw.max_in_flight,
+            max_in_flight,
             MAX_CONCURRENCY,
         )?;
         validate_u64_range(
@@ -158,7 +160,7 @@ pub(super) fn validate_providers(
             enabled: raw.enabled,
             runtime,
             model: raw.model,
-            max_in_flight: raw.max_in_flight,
+            max_in_flight,
             timeout_ms: raw.timeout_ms,
             readiness_ttl_ms: raw.readiness_ttl_ms,
             readiness_timeout_ms: raw.readiness_timeout_ms,

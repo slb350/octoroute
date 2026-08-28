@@ -255,6 +255,71 @@ pub(super) async fn security_headers(request: Request<Body>, next: Next) -> Resp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{Router, routing::get};
+    use tower::ServiceExt as _;
+
+    async fn response_with_distinct_request_ids() -> Response<Body> {
+        let mut response = Response::new(Body::empty());
+        response.headers_mut().insert(
+            OCTOROUTE_REQUEST_ID_HEADER,
+            HeaderValue::from_static("gateway-id"),
+        );
+        response.headers_mut().insert(
+            REQUEST_ID_HEADER,
+            HeaderValue::from_static("application-id"),
+        );
+        response
+    }
+
+    #[tokio::test]
+    async fn security_headers_generate_matching_request_ids_when_both_are_absent() {
+        let app = Router::new()
+            .route("/", get(|| async { Response::new(Body::empty()) }))
+            .layer(axum::middleware::from_fn(security_headers));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        let gateway_id = response
+            .headers()
+            .get(OCTOROUTE_REQUEST_ID_HEADER)
+            .expect("gateway request id");
+        assert_eq!(response.headers().get(REQUEST_ID_HEADER), Some(gateway_id));
+        Uuid::parse_str(gateway_id.to_str().expect("ASCII request id")).expect("UUID request id");
+    }
+
+    #[tokio::test]
+    async fn security_headers_preserve_an_existing_application_request_id() {
+        let app = Router::new()
+            .route("/", get(response_with_distinct_request_ids))
+            .layer(axum::middleware::from_fn(security_headers));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(
+            response.headers().get(OCTOROUTE_REQUEST_ID_HEADER),
+            Some(&HeaderValue::from_static("gateway-id"))
+        );
+        assert_eq!(
+            response.headers().get(REQUEST_ID_HEADER),
+            Some(&HeaderValue::from_static("application-id"))
+        );
+    }
 
     /// A header value that cannot be represented must cost the header, not the
     /// response. The values are validated upstream today, so this pins the

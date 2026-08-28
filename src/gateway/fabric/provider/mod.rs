@@ -8,6 +8,8 @@ mod credential;
 mod readiness;
 
 #[cfg(test)]
+mod mutation_tests;
+#[cfg(test)]
 mod tests;
 
 use body::build_open_ai_body;
@@ -327,12 +329,7 @@ impl HttpProvider {
             ProviderHttpAdapter::Anthropic { .. } => {
                 match anthropic::build_request(&self.config, request) {
                     Ok(request) => request.body,
-                    Err(error) if error.is_incompatible() => {
-                        return Ok(ProviderAdmissionOutcome::Rejected(
-                            ProviderAdmissionState::Incompatible,
-                        ));
-                    }
-                    Err(_) => return Err(ProviderRequestError::Anthropic),
+                    Err(error) => return classify_anthropic_build_error(error),
                 }
             }
         };
@@ -409,12 +406,7 @@ impl CodexProvider {
             self.environment.clone(),
         ) {
             Ok(request) => request,
-            Err(error) if error.is_incompatible() => {
-                return Ok(ProviderAdmissionOutcome::Rejected(
-                    ProviderAdmissionState::Incompatible,
-                ));
-            }
-            Err(_) => return Err(ProviderRequestError::Codex),
+            Err(error) => return classify_codex_build_error(error),
         };
         Ok(ProviderAdmissionOutcome::Admitted(Box::new(
             ProviderLease {
@@ -428,6 +420,30 @@ impl CodexProvider {
                 _permit: permit,
             },
         )))
+    }
+}
+
+fn classify_anthropic_build_error(
+    error: anthropic::AnthropicAdapterError,
+) -> Result<ProviderAdmissionOutcome, ProviderRequestError> {
+    if error.is_incompatible() {
+        Ok(ProviderAdmissionOutcome::Rejected(
+            ProviderAdmissionState::Incompatible,
+        ))
+    } else {
+        Err(ProviderRequestError::Anthropic)
+    }
+}
+
+fn classify_codex_build_error(
+    error: codex::CodexAdapterError,
+) -> Result<ProviderAdmissionOutcome, ProviderRequestError> {
+    if error.is_incompatible() {
+        Ok(ProviderAdmissionOutcome::Rejected(
+            ProviderAdmissionState::Incompatible,
+        ))
+    } else {
+        Err(ProviderRequestError::Codex)
     }
 }
 

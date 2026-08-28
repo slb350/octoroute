@@ -40,6 +40,21 @@ fn unparseable_provider_error_bodies_fall_back_to_a_fixed_message() {
     assert!(body["error"].get("upstream_type").is_none());
 }
 
+#[test]
+fn provider_error_messages_truncate_before_a_split_utf8_character() {
+    let oversized = format!("{}étail", "a".repeat(2047));
+    let upstream = json!({"error": {"message": oversized}});
+    let body: Value = serde_json::from_slice(&open_ai_error_body(
+        "provider_request_failed",
+        &serde_json::to_vec(&upstream).expect("JSON"),
+    ))
+    .expect("error JSON");
+    let message = body["error"]["message"].as_str().expect("error message");
+
+    assert_eq!(message.len(), 2047);
+    assert!(message.bytes().all(|byte| byte == b'a'));
+}
+
 /// Reporting zeros for an upstream that sent no usage tells a cost-tracking
 /// client the request was free.
 #[test]

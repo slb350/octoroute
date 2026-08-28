@@ -18,80 +18,22 @@ fn codex_request(executable: &Path, timeout: Duration) -> CodexRequest {
     }
 }
 
-#[cfg(test)]
-mod process_assertions {
-    pub(super) fn process_is_alive(pid: &str) -> bool {
-        let listed = std::process::Command::new("ps")
-            .args(["-p", pid, "-o", "pid="])
-            .output()
-            .expect("ps");
-        !String::from_utf8_lossy(&listed.stdout).trim().is_empty()
-    }
-}
-
-/// The timeout has to kill the child, not just abandon it. A CLI that never
-/// answers would otherwise keep running - holding its workspace, its share of
-/// the machine, and any subscription work it started - after Octoroute has
-/// already answered the caller.
-///
-/// The fixture records its own pid, and the deadline `run_process` is given is
-/// also that fixture's startup budget: on a loaded machine the shell may not
-/// have been scheduled by the time the deadline fires, leaving no pid to check.
-/// The budget is therefore an order of magnitude above the observed spawn
-/// latency, and a run that still never started is retried rather than read from
-/// a file that was never written.
+/// `stop` must settle the child before returning. Checking the retained handle
+/// directly avoids depending on `ps` visibility, which sandboxed macOS test
+/// processes cannot rely on.
 #[tokio::test]
-async fn the_deadline_kills_and_reaps_a_child_that_never_answers() {
-    const ATTEMPTS: u32 = 3;
-    const DEADLINE: Duration = Duration::from_secs(3);
-
+async fn stop_kills_and_reaps_the_child_before_returning() {
     let directory = tempfile::tempdir().expect("fixture directory");
-    let mut pid = None;
-    for attempt in 0..ATTEMPTS {
-        let pid_file = directory.path().join(format!("child-{attempt}.pid"));
-        let executable = fake_codex(
-            directory.path(),
-            &format!("hung-codex-{attempt}"),
-            // `exec` keeps the recorded pid as the process Octoroute holds, so
-            // the assertion below is about the child itself and not a shell
-            // wrapper.
-            &format!(
-                "#!/bin/sh\nprintf '%s' \"$$\" > {}\nexec sleep 30\n",
-                pid_file.display()
-            ),
-        );
+    let executable = fake_codex(directory.path(), "hung-codex", "#!/bin/sh\nexec sleep 30\n");
+    let mut command = tokio::process::Command::new(executable);
+    command.kill_on_drop(true);
+    let mut child = command.spawn().expect("spawn fixture");
+    assert!(child.try_wait().expect("child state").is_none());
 
-        let started = std::time::Instant::now();
-        let result = run_process(
-            &executable,
-            &[],
-            &ChildEnvironment::current(),
-            directory.path(),
-            b"",
-            DEADLINE,
-            1024,
-        )
-        .await;
-        let elapsed = started.elapsed();
-
-        assert!(matches!(result, Err(CodexAdapterError::Timeout)));
-        assert!(
-            elapsed < DEADLINE * 4,
-            "the deadline must cut the run short; took {elapsed:?}"
-        );
-        if let Ok(recorded) = std::fs::read_to_string(&pid_file) {
-            pid = Some(recorded);
-            break;
-        }
-    }
-    let pid = pid.expect("the fixture never started inside its budget in three attempts");
-
-    // `run_process` awaits the kill and the reap before returning, so this is a
-    // settled state rather than a race: a surviving `sleep 30` here means the
-    // timeout path let the child outlive the request.
+    stop(&mut child).await;
     assert!(
-        !process_assertions::process_is_alive(pid.trim()),
-        "the child must be killed and reaped on the timeout path"
+        child.try_wait().expect("reaped child state").is_some(),
+        "stop must reap the child before it returns"
     );
 }
 
@@ -182,6 +124,36 @@ fn capture_of_size(bytes: u64) -> BoundedCapture {
     let capture = BoundedCapture::new().expect("capture file");
     capture.file.set_len(bytes).expect("capture size");
     capture
+}
+
+#[test]
+fn bounded_capture_reads_exactly_the_limit_and_refuses_one_more_byte() {
+    let limit = 1024;
+    let mut at_limit = capture_of_size(limit as u64);
+    assert_eq!(
+        at_limit.read_bounded(limit).expect("exact bound").len(),
+        limit
+    );
+
+    let mut over_limit = capture_of_size(limit as u64 + 1);
+    assert!(over_limit.read_bounded(limit).is_err());
+}
+
+#[tokio::test]
+async fn child_environment_apply_clears_command_values_before_allowlisting() {
+    let environment = ChildEnvironment::from_iter([
+        (OsString::from("HOME"), OsString::from("/safe/home")),
+        (OsString::from("PATH"), OsString::from("/safe/bin")),
+    ]);
+    let mut command = tokio::process::Command::new("/usr/bin/env");
+    command.env("OCTOROUTE_TEST_SECRET", "must-not-leak");
+    environment.apply(&mut command);
+    let output = command.output().await.expect("env command");
+    assert!(output.status.success());
+    let output = String::from_utf8(output.stdout).expect("UTF-8 environment");
+    assert!(output.lines().any(|value| value == "HOME=/safe/home"));
+    assert!(output.lines().any(|value| value == "PATH=/safe/bin"));
+    assert!(!output.contains("OCTOROUTE_TEST_SECRET"));
 }
 
 /// Both captures are bounded, and stderr is the half no test reached: nothing

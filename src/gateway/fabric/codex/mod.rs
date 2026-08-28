@@ -8,8 +8,14 @@ mod events;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod mutation_tests;
+
 #[cfg(all(test, unix))]
 mod process_tests;
+
+#[cfg(test)]
+const VALID_AGENT_MESSAGE: &str = "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"content\\\":\\\"answer\\\",\\\"reasoning_content\\\":null,\\\"tool_calls\\\":[],\\\"finish_reason\\\":\\\"stop\\\"}\"}}\n";
 
 use events::{parse_events, render_open_ai_reply};
 

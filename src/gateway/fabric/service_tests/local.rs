@@ -50,6 +50,18 @@ async fn v3_worker_route_streams_through_shared_precommit_transport() {
             .and_then(|value| value.to_str().ok()),
         Some("worker-0")
     );
+    let request_id = response
+        .headers()
+        .get("x-octoroute-request-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("gateway request id");
+    assert_eq!(
+        response
+            .headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok()),
+        Some(request_id)
+    );
     let body = to_bytes(response.into_body(), 1024 * 1024)
         .await
         .expect("stream body");

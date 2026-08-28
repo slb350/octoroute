@@ -152,3 +152,20 @@ fn load_values(path: &Path) -> Result<HashMap<String, SecretString>, DotenvLoadE
     }
     Ok(file_values)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    #[test]
+    fn an_error_while_reading_entries_is_invalid_even_if_it_is_not_line_parse() {
+        let error = load_error(
+            Path::new("secrets.env"),
+            dotenvy::Error::Io(io::ErrorKind::PermissionDenied.into()),
+            true,
+        );
+
+        assert!(matches!(error, DotenvLoadError::Invalid { .. }));
+    }
+}

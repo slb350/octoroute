@@ -47,6 +47,17 @@ pub(super) const MAX_TRANSLATED_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 /// page the provider emits.
 const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
 
+#[cfg(test)]
+mod mutation_tests {
+    use super::*;
+
+    #[test]
+    fn translated_and_error_response_bounds_have_the_exact_byte_budgets() {
+        assert_eq!(MAX_TRANSLATED_RESPONSE_BYTES, 16_777_216);
+        assert_eq!(MAX_ERROR_RESPONSE_BYTES, 65_536);
+    }
+}
+
 /// The two deadlines one upstream attempt is bounded by.
 ///
 /// `total` covers the complete response and is legitimately long. `first_byte`

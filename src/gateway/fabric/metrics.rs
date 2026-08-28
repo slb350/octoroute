@@ -413,6 +413,37 @@ pub(super) const fn fallback_trigger_label(trigger: FallbackTrigger) -> &'static
 mod tests {
     use super::*;
 
+    fn config() -> FabricConfig {
+        FabricConfig::from_toml(include_str!("../../../config.toml")).expect("repository config")
+    }
+
+    #[test]
+    fn admission_and_latency_recorders_update_their_exact_series() {
+        let config = config();
+        let metrics = FabricMetrics::new(&config);
+
+        metrics.record_pool_admitted("workers");
+        metrics.record_pool_rejected("workers", PoolAdmissionState::Busy);
+        metrics.record_admitted("zai");
+        metrics.record_routing_latency(Duration::from_millis(250));
+
+        let rendered = metrics.render(&config);
+        for expected in [
+            "octoroute_fabric_pool_admissions_total{pool=\"workers\",state=\"admitted\"} 1",
+            "octoroute_fabric_pool_admissions_total{pool=\"workers\",state=\"busy\"} 1",
+            "octoroute_fabric_provider_admissions_total{provider=\"zai\",state=\"admitted\"} 1",
+            "octoroute_fabric_routing_duration_seconds_bucket{le=\"0.1\"} 0",
+            "octoroute_fabric_routing_duration_seconds_bucket{le=\"0.25\"} 1",
+            "octoroute_fabric_routing_duration_seconds_sum 0.25",
+            "octoroute_fabric_routing_duration_seconds_count 1",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing `{expected}` in:\n{rendered}"
+            );
+        }
+    }
+
     #[test]
     fn every_pool_admission_state_has_the_exact_metric_label() {
         for (state, expected) in [

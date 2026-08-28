@@ -69,6 +69,12 @@ pub(super) struct CachedHealth {
     healthy: bool,
 }
 
+impl CachedHealth {
+    fn is_fresh_at(self, now: Instant) -> bool {
+        now.saturating_duration_since(self.checked_at) < HEALTH_CACHE_TTL
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct HealthResponse {
     status: String,
@@ -141,14 +147,14 @@ impl Member {
     async fn fresh_cached_health(&self) -> Option<bool> {
         let cached = self.cached_health.lock().await;
         cached
-            .filter(|value| value.checked_at.elapsed() < HEALTH_CACHE_TTL)
+            .filter(|value| value.is_fresh_at(Instant::now()))
             .map(|value| value.healthy)
     }
 
     async fn refresh_health(&self) -> bool {
         let mut cached = self.cached_health.lock().await;
         if let Some(value) = *cached
-            && value.checked_at.elapsed() < HEALTH_CACHE_TTL
+            && value.is_fresh_at(Instant::now())
         {
             return value.healthy;
         }
@@ -276,7 +282,51 @@ fn classify_token_count_status(status: StatusCode) -> InputTokenError {
 
 #[cfg(test)]
 mod tests {
-    use super::{HealthResponse, MAX_PROBE_BODY_BYTES, bounded_json};
+    use super::{
+        CachedHealth, HEALTH_CACHE_TTL, HealthResponse, MAX_PROBE_BODY_BYTES, Member, bounded_json,
+    };
+    use reqwest::{Client, Url};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tokio::sync::{Mutex, Semaphore};
+
+    #[test]
+    fn cached_health_expires_exactly_at_its_ttl() {
+        let checked_at = Instant::now();
+        let cached = CachedHealth {
+            checked_at,
+            healthy: true,
+        };
+
+        assert!(cached.is_fresh_at(checked_at));
+        assert!(cached.is_fresh_at(checked_at + HEALTH_CACHE_TTL - Duration::from_nanos(1)));
+        assert!(!cached.is_fresh_at(checked_at + HEALTH_CACHE_TTL));
+        assert!(!cached.is_fresh_at(checked_at + HEALTH_CACHE_TTL + Duration::from_nanos(1)));
+    }
+
+    #[tokio::test]
+    async fn fresh_cached_health_returns_the_cached_verdict() {
+        let url = Url::parse("http://127.0.0.1/").expect("URL");
+        let member = Member {
+            name: "worker-0".to_string(),
+            priority: 1,
+            api_key: None,
+            client: Client::new(),
+            health_url: url.clone(),
+            slots_url: url.clone(),
+            input_tokens_url: url.clone(),
+            chat_url: url,
+            permits: Arc::new(Semaphore::new(1)),
+            max_in_flight: 1,
+            cached_health: Mutex::new(Some(CachedHealth {
+                checked_at: Instant::now(),
+                healthy: false,
+            })),
+            token_count_timeout: Duration::from_secs(1),
+        };
+
+        assert_eq!(member.fresh_cached_health().await, Some(false));
+    }
 
     /// A `/health` body of exactly `bytes` bytes, delivered as one frame.
     ///

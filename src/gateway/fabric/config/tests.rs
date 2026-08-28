@@ -196,6 +196,22 @@ fn http_provider_requires_exactly_one_credential_source() {
 }
 
 #[test]
+fn http_provider_accepts_and_preserves_a_command_credential() {
+    let input = config_with(
+        "api_key_env = \"KIMI_API_KEY\"",
+        "api_key_command = [\"secret-tool\", \"lookup\", \"kimi\"]",
+    );
+    let config = FabricConfig::from_toml(&input).expect("command credential is valid");
+    let ProviderRuntimeConfig::Http { credential, .. } = &config.providers["kimi"].runtime else {
+        panic!("Kimi is an HTTP provider");
+    };
+    let ProviderCredentialConfig::Command(command) = credential else {
+        panic!("the command credential must be retained");
+    };
+    assert_eq!(command, &["secret-tool", "lookup", "kimi"]);
+}
+
+#[test]
 fn anthropic_provider_requires_a_bounded_default_max_tokens() {
     let input = config_with("max_tokens = 200000\n", "");
     let error = FabricConfig::from_toml(&input).expect_err("Anthropic max_tokens is required");
@@ -210,12 +226,21 @@ fn codex_provider_accepts_only_an_executable_override() {
     };
     assert_eq!(executable, "codex");
 
-    let input = config_with(
-        "executable = \"codex\"",
-        "executable = \"codex\"\napi_key_env = \"OPENAI_API_KEY\"",
-    );
-    let error = FabricConfig::from_toml(&input).expect_err("Codex credentials are forbidden");
-    assert!(error.to_string().contains("codex_cli"));
+    for forbidden in [
+        "api_key_env = \"OPENAI_API_KEY\"",
+        "endpoint = \"https://api.example.com/v1\"",
+        "temperature = 0.2",
+        "max_tokens = 1024",
+        "profile = \"open_router_auto\"",
+    ] {
+        let input = config_with(
+            "executable = \"codex\"",
+            &format!("executable = \"codex\"\n{forbidden}"),
+        );
+        let error =
+            FabricConfig::from_toml(&input).expect_err(&format!("Codex must reject `{forbidden}`"));
+        assert!(error.to_string().contains("codex_cli"));
+    }
 }
 
 #[test]
@@ -510,4 +535,17 @@ fn local_pool_deadlines_are_bounded_against_their_own_limits() {
     let error = FabricConfig::from_toml(&first_byte)
         .expect_err("a first-byte deadline cannot exceed the total");
     assert!(error.to_string().contains("first_byte_timeout_ms"));
+}
+
+#[test]
+fn local_pool_output_budget_must_be_positive_and_leave_input_room() {
+    for output_tokens in [0, 129_024] {
+        let input = config_with(
+            "context_safety_tokens = 2048\ndefault_max_output_tokens = 16384",
+            &format!("context_safety_tokens = 2048\ndefault_max_output_tokens = {output_tokens}"),
+        );
+        let error = FabricConfig::from_toml(&input)
+            .expect_err(&format!("output budget {output_tokens} must be rejected"));
+        assert!(error.to_string().contains("default_max_output_tokens"));
+    }
 }

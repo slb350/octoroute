@@ -131,8 +131,8 @@ struct RawLocalMemberConfig {
     enabled: bool,
     base_url: String,
     api_key_env: Option<String>,
-    #[serde(default = "default_member_max_in_flight")]
-    max_in_flight: usize,
+    #[serde(default)]
+    max_in_flight: Option<usize>,
     #[serde(default = "default_priority")]
     priority: u16,
 }
@@ -149,8 +149,8 @@ struct RawProviderConfig {
     model: String,
     api_key_env: Option<String>,
     api_key_command: Option<Vec<String>>,
-    #[serde(default = "default_provider_max_in_flight")]
-    max_in_flight: usize,
+    #[serde(default)]
+    max_in_flight: Option<usize>,
     #[serde(default = "default_provider_timeout_ms")]
     timeout_ms: u64,
     #[serde(default)]
@@ -331,9 +331,10 @@ fn validate_local_pools(
                     format!("duplicate member `{}`", member.name),
                 ));
             }
+            let max_in_flight = member.max_in_flight.unwrap_or(DEFAULT_MEMBER_MAX_IN_FLIGHT);
             validate_usize_range(
                 "fabric.local_pools.members.max_in_flight",
-                member.max_in_flight,
+                max_in_flight,
                 MAX_CONCURRENCY,
             )?;
             if let Some(name) = member.api_key_env.as_deref() {
@@ -352,7 +353,7 @@ fn validate_local_pools(
                     url
                 },
                 api_key_env: member.api_key_env,
-                max_in_flight: member.max_in_flight,
+                max_in_flight,
                 priority: member.priority,
             });
         }
@@ -401,12 +402,6 @@ const fn default_server_max_in_flight() -> usize {
 }
 const fn default_server_requests_per_minute() -> u32 {
     DEFAULT_SERVER_REQUESTS_PER_MINUTE
-}
-const fn default_member_max_in_flight() -> usize {
-    DEFAULT_MEMBER_MAX_IN_FLIGHT
-}
-const fn default_provider_max_in_flight() -> usize {
-    DEFAULT_PROVIDER_MAX_IN_FLIGHT
 }
 const fn default_context_safety_tokens() -> u32 {
     DEFAULT_CONTEXT_SAFETY_TOKENS

@@ -6,6 +6,9 @@
 mod responses;
 mod routing;
 
+#[cfg(test)]
+mod mutation_tests;
+
 use responses::{resolve_secret, route_error};
 
 use super::http_support::{
@@ -276,10 +279,8 @@ where
         // would still produce N `codex doctor` spawns and N probe sets.
         // `Member::refresh_health` uses the same shape.
         let mut cached = self.readiness_cache.lock().await;
-        if let Some((probed_at, readiness)) = cached.as_ref()
-            && probed_at.elapsed() < READINESS_SNAPSHOT_TTL
-        {
-            return readiness.clone();
+        if let Some(readiness) = fresh_readiness_snapshot(cached.as_ref(), Instant::now()) {
+            return readiness;
         }
         let readiness = self.readiness().await;
         *cached = Some((Instant::now(), readiness.clone()));
@@ -382,6 +383,15 @@ where
         };
         self.dispatch_route(&request, &plan, request_id).await
     }
+}
+
+fn fresh_readiness_snapshot(
+    cached: Option<&(Instant, FabricReadiness)>,
+    now: Instant,
+) -> Option<FabricReadiness> {
+    cached
+        .filter(|(probed_at, _)| now.saturating_duration_since(*probed_at) < READINESS_SNAPSHOT_TTL)
+        .map(|(_, readiness)| readiness.clone())
 }
 
 impl FabricGatewayService<FabricTransport> {

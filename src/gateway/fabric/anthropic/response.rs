@@ -157,7 +157,8 @@ fn truncate_on_char_boundary(value: &str, limit: usize) -> String {
         return value.to_string();
     }
     let mut end = limit;
-    while end > 0 && !value.is_char_boundary(end) {
+    // Byte index zero is always a character boundary, so this cannot underflow.
+    while !value.is_char_boundary(end) {
         end -= 1;
     }
     value[..end].to_string()
@@ -518,4 +519,26 @@ fn unix_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_sse_event, truncate_on_char_boundary};
+
+    #[test]
+    fn utf8_truncation_preserves_exact_boundaries_and_backs_up_from_split_characters() {
+        let value = "A🙂B";
+
+        assert_eq!(truncate_on_char_boundary(value, 5), "A🙂");
+        assert_eq!(truncate_on_char_boundary(value, 4), "A");
+    }
+
+    #[test]
+    fn sse_data_lines_are_joined_with_exactly_one_newline() {
+        let event =
+            parse_sse_event(b"event: future\ndata: first\ndata: second").expect("valid SSE event");
+
+        assert_eq!(event.name, Some("future"));
+        assert_eq!(event.data, b"first\nsecond");
+    }
 }

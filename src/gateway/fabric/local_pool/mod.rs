@@ -4,6 +4,9 @@
 
 mod member;
 
+#[cfg(test)]
+mod mutation_tests;
+
 use member::{InputTokenError, Member, MemberState};
 
 use super::transport::UpstreamDeadlines;

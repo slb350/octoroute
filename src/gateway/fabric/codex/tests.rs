@@ -51,8 +51,6 @@ fn diagnostic_accepts_only_chatgpt_managed_auth() {
     ));
 }
 
-const VALID_AGENT_MESSAGE: &str = "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"content\\\":\\\"answer\\\",\\\"reasoning_content\\\":null,\\\"tool_calls\\\":[],\\\"finish_reason\\\":\\\"stop\\\"}\"}}\n";
-
 /// Every tool integration is disabled on the command line, so an item saying
 /// one ran means the isolation failed. The reply payload here is valid and the
 /// run is complete, so the only thing that can reject it is the tool item.
