@@ -8,7 +8,6 @@ mod http_support;
 mod local_pool;
 mod metrics;
 mod policy;
-mod presets;
 mod provider;
 mod service;
 mod transport;
@@ -23,11 +22,7 @@ pub use http::fabric_gateway_app;
 pub use local_pool::{
     LlamaCppPool, LlamaCppPoolBuildError, PoolAdmissionOutcome, PoolAdmissionState, PoolLease,
 };
-pub use policy::{
-    FabricRouteError, LocalRequirements, LocalSelection, MemberSnapshot, PoolSelectionError,
-    PrivacyDirective, PrivacyDirectiveError, RoutePlan,
-};
-pub use presets::{PROVIDER_PRESETS, ProviderPreset, provider_preset};
+pub use policy::{FabricRouteError, PrivacyDirective, PrivacyDirectiveError, RoutePlan};
 pub use provider::{
     ProviderAdmissionOutcome, ProviderAdmissionState, ProviderLease, ProviderRegistry,
     ProviderRegistryBuildError, ProviderRequestError,

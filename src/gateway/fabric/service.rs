@@ -24,7 +24,7 @@ use axum::{
 };
 use futures::future::join_all;
 use reqwest::Client;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -646,14 +646,18 @@ fn resolve_secret(
 ) -> Result<SecretString, FabricGatewayServiceBuildError> {
     let value = environment
         .get(name)
-        .filter(|value| !value.trim().is_empty())
+        .filter(|value| !value.expose_secret().trim().is_empty())
         .ok_or_else(
             || FabricGatewayServiceBuildError::MissingEnvironmentVariable {
                 field: field.to_string(),
                 name: name.to_string(),
             },
         )?;
-    if !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+    if !value
+        .expose_secret()
+        .bytes()
+        .all(|byte| (0x21..=0x7e).contains(&byte))
+    {
         return Err(FabricGatewayServiceBuildError::InvalidCredential {
             field: field.to_string(),
         });

@@ -1,6 +1,6 @@
 //! Secret-bearing process and repository `.env` configuration.
 
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
 use std::{
     collections::HashMap,
     fmt,
@@ -11,7 +11,11 @@ use thiserror::Error;
 /// Source used to resolve secret-bearing environment variables.
 pub trait Environment {
     /// Return an environment variable without logging its value.
-    fn get(&self, name: &str) -> Option<String>;
+    ///
+    /// The value is a [`SecretString`] because every caller of this trait is
+    /// resolving a credential. A plain `String` puts the secret one `Debug`
+    /// format or stray interpolation away from a log line.
+    fn get(&self, name: &str) -> Option<SecretString>;
 }
 
 /// Environment source backed by the current process.
@@ -19,8 +23,8 @@ pub trait Environment {
 pub struct ProcessEnvironment;
 
 impl Environment for ProcessEnvironment {
-    fn get(&self, name: &str) -> Option<String> {
-        std::env::var(name).ok()
+    fn get(&self, name: &str) -> Option<SecretString> {
+        std::env::var(name).ok().map(SecretString::from)
     }
 }
 
@@ -55,12 +59,10 @@ impl<E> DotenvEnvironment<E> {
 }
 
 impl<E: Environment> Environment for DotenvEnvironment<E> {
-    fn get(&self, name: &str) -> Option<String> {
-        self.parent.get(name).or_else(|| {
-            self.file_values
-                .get(name)
-                .map(|value| value.expose_secret().to_string())
-        })
+    fn get(&self, name: &str) -> Option<SecretString> {
+        self.parent
+            .get(name)
+            .or_else(|| self.file_values.get(name).cloned())
     }
 }
 

@@ -765,21 +765,24 @@ async fn resolve_command_credential(
         return Err(ProviderCredentialError::CommandFailed);
     }
     let output = String::from_utf8(output).map_err(|_| ProviderCredentialError::Invalid)?;
-    validate_credential(output.trim_end_matches(['\r', '\n']).to_string())
+    validate_credential(SecretString::from(
+        output.trim_end_matches(['\r', '\n']).to_string(),
+    ))
 }
 
 async fn terminate(child: &mut Child) {
     let _ = child.kill().await;
 }
 
-fn validate_credential(value: String) -> Result<SecretString, ProviderCredentialError> {
-    if value.is_empty()
-        || value.len() > MAX_CREDENTIAL_BYTES
-        || !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+fn validate_credential(value: SecretString) -> Result<SecretString, ProviderCredentialError> {
+    let candidate = value.expose_secret();
+    if candidate.is_empty()
+        || candidate.len() > MAX_CREDENTIAL_BYTES
+        || !candidate.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
     {
         return Err(ProviderCredentialError::Invalid);
     }
-    Ok(SecretString::from(value))
+    Ok(value)
 }
 
 fn invalid_provider(config: &ProviderConfig) -> ProviderRegistryBuildError {

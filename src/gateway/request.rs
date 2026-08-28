@@ -23,11 +23,23 @@ pub enum RequestFeature {
 }
 
 /// Bounded chat request retaining both original bytes and parsed JSON.
-#[derive(Debug)]
 pub struct GatewayRequest {
     body: Map<String, Value>,
     model: String,
     features: OnceLock<BTreeSet<RequestFeature>>,
+}
+
+/// Redacting `Debug`: the body is the client's prompt, and safe logs must never
+/// contain request bodies. A derived impl would print the whole prompt from a
+/// single `?request` in a `tracing` call.
+impl std::fmt::Debug for GatewayRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GatewayRequest")
+            .field("model", &self.model)
+            .field("body", &"<redacted>")
+            .finish()
+    }
 }
 
 impl GatewayRequest {

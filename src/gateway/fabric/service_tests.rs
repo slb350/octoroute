@@ -7,6 +7,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, Response, header::AUTHORIZATION},
 };
 use reqwest::Url;
+use secrecy::SecretString;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -35,12 +36,12 @@ impl TestEnvironment {
 }
 
 impl Environment for TestEnvironment {
-    fn get(&self, name: &str) -> Option<String> {
+    fn get(&self, name: &str) -> Option<SecretString> {
         self.reads
             .lock()
             .expect("reads mutex")
             .push(name.to_string());
-        self.values.get(name).cloned()
+        self.values.get(name).cloned().map(SecretString::from)
     }
 }
 

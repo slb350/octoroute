@@ -1,4 +1,5 @@
 use super::env::{DotenvEnvironment, DotenvLoadError, Environment};
+use secrecy::{ExposeSecret, SecretString};
 use std::{collections::BTreeMap, path::Path};
 use tempfile::NamedTempFile;
 
@@ -15,8 +16,8 @@ impl TestEnvironment {
 }
 
 impl Environment for TestEnvironment {
-    fn get(&self, name: &str) -> Option<String> {
-        self.values.get(name).cloned()
+    fn get(&self, name: &str) -> Option<SecretString> {
+        self.values.get(name).cloned().map(SecretString::from)
     }
 }
 
@@ -38,11 +39,17 @@ OCTOROUTE_API_KEY=file-inbound-key
         .expect("valid dotenv file");
 
     assert_eq!(
-        environment.get("OPENROUTER_API_KEY").as_deref(),
+        environment
+            .get("OPENROUTER_API_KEY")
+            .as_ref()
+            .map(ExposeSecret::expose_secret),
         Some("file-openrouter-key")
     );
     assert_eq!(
-        environment.get("OCTOROUTE_API_KEY").as_deref(),
+        environment
+            .get("OCTOROUTE_API_KEY")
+            .as_ref()
+            .map(ExposeSecret::expose_secret),
         Some("file-inbound-key")
     );
 }
@@ -54,7 +61,10 @@ fn parent_environment_overrides_dotenv_file() {
     let environment = DotenvEnvironment::from_path(file.path(), parent).expect("valid dotenv file");
 
     assert_eq!(
-        environment.get("OPENROUTER_API_KEY").as_deref(),
+        environment
+            .get("OPENROUTER_API_KEY")
+            .as_ref()
+            .map(ExposeSecret::expose_secret),
         Some("process-key")
     );
 }
@@ -67,7 +77,10 @@ fn optional_missing_dotenv_file_uses_parent_environment() {
             .expect("missing optional dotenv file");
 
     assert_eq!(
-        environment.get("OPENROUTER_API_KEY").as_deref(),
+        environment
+            .get("OPENROUTER_API_KEY")
+            .as_ref()
+            .map(ExposeSecret::expose_secret),
         Some("process-key")
     );
 }

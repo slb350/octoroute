@@ -1,6 +1,7 @@
 use super::{FabricConfig, LlamaCppPool, LlamaCppPoolBuildError, PoolAdmissionState, PoolLease};
 use crate::gateway::{env::Environment, request::GatewayRequest};
 use reqwest::Url;
+use secrecy::SecretString;
 use serde_json::json;
 use std::collections::BTreeSet;
 use wiremock::{
@@ -12,7 +13,7 @@ use wiremock::{
 struct EmptyEnvironment;
 
 impl Environment for EmptyEnvironment {
-    fn get(&self, _name: &str) -> Option<String> {
+    fn get(&self, _name: &str) -> Option<SecretString> {
         None
     }
 }
@@ -20,8 +21,8 @@ impl Environment for EmptyEnvironment {
 struct InvalidCredentialEnvironment;
 
 impl Environment for InvalidCredentialEnvironment {
-    fn get(&self, _name: &str) -> Option<String> {
-        Some("invalid credential\n".to_string())
+    fn get(&self, _name: &str) -> Option<SecretString> {
+        Some(SecretString::from("invalid credential\n"))
     }
 }
 
@@ -94,6 +95,31 @@ async fn mount_ready(server: &MockServer, input_tokens: u32, output_tokens: u32)
             ResponseTemplate::new(200).set_body_json(json!({"input_tokens": input_tokens})),
         )
         .expect(1)
+        .mount(server)
+        .await;
+}
+
+/// As [`mount_ready`], without pinning per-server call counts.
+///
+/// Selection tests dispatch to one member of several, so the members that lose
+/// the selection legitimately receive probes but no token count.
+async fn mount_available(server: &MockServer, input_tokens: u32, output_tokens: u32) {
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/slots"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])))
+        .mount(server)
+        .await;
+    let _ = output_tokens;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions/input_tokens"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"input_tokens": input_tokens})),
+        )
         .mount(server)
         .await;
 }
@@ -235,5 +261,65 @@ fn referenced_local_member_secret_must_be_header_safe_at_startup() {
     assert!(matches!(
         error,
         LlamaCppPoolBuildError::InvalidCredential { .. }
+    ));
+}
+
+/// Member `priority` sorts ascending: a lower number is preferred. This is the
+/// production selection path, not a parallel copy of its ordering rules.
+#[tokio::test]
+async fn lower_priority_number_is_preferred_over_rotation() {
+    let servers = [
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+    ];
+    for server in &servers {
+        mount_available(server, 20_000, 16_000).await;
+    }
+    let mut config = worker_pool(&servers);
+    // worker-2 is the least preferred by rotation and the most preferred by
+    // priority, so only priority can explain selecting it first.
+    config.members[0].priority = 100;
+    config.members[1].priority = 100;
+    config.members[2].priority = 10;
+    let pool = LlamaCppPool::new(&config, &EmptyEnvironment).expect("pool");
+
+    let lease = lease(pool.try_admit(&request(16_000)).await.expect("admission"));
+    assert_eq!(lease.member(), "worker-2");
+}
+
+/// A member whose token-count endpoint stops answering is distinguishable from
+/// an unreachable one, and readiness reports it rather than claiming `ready`.
+#[tokio::test]
+async fn missing_token_count_endpoint_is_reported_rather_than_silently_ready() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/slots"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions/input_tokens"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let mut config = example().local_pools["workers"].clone();
+    config.members.truncate(1);
+    config.members[0].base_url = Url::parse(&server.uri()).expect("mock URL");
+    let pool = LlamaCppPool::new(&config, &EmptyEnvironment).expect("pool");
+
+    assert_eq!(
+        pool.readiness_state().await,
+        super::PoolAdmissionState::TokenCountUnavailable
+    );
+    assert!(matches!(
+        pool.try_admit(&request(16_000)).await.expect("admission"),
+        super::PoolAdmissionOutcome::Rejected(super::PoolAdmissionState::TokenCountUnavailable)
     ));
 }

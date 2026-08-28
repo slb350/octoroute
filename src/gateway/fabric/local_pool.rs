@@ -8,7 +8,7 @@ use crate::gateway::{
 };
 use bytes::Bytes;
 use reqwest::{Client, StatusCode, Url};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::{
     collections::BTreeSet,
@@ -72,7 +72,6 @@ pub enum PoolAdmissionState {
 }
 
 /// Lease held through the complete upstream response body.
-#[derive(Debug)]
 pub struct PoolLease {
     pool: String,
     member: String,
@@ -82,6 +81,21 @@ pub struct PoolLease {
     request_body: Bytes,
     timeout: Duration,
     _permit: OwnedSemaphorePermit,
+}
+
+/// Redacting `Debug`: a lease holds the serialized prompt and the member
+/// credential, so a derived impl would write both to any log that formats it.
+impl std::fmt::Debug for PoolLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PoolLease")
+            .field("pool", &self.pool)
+            .field("member", &self.member)
+            .field("model_revision", &self.model_revision)
+            .field("request_body", &"<redacted>")
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
 }
 
 impl PoolLease {
@@ -233,17 +247,21 @@ impl LlamaCppPool {
                 Some(name) => {
                     let value = environment
                         .get(name)
-                        .filter(|value| !value.is_empty())
+                        .filter(|value| !value.expose_secret().is_empty())
                         .ok_or_else(|| LlamaCppPoolBuildError::MissingEnvironmentVariable {
                             member: member.name.clone(),
                             name: name.to_string(),
                         })?;
-                    if !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+                    if !value
+                        .expose_secret()
+                        .bytes()
+                        .all(|byte| (0x21..=0x7e).contains(&byte))
+                    {
                         return Err(LlamaCppPoolBuildError::InvalidCredential {
                             member: member.name.clone(),
                         });
                     }
-                    Some(SecretString::from(value))
+                    Some(value)
                 }
                 None => None,
             };

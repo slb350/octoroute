@@ -9,6 +9,7 @@ use octoroute::gateway::{
     fabric::{FabricConfig, FabricGatewayService, fabric_gateway_app},
 };
 use reqwest::Url;
+use secrecy::SecretString;
 use serde_json::json;
 use std::{
     collections::BTreeMap,
@@ -43,12 +44,12 @@ impl TestEnvironment {
 }
 
 impl Environment for TestEnvironment {
-    fn get(&self, name: &str) -> Option<String> {
+    fn get(&self, name: &str) -> Option<SecretString> {
         self.reads
             .lock()
             .expect("reads mutex")
             .push(name.to_string());
-        self.values.get(name).cloned()
+        self.values.get(name).cloned().map(SecretString::from)
     }
 }
 
