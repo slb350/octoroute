@@ -244,26 +244,31 @@ fn a_reassembled_tool_call_keeps_its_index() {
 }
 
 /// `name` differentiates participants on every OpenAI message role. Anthropic
-/// has no per-message author field, so it is dropped rather than refused.
+/// has no equivalent author field, so non-null names must fail closed.
 #[test]
-fn a_participant_name_is_accepted_on_every_role() {
+fn a_participant_name_fails_closed_on_every_role() {
+    let config = config();
+    for message in [
+        json!({"role": "system", "content": "be brief", "name": "policy"}),
+        json!({"role": "user", "content": "go", "name": "alice"}),
+        json!({"role": "assistant", "content": "done", "name": "bob"}),
+        json!({"role": "tool", "tool_call_id": "call-1", "content": "out", "name": "f"}),
+    ] {
+        let mut messages = vec![json!({"role": "user", "content": "go"})];
+        messages.push(message);
+        let error = build_request(
+            &config.providers["kimi"],
+            &request(json!({"model": "cloud-sota", "messages": messages})),
+        )
+        .expect_err("participant identity must not be erased");
+        assert!(error.is_incompatible());
+    }
+
     let body = translate(json!({
         "model": "cloud-sota",
-        "messages": [
-            {"role": "system", "content": "be brief", "name": "policy"},
-            {"role": "user", "content": "go", "name": "alice"},
-            {"role": "assistant", "content": null, "name": "bob", "tool_calls": [{
-                "id": "call-1",
-                "type": "function",
-                "function": {"name": "f", "arguments": "{}"}
-            }]},
-            {"role": "tool", "tool_call_id": "call-1", "content": "out", "name": "f"}
-        ]
+        "messages": [{"role": "user", "content": "go", "name": null}]
     }));
-    assert_eq!(body["system"][0]["text"], "be brief");
     assert_eq!(body["messages"][0]["content"][0]["text"], "go");
-    assert_eq!(body["messages"][1]["content"][0]["type"], "tool_use");
-    assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
 }
 
 /// Array-shaped content is the other spelling of every role's content, and it

@@ -9,6 +9,7 @@ mod http_support;
 mod local_pool;
 mod metrics;
 mod policy;
+mod process_group;
 mod provider;
 mod service;
 mod transport;

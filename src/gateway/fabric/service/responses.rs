@@ -140,6 +140,20 @@ pub(super) fn provider_credential_rejected(request_id: &str) -> Response<Body> {
     )
 }
 
+/// A local worker rejected Octoroute's own credential after admission.
+///
+/// The upstream authentication status belongs to the gateway-to-worker hop,
+/// not to the caller-to-gateway hop, so it must never cross the boundary.
+pub(super) fn local_credential_rejected(request_id: &str) -> Response<Body> {
+    error_response(
+        StatusCode::BAD_GATEWAY,
+        "the selected local worker rejected the gateway credential",
+        "upstream_error",
+        "local_credential_rejected",
+        request_id,
+    )
+}
+
 pub(super) fn pool_state_error(state: PoolAdmissionState, request_id: &str) -> Response<Body> {
     let (status, message, code) = match state {
         PoolAdmissionState::Ready => (

@@ -25,12 +25,14 @@ use super::{
     PoolStrategy, ProviderKind, ProviderProfile, ProviderProtocol, ReasoningEffort, RoutePrivacy,
 };
 pub(super) const DEFAULT_SERVER_MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+pub(super) const DEFAULT_SERVER_REQUEST_BODY_TIMEOUT_MS: u64 = 30_000;
 pub(super) const DEFAULT_SERVER_MAX_HEADER_BYTES: usize = 32 * 1024;
 pub(super) const DEFAULT_SERVER_MAX_IN_FLIGHT: usize = 64;
 pub(super) const DEFAULT_SERVER_REQUESTS_PER_MINUTE: u32 = 120;
 pub(super) const DEFAULT_MEMBER_MAX_IN_FLIGHT: usize = 1;
 pub(super) const DEFAULT_PROVIDER_MAX_IN_FLIGHT: usize = 1;
 pub(super) const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const MAX_SERVER_REQUEST_BODY_TIMEOUT_MS: u64 = 300_000;
 pub(super) const MAX_HEADER_BYTES: usize = 1024 * 1024;
 pub(super) const MAX_CONCURRENCY: usize = 10_000;
 pub(super) const MAX_REQUESTS_PER_MINUTE: u32 = 1_000_000;
@@ -78,6 +80,8 @@ struct RawServerConfig {
     api_key_env: String,
     #[serde(default = "default_server_max_request_bytes")]
     max_request_bytes: usize,
+    #[serde(default = "default_server_request_body_timeout_ms")]
+    request_body_timeout_ms: u64,
     #[serde(default = "default_server_max_header_bytes")]
     max_header_bytes: usize,
     #[serde(default = "default_server_max_in_flight")]
@@ -249,6 +253,11 @@ impl RawServerConfig {
             self.max_request_bytes,
             MAX_REQUEST_BYTES,
         )?;
+        validate_u64_range(
+            "server.request_body_timeout_ms",
+            self.request_body_timeout_ms,
+            MAX_SERVER_REQUEST_BODY_TIMEOUT_MS,
+        )?;
         validate_usize_range(
             "server.max_header_bytes",
             self.max_header_bytes,
@@ -265,6 +274,7 @@ impl RawServerConfig {
             port: self.port,
             api_key_env: self.api_key_env,
             max_request_bytes: self.max_request_bytes,
+            request_body_timeout_ms: self.request_body_timeout_ms,
             max_header_bytes: self.max_header_bytes,
             max_in_flight: self.max_in_flight,
             requests_per_minute: self.requests_per_minute,
@@ -393,6 +403,9 @@ fn validate_local_pools(
 
 const fn default_server_max_request_bytes() -> usize {
     DEFAULT_SERVER_MAX_REQUEST_BYTES
+}
+const fn default_server_request_body_timeout_ms() -> u64 {
+    DEFAULT_SERVER_REQUEST_BODY_TIMEOUT_MS
 }
 const fn default_server_max_header_bytes() -> usize {
     DEFAULT_SERVER_MAX_HEADER_BYTES

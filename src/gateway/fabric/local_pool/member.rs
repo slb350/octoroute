@@ -2,6 +2,7 @@
 
 use super::{HEALTH_CACHE_TTL, PROBE_TIMEOUT, PoolAdmissionState};
 use crate::gateway::fabric::bounded_response::{self, BoundedResponseError};
+use crate::gateway::fabric::provider::is_upstream_credential_rejection;
 use crate::gateway::http_client::authorized;
 use bytes::Bytes;
 use reqwest::{Client, Response, StatusCode, Url};
@@ -66,7 +67,7 @@ pub(super) struct Member {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CachedHealth {
     checked_at: Instant,
-    healthy: bool,
+    state: MemberState,
 }
 
 impl CachedHealth {
@@ -95,6 +96,7 @@ pub(super) enum MemberState {
     Ready,
     Busy,
     Unhealthy,
+    Unauthenticated,
 }
 
 /// Why a token count could not be obtained from a member.
@@ -129,44 +131,42 @@ pub(super) enum InputTokenError {
 
 impl Member {
     pub(super) async fn availability_state(&self) -> MemberState {
-        if let Some(healthy) = self.fresh_cached_health().await {
-            return if healthy {
-                self.slot_state().await
-            } else {
-                MemberState::Unhealthy
+        if let Some(state) = self.fresh_cached_health().await {
+            return match state {
+                MemberState::Ready => self.slot_state().await,
+                other => other,
             };
         }
-        let (healthy, slot) = tokio::join!(self.refresh_health(), self.slot_state());
-        if healthy {
-            slot
-        } else {
-            MemberState::Unhealthy
+        let (health, slot) = tokio::join!(self.refresh_health(), self.slot_state());
+        match health {
+            MemberState::Ready => slot,
+            other => other,
         }
     }
 
-    async fn fresh_cached_health(&self) -> Option<bool> {
+    async fn fresh_cached_health(&self) -> Option<MemberState> {
         let cached = self.cached_health.lock().await;
         cached
             .filter(|value| value.is_fresh_at(Instant::now()))
-            .map(|value| value.healthy)
+            .map(|value| value.state)
     }
 
-    async fn refresh_health(&self) -> bool {
+    async fn refresh_health(&self) -> MemberState {
         let mut cached = self.cached_health.lock().await;
         if let Some(value) = *cached
             && value.is_fresh_at(Instant::now())
         {
-            return value.healthy;
+            return value.state;
         }
-        let healthy = self.probe_health().await;
+        let state = self.probe_health().await;
         *cached = Some(CachedHealth {
             checked_at: Instant::now(),
-            healthy,
+            state,
         });
-        healthy
+        state
     }
 
-    async fn probe_health(&self) -> bool {
+    async fn probe_health(&self) -> MemberState {
         match authorized(
             self.client.get(self.health_url.clone()),
             self.api_key.as_ref(),
@@ -176,11 +176,19 @@ impl Member {
         .await
         {
             Ok(response) if response.status().is_success() => {
-                bounded_json::<HealthResponse>(response)
+                if bounded_json::<HealthResponse>(response)
                     .await
                     .is_some_and(|response| response.status == "ok")
+                {
+                    MemberState::Ready
+                } else {
+                    MemberState::Unhealthy
+                }
             }
-            _ => false,
+            Ok(response) if is_upstream_credential_rejection(response.status()) => {
+                MemberState::Unauthenticated
+            }
+            _ => MemberState::Unhealthy,
         }
     }
 
@@ -198,6 +206,9 @@ impl Member {
         };
         if response.status() == StatusCode::SERVICE_UNAVAILABLE {
             return MemberState::Busy;
+        }
+        if is_upstream_credential_rejection(response.status()) {
+            return MemberState::Unauthenticated;
         }
         if !response.status().is_success() {
             return MemberState::Unhealthy;
@@ -295,7 +306,7 @@ mod tests {
         let checked_at = Instant::now();
         let cached = CachedHealth {
             checked_at,
-            healthy: true,
+            state: super::MemberState::Ready,
         };
 
         assert!(cached.is_fresh_at(checked_at));
@@ -320,12 +331,15 @@ mod tests {
             max_in_flight: 1,
             cached_health: Mutex::new(Some(CachedHealth {
                 checked_at: Instant::now(),
-                healthy: false,
+                state: super::MemberState::Unhealthy,
             })),
             token_count_timeout: Duration::from_secs(1),
         };
 
-        assert_eq!(member.fresh_cached_health().await, Some(false));
+        assert_eq!(
+            member.fresh_cached_health().await,
+            Some(super::MemberState::Unhealthy)
+        );
     }
 
     /// A `/health` body of exactly `bytes` bytes, delivered as one frame.

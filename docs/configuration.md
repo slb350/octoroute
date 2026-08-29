@@ -17,6 +17,7 @@ host = "0.0.0.0"
 port = 8081
 api_key_env = "OCTOROUTE_API_KEY"
 max_request_bytes = 8388608
+request_body_timeout_ms = 30000
 max_header_bytes = 32768
 max_in_flight = 64
 requests_per_minute = 120
@@ -25,6 +26,9 @@ requests_per_minute = 120
 `api_key_env` names the inbound bearer secret. The process environment takes
 precedence over the optional `.env` beside the selected config file. Raw
 credentials are never valid TOML fields.
+
+`request_body_timeout_ms` bounds the complete authenticated request-body read,
+so a slow client cannot occupy an inbound concurrency slot indefinitely.
 
 ## Local pools
 
@@ -47,7 +51,7 @@ default_reasoning_effort = "medium"
 
 [[fabric.local_pools.members]]
 name = "worker-0"
-base_url = "http://worker-0.local:8000"
+base_url = "http://192.168.1.20:8000"
 max_in_flight = 1
 priority = 100
 ```
@@ -66,12 +70,10 @@ that outranks load: a busy `priority = 10` member loses to an idle
 `priority = 100` one. It cannot pin traffic to a particular member, and it never
 revives one that is unhealthy or out of permits.
 
-A member address must be loopback, private-range, link-local, or a `.local`,
-`.localhost`, `.internal`, or `.home.arpa` name. A public address is refused at
-startup, which is what makes `local-only` a guarantee rather than a convention.
-Carrier-grade NAT (100.64.0.0/10) is not private range, so a member reached over
-a mesh network such as Tailscale is refused; give it a `.local` name or a
-private-range address instead.
+A member address must be an explicit loopback, private-range, or link-local IP
+literal. Hostnames are refused because a private-looking name can resolve to a
+public destination after configuration validation. Public and carrier-grade NAT
+(100.64.0.0/10) addresses are also refused at startup.
 
 Admission checks the request first, then each member in turn:
 
@@ -203,7 +205,8 @@ forward only when the route allows `incompatible`.
 
 Every provider accepts `readiness_ttl_ms` and `readiness_timeout_ms`. Defaults
 are 30 seconds; the maximum TTL is one hour and the maximum probe timeout is
-five minutes. HTTP probes resolve the lazy credential and issue a body-free
+five minutes. Set `readiness_ttl_ms = 0` to probe on every readiness pass.
+HTTP probes resolve the lazy credential and issue a body-free
 authenticated `GET` to the derived `models` URL. Codex probes run
 `doctor --json`. Probe state is cached and concurrent refreshes coalesce.
 

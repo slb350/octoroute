@@ -27,10 +27,14 @@ async fn stop_kills_and_reaps_the_child_before_returning() {
     let executable = fake_codex(directory.path(), "hung-codex", "#!/bin/sh\nexec sleep 30\n");
     let mut command = tokio::process::Command::new(executable);
     command.kill_on_drop(true);
+    process_group::isolate(&mut command);
     let mut child = command.spawn().expect("spawn fixture");
+    let mut process_group = ProcessGroup::for_child(&child).expect("process group");
     assert!(child.try_wait().expect("child state").is_none());
 
-    stop(&mut child).await;
+    stop(&mut child, &mut process_group)
+        .await
+        .expect("stop process group");
     assert!(
         child.try_wait().expect("reaped child state").is_some(),
         "stop must reap the child before it returns"

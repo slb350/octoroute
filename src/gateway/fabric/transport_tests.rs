@@ -116,6 +116,44 @@ async fn first_byte_deadline_is_applied_only_when_configured() {
     ));
 }
 
+#[tokio::test]
+async fn first_byte_deadline_covers_the_response_header_wait() {
+    use tokio::io::AsyncReadExt as _;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("connection");
+        let mut request = [0_u8; 1024];
+        let _ = socket.read(&mut request).await;
+        std::future::pending::<()>().await;
+    });
+    let client = build_http_client().expect("shared client");
+    let request = client
+        .get(format!("http://{address}/"))
+        .build()
+        .expect("request");
+    let permit = Arc::new(Semaphore::new(1))
+        .acquire_owned()
+        .await
+        .expect("permit");
+
+    let result = execute_passthrough(
+        &client,
+        request,
+        UpstreamDeadlines::new(60_000, Some(20)),
+        permit,
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(FabricTransportError::FirstByteTimeout)
+    ));
+    server.abort();
+}
+
 /// The gateway sets `x-request-id` only when the header is absent, so an
 /// upstream that sends its own would take over the gateway's correlation id.
 /// Upstream identifiers still reach the client under their own names.

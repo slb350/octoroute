@@ -229,3 +229,28 @@ async fn inbound_concurrency_exhaustion_is_reported_separately_from_the_rate_lim
         .await;
     assert_eq!(admitted.status(), 400);
 }
+
+#[tokio::test]
+async fn a_stalled_authenticated_body_times_out_and_releases_its_permit() {
+    let mut config = preflight_config();
+    config.server.max_in_flight = 1;
+    config.server.request_body_timeout_ms = 20;
+    let service = preflight_service(config);
+    let stalled = Body::from_stream(futures::stream::pending::<Result<Bytes, std::io::Error>>());
+
+    let timed_out = service
+        .handle_http_chat(preflight_request(Some("inbound-test-key"), stalled))
+        .await;
+
+    assert_eq!(timed_out.status(), 408);
+    assert_eq!(error_code(timed_out).await, "request_body_timeout");
+
+    let admitted = service
+        .handle_http_chat(preflight_request(
+            Some("inbound-test-key"),
+            admitted_but_invalid(),
+        ))
+        .await;
+    assert_eq!(admitted.status(), 400);
+    assert_eq!(error_code(admitted).await, "invalid_request");
+}

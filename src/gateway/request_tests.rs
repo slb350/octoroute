@@ -417,36 +417,32 @@ fn output_budget_rejects_invalid_n_predict_like_the_other_limits() {
     }
 }
 
-/// llama.cpp defines `n_predict: -1` as infinity and as its own default, so a
-/// client that sends it is sending the server's default, not a bad request.
-/// There is nothing to reserve for an unbounded generation, so the budget falls
-/// through to the OpenAI aliases and then to the pool default.
+/// Local admission must reserve the exact output ceiling forwarded to llama.cpp.
+/// A negative `n_predict` is unlimited, so no finite context proof can admit it.
 #[test]
-fn a_negative_n_predict_means_unlimited_and_falls_through() {
-    let request = gateway_request(json!({
-        "model": "auto",
-        "messages": [{"role": "user", "content": "hello"}],
-        "n_predict": -1
-    }));
-    assert_eq!(
-        request
+fn a_negative_n_predict_is_rejected_as_unbounded() {
+    for body in [
+        json!({
+            "model": "auto",
+            "messages": [{"role": "user", "content": "hello"}],
+            "n_predict": -1
+        }),
+        json!({
+            "model": "auto",
+            "messages": [{"role": "user", "content": "hello"}],
+            "n_predict": -1,
+            "max_tokens": 256
+        }),
+    ] {
+        let request = gateway_request(body);
+        let error = request
             .output_token_budget(4096)
-            .expect("-1 falls through to the pool default"),
-        4096
-    );
-
-    let request = gateway_request(json!({
-        "model": "auto",
-        "messages": [{"role": "user", "content": "hello"}],
-        "n_predict": -1,
-        "max_tokens": 256
-    }));
-    assert_eq!(
-        request
-            .output_token_budget(4096)
-            .expect("-1 falls through to max_tokens"),
-        256
-    );
+            .expect_err("unbounded local generation must fail closed");
+        assert!(matches!(
+            error,
+            GatewayRequestError::Invalid { field, .. } if field == "n_predict"
+        ));
+    }
 }
 
 /// llama.cpp documents `n_predict: 0` as "evaluate the prompt into the cache

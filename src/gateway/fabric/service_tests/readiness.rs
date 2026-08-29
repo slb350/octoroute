@@ -6,9 +6,45 @@
 //! cheap request into that work, as fast as it can issue them.
 
 use super::*;
-use crate::gateway::fabric::fabric_gateway_app;
+use crate::gateway::fabric::{PoolAdmissionState, fabric_gateway_app};
 use tower::ServiceExt as _;
 use wiremock::matchers::any;
+
+#[tokio::test]
+async fn an_orphan_ready_target_cannot_make_unservable_routes_ready() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": []})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let mut config = single_enabled_provider_config(&server, "zai");
+    config
+        .local_pools
+        .get_mut("workers")
+        .expect("workers pool")
+        .enabled = false;
+    for route in config.routes.values_mut() {
+        route.steps = vec![RouteTarget::LocalPool("workers".to_string())];
+    }
+    let service = FabricGatewayService::from_config(
+        config,
+        TestEnvironment::default()
+            .with("OCTOROUTE_API_KEY", "inbound-test-key")
+            .with("ZAI_API_KEY", "zai-test-key"),
+    )
+    .expect("service");
+
+    let readiness = service.readiness().await;
+
+    assert!(!readiness.is_ready());
+    assert!(!readiness.providers().contains_key("zai"));
+    assert_eq!(
+        readiness.pools().get("workers"),
+        Some(&PoolAdmissionState::Disabled)
+    );
+}
 
 #[tokio::test]
 async fn repeated_anonymous_readiness_requests_probe_the_fleet_once() {

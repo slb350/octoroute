@@ -95,17 +95,26 @@ async fn run_server(config_path: &Path) -> Result<(), Box<dyn std::error::Error>
     tracing::info!("GET /metrics");
 
     let listener = tokio::net::TcpListener::bind(address).await?;
-    let serve = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+    let (shutdown_started_tx, shutdown_started_rx) = tokio::sync::oneshot::channel();
+    let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        let _ = shutdown_started_tx.send(());
+    });
     // Graceful shutdown waits for in-flight responses, and an upstream deadline
     // can be 30 minutes. Without a bound, one long generation holds the process
     // past any service-manager stop timeout and it is killed anyway - after the
     // supervisor has stopped waiting, which is the worst of both.
-    match tokio::time::timeout(SHUTDOWN_GRACE, serve).await {
-        Ok(result) => result?,
-        Err(_) => tracing::warn!(
+    if wait_for_server_shutdown(
+        std::future::IntoFuture::into_future(serve),
+        shutdown_started_rx,
+        SHUTDOWN_GRACE,
+    )
+    .await?
+    {
+        tracing::warn!(
             timeout_s = SHUTDOWN_GRACE.as_secs(),
             "graceful shutdown deadline elapsed with responses still in flight"
-        ),
+        );
     }
     tracing::info!("Octoroute shutdown complete");
     Ok(())
@@ -113,6 +122,33 @@ async fn run_server(config_path: &Path) -> Result<(), Box<dyn std::error::Error>
 
 /// Longest the gateway waits for in-flight responses after a stop signal.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Wait for normal server completion, applying `grace` only after shutdown starts.
+async fn wait_for_server_shutdown<F, E>(
+    serve: F,
+    mut shutdown_started: tokio::sync::oneshot::Receiver<()>,
+    grace: std::time::Duration,
+) -> Result<bool, E>
+where
+    F: std::future::Future<Output = Result<(), E>>,
+{
+    tokio::pin!(serve);
+    tokio::select! {
+        result = &mut serve => {
+            result?;
+            Ok(false)
+        }
+        _ = &mut shutdown_started => {
+            match tokio::time::timeout(grace, &mut serve).await {
+                Ok(result) => {
+                    result?;
+                    Ok(false)
+                }
+                Err(_) => Ok(true),
+            }
+        }
+    }
+}
 
 async fn shutdown_signal() {
     let ctrl_c = async {
@@ -223,6 +259,30 @@ mod tests {
         assert_eq!(
             fs::read_to_string(path).expect("read preserved configuration"),
             "operator-owned contents"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_grace_starts_only_after_the_stop_signal() {
+        let (shutdown_started_tx, shutdown_started_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(wait_for_server_shutdown(
+            std::future::pending::<std::io::Result<()>>(),
+            shutdown_started_rx,
+            std::time::Duration::from_millis(20),
+        ));
+
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        assert!(
+            !task.is_finished(),
+            "the grace period must not age while the server is healthy"
+        );
+
+        shutdown_started_tx
+            .send(())
+            .expect("announce the stop signal");
+        assert!(
+            task.await.expect("join shutdown waiter").expect("waiter"),
+            "a server still draining after the grace period must time out"
         );
     }
 }

@@ -67,6 +67,7 @@ pub struct FabricServerConfig {
     pub port: u16,
     pub api_key_env: String,
     pub max_request_bytes: usize,
+    pub request_body_timeout_ms: u64,
     pub max_header_bytes: usize,
     pub max_in_flight: usize,
     pub requests_per_minute: u32,

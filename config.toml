@@ -10,6 +10,7 @@ host = "0.0.0.0"
 port = 8081
 api_key_env = "OCTOROUTE_API_KEY"
 max_request_bytes = 8388608
+request_body_timeout_ms = 30000
 max_header_bytes = 32768
 max_in_flight = 64
 requests_per_minute = 120
@@ -32,19 +33,19 @@ default_reasoning_effort = "medium"
 
 [[fabric.local_pools.members]]
 name = "worker-0"
-base_url = "http://worker-0.local:8000"
+base_url = "http://192.168.1.20:8000"
 max_in_flight = 1
 priority = 100
 
 [[fabric.local_pools.members]]
 name = "worker-1"
-base_url = "http://worker-1.local:8000"
+base_url = "http://192.168.1.21:8000"
 max_in_flight = 1
 priority = 100
 
 [[fabric.local_pools.members]]
 name = "worker-2"
-base_url = "http://worker-2.local:8000"
+base_url = "http://192.168.1.22:8000"
 max_in_flight = 1
 priority = 100
 
@@ -66,7 +67,7 @@ default_reasoning_effort = "xhigh"
 [[fabric.local_pools.members]]
 name = "supervisor-0"
 enabled = true
-base_url = "http://supervisor-0.local:8000"
+base_url = "http://192.168.1.30:8000"
 max_in_flight = 1
 priority = 10
 

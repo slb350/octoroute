@@ -2,6 +2,7 @@
 
 use crate::gateway::env::Environment;
 use crate::gateway::fabric::codex::ChildEnvironment;
+use crate::gateway::fabric::process_group::{self, ProcessGroup};
 use secrecy::{ExposeSecret, SecretString};
 use std::{
     process::Stdio,
@@ -119,9 +120,12 @@ async fn resolve_command_credential(
     // need TMPDIR and locale. Restoring PATH alone makes every one of them fail
     // as an indistinguishable provider outage.
     environment.apply(&mut command);
+    process_group::isolate(&mut command);
     let mut child = command
         .spawn()
         .map_err(|_| ProviderCredentialError::CommandFailed)?;
+    let mut process_group =
+        ProcessGroup::for_child(&child).map_err(|_| ProviderCredentialError::CommandFailed)?;
     let stdout = child
         .stdout
         .take()
@@ -136,23 +140,29 @@ async fn resolve_command_credential(
     match tokio::time::timeout_at(deadline, read).await {
         Ok(Ok(_)) => {}
         Ok(Err(_)) => {
-            terminate(&mut child).await;
+            terminate(&mut child, &mut process_group).await?;
             return Err(ProviderCredentialError::CommandFailed);
         }
         Err(_) => {
-            terminate(&mut child).await;
+            terminate(&mut child, &mut process_group).await?;
             return Err(ProviderCredentialError::CommandTimeout);
         }
     }
     if output.len() > MAX_CREDENTIAL_BYTES {
-        terminate(&mut child).await;
+        terminate(&mut child, &mut process_group).await?;
         return Err(ProviderCredentialError::CommandOutputTooLarge);
     }
     let status = match tokio::time::timeout_at(deadline, child.wait()).await {
-        Ok(Ok(status)) => status,
-        Ok(Err(_)) => return Err(ProviderCredentialError::CommandFailed),
+        Ok(Ok(status)) => {
+            terminate(&mut child, &mut process_group).await?;
+            status
+        }
+        Ok(Err(_)) => {
+            terminate(&mut child, &mut process_group).await?;
+            return Err(ProviderCredentialError::CommandFailed);
+        }
         Err(_) => {
-            terminate(&mut child).await;
+            terminate(&mut child, &mut process_group).await?;
             return Err(ProviderCredentialError::CommandTimeout);
         }
     };
@@ -165,8 +175,14 @@ async fn resolve_command_credential(
     ))
 }
 
-async fn terminate(child: &mut Child) {
-    let _ = child.kill().await;
+async fn terminate(
+    child: &mut Child,
+    process_group: &mut ProcessGroup,
+) -> Result<(), ProviderCredentialError> {
+    process_group
+        .terminate(child)
+        .await
+        .map_err(|_| ProviderCredentialError::CommandFailed)
 }
 
 fn validate_credential(value: SecretString) -> Result<SecretString, ProviderCredentialError> {
@@ -214,7 +230,9 @@ mod tests {
         [
             "/bin/sh".to_string(),
             "-c".to_string(),
-            format!("/usr/bin/awk 'BEGIN {{ for (i = 0; i < {bytes}; i++) printf \"x\" }}'"),
+            format!(
+                "/usr/bin/awk 'BEGIN {{ for (i = 0; i < {bytes}; i++) printf \"x\" }}'; sleep 0.1"
+            ),
         ]
     }
 
@@ -272,21 +290,28 @@ mod tests {
             CREDENTIAL_COMMAND_TIMEOUT,
         )
         .await;
-        assert!(matches!(
-            oversized,
-            Err(ProviderCredentialError::CommandOutputTooLarge)
-        ));
+        assert!(
+            matches!(
+                oversized,
+                Err(ProviderCredentialError::CommandOutputTooLarge)
+            ),
+            "unexpected oversized-command result: {oversized:?}"
+        );
     }
 
     #[tokio::test]
     async fn terminate_kills_and_reaps_the_child_before_returning() {
-        let mut child = Command::new("/bin/sh")
+        let mut command = Command::new("/bin/sh");
+        command
             .args(["-c", "exec /bin/sleep 30"])
-            .kill_on_drop(true)
-            .spawn()
-            .expect("spawn child");
+            .kill_on_drop(true);
+        process_group::isolate(&mut command);
+        let mut child = command.spawn().expect("spawn child");
+        let mut process_group = ProcessGroup::for_child(&child).expect("process group");
 
-        terminate(&mut child).await;
+        terminate(&mut child, &mut process_group)
+            .await
+            .expect("terminate group");
 
         assert!(
             child.try_wait().expect("poll child").is_some(),

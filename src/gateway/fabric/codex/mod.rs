@@ -19,6 +19,7 @@ const VALID_AGENT_MESSAGE: &str = "{\"type\":\"item.completed\",\"item\":{\"type
 
 use events::{parse_events, render_open_ai_reply};
 
+use crate::gateway::fabric::process_group::{self, ProcessGroup};
 use crate::gateway::fabric::{ProviderConfig, ReasoningEffort};
 use crate::gateway::request::{GatewayRequest, RequestFeature};
 use bytes::Bytes;
@@ -318,6 +319,7 @@ async fn run_process(
         )
         .kill_on_drop(true);
     environment.apply(&mut command);
+    process_group::isolate(&mut command);
     let mut child = command.spawn().map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             CodexAdapterError::Missing
@@ -325,6 +327,8 @@ async fn run_process(
             CodexAdapterError::Process
         }
     })?;
+    let mut process_group =
+        ProcessGroup::for_child(&child).map_err(|_| CodexAdapterError::Process)?;
     let mut stdin = child.stdin.take().ok_or(CodexAdapterError::Process)?;
     let send_input = async move {
         stdin.write_all(input).await?;
@@ -353,15 +357,24 @@ async fn run_process(
     let (status, stdin_result) = match tokio::time::timeout(timeout, execution).await {
         Ok(Ok(results)) => results,
         Ok(Err(error)) => {
-            stop(&mut child).await;
+            stop(&mut child, &mut process_group).await?;
             return Err(error);
         }
         Err(_) => {
-            stop(&mut child).await;
+            stop(&mut child, &mut process_group).await?;
             return Err(CodexAdapterError::Timeout);
         }
     };
-    let status = status.map_err(|_| CodexAdapterError::Process)?;
+    let status = match status {
+        Ok(status) => {
+            stop(&mut child, &mut process_group).await?;
+            status
+        }
+        Err(_) => {
+            stop(&mut child, &mut process_group).await?;
+            return Err(CodexAdapterError::Process);
+        }
+    };
     if capture_exceeded(&stdout, &stderr, stdout_limit) {
         return Err(CodexAdapterError::OutputTooLarge);
     }
@@ -386,9 +399,14 @@ fn capture_exceeded(stdout: &BoundedCapture, stderr: &BoundedCapture, stdout_lim
         || stderr.exceeds(STDERR_CAPTURE_MAX_BYTES).unwrap_or(true)
 }
 
-async fn stop(child: &mut tokio::process::Child) {
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+async fn stop(
+    child: &mut tokio::process::Child,
+    process_group: &mut ProcessGroup,
+) -> Result<(), CodexAdapterError> {
+    process_group
+        .terminate(child)
+        .await
+        .map_err(|_| CodexAdapterError::Process)
 }
 
 struct BoundedCapture {

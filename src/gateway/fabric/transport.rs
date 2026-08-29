@@ -7,7 +7,7 @@ use super::{
     codex,
     provider::{
         HttpProviderDispatch, ProviderDispatch, ProviderHttpAdapter, authorize_http,
-        is_provider_credential_rejection,
+        is_upstream_credential_rejection,
     },
 };
 use crate::gateway::http_client::authorized;
@@ -138,15 +138,7 @@ impl FabricUpstreamTransport for FabricTransport {
         )
         .build()
         .map_err(FabricTransportError::BuildRequest)?;
-        let response = self
-            .client
-            .execute(request)
-            .await
-            .map_err(FabricTransportError::Send)?;
-        reject_redirect(&response)?;
-        deadlines
-            .hold_first_byte(PendingUpstreamResponse::new(response, permit).prepare_passthrough())
-            .await
+        execute_passthrough(&self.client, request, deadlines, permit).await
     }
 
     async fn provider(
@@ -212,31 +204,49 @@ async fn dispatch_http(
     let request = request
         .build()
         .map_err(FabricTransportError::BuildRequest)?;
-    let response = client
-        .execute(request)
+    deadlines
+        .hold_first_byte(async {
+            let response = client
+                .execute(request)
+                .await
+                .map_err(FabricTransportError::Send)?;
+            reject_redirect(&response)?;
+            match dispatch.adapter {
+                ProviderHttpAdapter::OpenAi => {
+                    PendingUpstreamResponse::new(response, permit)
+                        .prepare_passthrough()
+                        .await
+                }
+                ProviderHttpAdapter::Anthropic { stream } => {
+                    // Wider than passthrough on purpose. A non-streaming
+                    // Anthropic response has to be read in full before any of
+                    // it can be translated, so there is no client-visible first
+                    // byte until the whole upstream body has arrived.
+                    prepare_anthropic(response, &dispatch.model, stream, permit).await
+                }
+            }
+        })
         .await
-        .map_err(FabricTransportError::Send)?;
-    reject_redirect(&response)?;
-    match dispatch.adapter {
-        ProviderHttpAdapter::OpenAi => {
-            deadlines
-                .hold_first_byte(
-                    PendingUpstreamResponse::new(response, permit).prepare_passthrough(),
-                )
+}
+
+pub(super) async fn execute_passthrough(
+    client: &Client,
+    request: reqwest::Request,
+    deadlines: UpstreamDeadlines,
+    permit: OwnedSemaphorePermit,
+) -> Result<PreparedUpstreamResponse, FabricTransportError> {
+    deadlines
+        .hold_first_byte(async {
+            let response = client
+                .execute(request)
                 .await
-        }
-        ProviderHttpAdapter::Anthropic { stream } => {
-            // Wider than passthrough on purpose. A non-streaming Anthropic
-            // response has to be read in full before any of it can be
-            // translated, so there is no client-visible first byte until the
-            // whole upstream body has arrived; the deadline therefore bounds
-            // the complete read. Set it from a measured full-response time for
-            // an Anthropic provider, not from a time-to-first-token.
-            deadlines
-                .hold_first_byte(prepare_anthropic(response, &dispatch.model, stream, permit))
+                .map_err(FabricTransportError::Send)?;
+            reject_redirect(&response)?;
+            PendingUpstreamResponse::new(response, permit)
+                .prepare_passthrough()
                 .await
-        }
-    }
+        })
+        .await
 }
 
 /// Upstream response whose headers are available but body is not committed.
@@ -282,7 +292,7 @@ async fn prepare_anthropic(
     if !status.is_success() {
         let code = match status {
             StatusCode::TOO_MANY_REQUESTS => "provider_rate_limited",
-            status if is_provider_credential_rejection(status) => "provider_authentication_failed",
+            status if is_upstream_credential_rejection(status) => "provider_authentication_failed",
             _ if status.is_server_error() => "provider_server_error",
             _ => "provider_request_failed",
         };

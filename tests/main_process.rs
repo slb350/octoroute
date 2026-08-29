@@ -250,10 +250,15 @@ fn isolated_config(server_port: u16, upstream_port: u16, missing_codex: &Path) -
         "host = \"0.0.0.0\"\nport = 8081",
         &format!("host = \"127.0.0.1\"\nport = {server_port}"),
     );
-    for member in ["worker-0", "worker-1", "worker-2", "supervisor-0"] {
+    for member in [
+        "192.168.1.20",
+        "192.168.1.21",
+        "192.168.1.22",
+        "192.168.1.30",
+    ] {
         config = replace_required(
             config,
-            &format!("http://{member}.local:8000"),
+            &format!("http://{member}:8000"),
             &format!("http://127.0.0.1:{upstream_port}"),
         );
     }

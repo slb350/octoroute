@@ -1,9 +1,9 @@
 //! Route execution: walk the plan's steps and stop at the first commitment.
 
 use super::responses::{
-    decorate_local, decorate_provider, fallback_trigger, pool_state_error,
-    provider_credential_rejected, provider_fallback_trigger, provider_request_error,
-    provider_response_outcome, provider_state_error,
+    decorate_local, decorate_provider, fallback_trigger, local_credential_rejected,
+    pool_state_error, provider_credential_rejected, provider_fallback_trigger,
+    provider_request_error, provider_response_outcome, provider_state_error,
 };
 use super::{FabricGatewayService, FabricUpstreamTransport};
 use crate::gateway::fabric::http_support::error_response;
@@ -12,7 +12,7 @@ use crate::gateway::fabric::metrics::{
 };
 use crate::gateway::fabric::{
     FallbackTrigger, PoolAdmissionOutcome, PoolAdmissionState, ProviderAdmissionOutcome,
-    ProviderAdmissionState, RoutePlan, RouteTarget, provider::is_provider_credential_rejection,
+    ProviderAdmissionState, RoutePlan, RouteTarget, provider::is_upstream_credential_rejection,
 };
 use crate::gateway::request::GatewayRequest;
 use axum::{
@@ -218,6 +218,35 @@ where
 
         match self.transport.local(*lease).await {
             Ok(response)
+                if is_upstream_credential_rejection(response.status())
+                    && plan.may_fall_forward(has_more, FallbackTrigger::Unauthenticated) =>
+            {
+                self.metrics
+                    .record_pool_fallback(pool_name, FallbackTrigger::Unauthenticated);
+                tracing::warn!(
+                    request_id,
+                    route = plan.model.as_str(),
+                    pool,
+                    member,
+                    status = response.status().as_u16(),
+                    "v3 local target rejected the gateway credential; trying next route step"
+                );
+                drop(response);
+                StepOutcome::FallForward(None)
+            }
+            Ok(response) if is_upstream_credential_rejection(response.status()) => {
+                tracing::warn!(
+                    request_id,
+                    route = plan.model.as_str(),
+                    pool,
+                    member,
+                    status = response.status().as_u16(),
+                    "v3 local target rejected the gateway credential"
+                );
+                drop(response);
+                commit(local_credential_rejected(request_id))
+            }
+            Ok(response)
                 if response.status() == StatusCode::TOO_MANY_REQUESTS
                     && plan.may_fall_forward(has_more, FallbackTrigger::RateLimited) =>
             {
@@ -377,7 +406,7 @@ where
                 StepOutcome::FallForward(None)
             }
             Ok(response)
-                if is_provider_credential_rejection(response.status())
+                if is_upstream_credential_rejection(response.status())
                     && plan.may_fall_forward(has_more, FallbackTrigger::Unauthenticated) =>
             {
                 // A credential the provider refuses is the same operator
@@ -428,7 +457,7 @@ where
                 let status = response.status();
                 self.metrics
                     .record_response(&provider, provider_response_outcome(status));
-                let credential_rejected = is_provider_credential_rejection(status);
+                let credential_rejected = is_upstream_credential_rejection(status);
                 // A committed response can still prove cached readiness wrong.
                 if status.is_server_error() || credential_rejected {
                     self.providers

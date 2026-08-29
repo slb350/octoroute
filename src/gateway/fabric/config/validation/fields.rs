@@ -46,7 +46,7 @@ pub(super) fn validate_url(
     Ok(url)
 }
 
-/// Reject a local member that is not on loopback, a private range, or `.local`.
+/// Reject a local member that is not an explicit trusted IP address.
 ///
 /// `X-Octoroute-Privacy: local-only` promises the request does not leave the
 /// operator's trust boundary. Nothing else enforces that promise about a member
@@ -72,20 +72,16 @@ pub(super) fn validate_local_member_url(field: &str, url: &Url) -> Result<(), Fa
         Ok(IpAddr::V6(address)) => {
             address.is_loopback() || address.is_unique_local() || address.is_unicast_link_local()
         }
-        Err(_) => {
-            let domain = host.to_ascii_lowercase();
-            domain == "localhost"
-                || domain.ends_with(".localhost")
-                || domain.ends_with(".local")
-                || domain.ends_with(".internal")
-                || domain.ends_with(".home.arpa")
-        }
+        // A private-looking name is not a network boundary: DNS can resolve it
+        // to a public address after validation. Requiring an IP literal makes
+        // the destination that was validated the destination reqwest dials.
+        Err(_) => false,
     };
     if !trusted {
         return Err(invalid(
             field,
-            "must be a loopback, private-range, or `.local` address so `local-only` \
-             requests cannot leave the trusted network",
+            "must be an explicit loopback, private-range, or link-local IP address so \
+             `local-only` requests cannot leave the trusted network",
         ));
     }
     Ok(())
@@ -289,6 +285,18 @@ pub(super) fn validate_u64_range(
         Ok(())
     } else {
         Err(invalid(field, format!("must be between 1 and {maximum}")))
+    }
+}
+
+pub(super) fn validate_u64_max(
+    field: &str,
+    value: u64,
+    maximum: u64,
+) -> Result<(), FabricConfigError> {
+    if value <= maximum {
+        Ok(())
+    } else {
+        Err(invalid(field, format!("must be between 0 and {maximum}")))
     }
 }
 

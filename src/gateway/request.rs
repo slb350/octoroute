@@ -105,23 +105,22 @@ impl GatewayRequest {
         &self,
         default_max_output_tokens: u32,
     ) -> Result<u32, GatewayRequestError> {
-        // `n_predict` carries llama.cpp's semantics, not OpenAI's. Its own
-        // documentation defines `-1` as infinity and the default, and `0` as
-        // "evaluate the prompt into the cache without generating". Rejecting
-        // either would 400 a client that sent llama.cpp its own default value.
-        //
-        // A negative value therefore means "no explicit budget" and falls
-        // through to the OpenAI aliases and then the pool default, because an
-        // unbounded generation gives this reservation nothing to reserve. Zero
-        // is a real budget of zero output tokens.
+        // `n_predict` carries llama.cpp's semantics, not OpenAI's. A negative
+        // value is unlimited, so it cannot satisfy the finite local context
+        // reservation Octoroute proves before dispatch. Zero remains a real
+        // budget meaning "evaluate the prompt without generating".
         if let Some(value) = self.body.get("n_predict").filter(|value| !value.is_null()) {
             let tokens = value
                 .as_i64()
                 .ok_or_else(|| invalid("n_predict", "must be an integer within the i64 range"))?;
-            if tokens >= 0 {
-                return u32::try_from(tokens)
-                    .map_err(|_| invalid("n_predict", "must be within the u32 range"));
+            if tokens < 0 {
+                return Err(invalid(
+                    "n_predict",
+                    "must be non-negative for bounded local admission",
+                ));
             }
+            return u32::try_from(tokens)
+                .map_err(|_| invalid("n_predict", "must be within the u32 range"));
         }
         for field in ["max_completion_tokens", "max_tokens"] {
             if let Some(value) = self.body.get(field).filter(|value| !value.is_null()) {

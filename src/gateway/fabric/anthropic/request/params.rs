@@ -137,9 +137,9 @@ const MIN_THINKING_BUDGET_TOKENS: u32 = 1_024;
 ///
 /// `max_tokens` is the total for thinking plus the visible answer, so the budget
 /// claims at most half of it and the remainder stays available for the answer.
-/// Below Anthropic's 1024-token minimum there is no affordable budget and the
-/// request is sent without thinking rather than with an unusable answer
-/// allowance.
+/// Below Anthropic's 1024-token minimum there is no affordable budget. The
+/// caller treats `None` as an incompatible translation rather than silently
+/// disabling requested reasoning.
 pub(super) fn thinking_budget(effort: ReasoningEffort, max_tokens: u32) -> Option<u32> {
     let desired = match effort {
         ReasoningEffort::Low => 1_024,

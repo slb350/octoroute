@@ -327,6 +327,57 @@ async fn a_slots_probe_answering_503_is_busy_rather_than_unhealthy() {
     assert_eq!(outcome.state(), PoolAdmissionState::Busy);
 }
 
+#[tokio::test]
+async fn every_member_probe_credential_rejection_surfaces_as_unauthenticated() {
+    for (rejected_path, status) in [
+        ("/health", 401),
+        ("/health", 403),
+        ("/health", 407),
+        ("/slots", 401),
+        ("/slots", 403),
+        ("/slots", 407),
+    ] {
+        let server = MockServer::start().await;
+        let health = if rejected_path == "/health" {
+            status
+        } else {
+            200
+        };
+        let slots = if rejected_path == "/slots" {
+            status
+        } else {
+            200
+        };
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(health).set_body_json(json!({"status": "ok"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/slots"))
+            .respond_with(
+                ResponseTemplate::new(slots).set_body_json(json!([{"is_processing": false}])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions/input_tokens"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"input_tokens": 20_000})))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let pool =
+            LlamaCppPool::new(&single_member_pool(&server), &EmptyEnvironment).expect("pool");
+        let outcome = pool.try_admit(&request(16_000)).await.expect("admission");
+        assert_eq!(
+            outcome.state(),
+            PoolAdmissionState::Unauthenticated,
+            "{rejected_path} status {status} must not spill as unhealthy"
+        );
+    }
+}
+
 /// A member with no slots at all is not a busy member: nothing it is serving
 /// will ever finish and free one, so waiting on it is the wrong answer.
 #[tokio::test]

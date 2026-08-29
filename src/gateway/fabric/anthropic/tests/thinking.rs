@@ -35,16 +35,21 @@ fn thinking_budget_reserves_an_answer_allowance() {
 }
 
 /// Below twice Anthropic's minimum budget no thinking allocation both clears the
-/// minimum and leaves an answer, so the request goes out without thinking.
+/// minimum and leaves an answer, so an explicit reasoning request is incompatible.
 #[test]
-fn unaffordable_thinking_budget_is_omitted_rather_than_starved() {
+fn unaffordable_thinking_budget_fails_closed() {
+    let config = config();
     for max_tokens in [1_024_u64, 1_025, 2_047] {
-        let body = translate(chat(
-            json!({"max_tokens": max_tokens, "reasoning_effort": "high"}),
-        ));
+        let error = build_request(
+            &config.providers["kimi"],
+            &request(chat(
+                json!({"max_tokens": max_tokens, "reasoning_effort": "high"}),
+            )),
+        )
+        .expect_err("unaffordable reasoning must not be silently disabled");
         assert!(
-            body.get("thinking").is_none(),
-            "max_tokens {max_tokens} must not carry a thinking budget"
+            error.is_incompatible(),
+            "max_tokens {max_tokens} must fail closed"
         );
     }
 }
@@ -57,21 +62,28 @@ fn thinking_is_not_enabled_without_an_explicit_reasoning_control() {
     assert!(body.get("thinking").is_none());
 }
 
-/// Anthropic rejects `temperature`, `top_p`, and `top_k` alongside thinking.
+/// Anthropic rejects `temperature`, `top_p`, and `top_k` alongside thinking,
+/// so a request that asks for both is incompatible rather than silently changed.
 #[test]
-fn sampling_controls_are_dropped_when_thinking_is_enabled() {
-    let body = translate(chat(json!({
-        "max_tokens": 8_192,
-        "reasoning_effort": "high",
-        "temperature": 0.7,
-        "top_p": 0.9,
-        "top_k": 40
-    })));
-    assert!(body.get("thinking").is_some());
-    for field in ["temperature", "top_p", "top_k"] {
+fn sampling_controls_with_thinking_fail_closed() {
+    let config = config();
+    for (field, value) in [
+        ("temperature", json!(0.7)),
+        ("top_p", json!(0.9)),
+        ("top_k", json!(40)),
+    ] {
+        let error = build_request(
+            &config.providers["kimi"],
+            &request(chat(json!({
+                "max_tokens": 8_192,
+                "reasoning_effort": "high",
+                (field): value
+            }))),
+        )
+        .expect_err("sampling plus thinking must fail closed");
         assert!(
-            body.get(field).is_none(),
-            "{field} must not accompany enabled thinking"
+            error.is_incompatible(),
+            "{field} must not be silently dropped"
         );
     }
 }
@@ -120,11 +132,9 @@ fn reasoning_enabled_asks_for_medium_thinking() {
 /// Anthropic's 1024-token floor.
 #[test]
 fn reasoning_max_tokens_maps_onto_the_thinking_budget() {
-    for (max_tokens, requested, expected) in [
-        (8_192_u64, 2_000_u64, Some(2_000_u64)),
-        (8_192, 100_000, Some(4_096)),
-        (8_192, 500, None),
-    ] {
+    for (max_tokens, requested, expected) in
+        [(8_192_u64, 2_000_u64, 2_000_u64), (8_192, 100_000, 4_096)]
+    {
         let body = translate(chat(json!({
             "max_tokens": max_tokens,
             "reasoning": {"max_tokens": requested}
@@ -132,10 +142,20 @@ fn reasoning_max_tokens_maps_onto_the_thinking_budget() {
         assert_eq!(
             body.get("thinking")
                 .and_then(|thinking| thinking["budget_tokens"].as_u64()),
-            expected,
+            Some(expected),
             "reasoning.max_tokens {requested} against max_tokens {max_tokens}"
         );
     }
+
+    let error = build_request(
+        &config().providers["kimi"],
+        &request(chat(json!({
+            "max_tokens": 8_192,
+            "reasoning": {"max_tokens": 500}
+        }))),
+    )
+    .expect_err("a sub-minimum explicit budget must fail closed");
+    assert!(error.is_incompatible());
 }
 
 /// A provider-level `reasoning_effort` is the fallback when the caller names

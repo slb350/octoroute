@@ -9,7 +9,7 @@
 use super::fields::{
     line_column, validate_command, validate_env_name, validate_executable,
     validate_local_member_url, validate_log_level, validate_model, validate_name,
-    validate_revision, validate_u32_range, validate_url, validate_usize_range,
+    validate_revision, validate_u32_range, validate_u64_max, validate_url, validate_usize_range,
 };
 use super::{
     DEFAULT_MEMBER_MAX_IN_FLIGHT, DEFAULT_PROVIDER_MAX_IN_FLIGHT,
@@ -79,9 +79,6 @@ fn local_members_must_be_on_a_trusted_address() {
         "http://169.254.10.1:8080/",
         "http://[::1]:8080/",
         "http://[fd00::1]:8080/",
-        "http://localhost:8080/",
-        "http://strix.local:8080/",
-        "http://worker.internal:8080/",
     ] {
         let url = validate_url(MEMBER, trusted, false).expect("parses");
         validate_local_member_url(MEMBER, &url)
@@ -90,6 +87,10 @@ fn local_members_must_be_on_a_trusted_address() {
     for public in [
         "http://93.184.216.34:8080/",
         "http://api.example.com:8080/",
+        "http://localhost:8080/",
+        "http://strix.local:8080/",
+        "http://worker.internal:8080/",
+        "http://worker.home.arpa:8080/",
         "http://[2606:2800:220:1:248:1893:25c8:1946]:8080/",
         "http://8.8.8.8:8080/",
     ] {
@@ -254,6 +255,13 @@ fn numeric_ranges_are_inclusive_and_reject_zero() {
     validate_u32_range(FIELD, 11, 10).expect_err("above the maximum is rejected");
 }
 
+#[test]
+fn zero_inclusive_range_accepts_zero_and_rejects_only_above_the_maximum() {
+    validate_u64_max(FIELD, 0, 10).expect("zero disables caching");
+    validate_u64_max(FIELD, 10, 10).expect("the upper bound is accepted");
+    validate_u64_max(FIELD, 11, 10).expect_err("above the maximum is rejected");
+}
+
 /// Parse errors report a 1-indexed line and column and never echo the document,
 /// which may contain the credential that made it invalid.
 #[test]
@@ -401,11 +409,12 @@ steps = ["pool:local", "provider:cloud"]
     assert_eq!(
         (
             config.server.max_request_bytes,
+            config.server.request_body_timeout_ms,
             config.server.max_header_bytes,
             config.server.max_in_flight,
             config.server.requests_per_minute,
         ),
-        (8_388_608, 32_768, 64, 120)
+        (8_388_608, 30_000, 32_768, 64, 120)
     );
     let pool = &config.local_pools["local"];
     assert_eq!(

@@ -2,7 +2,8 @@
 
 use super::fields::{
     invalid, validate_command, validate_env_name, validate_executable, validate_first_byte_timeout,
-    validate_model, validate_name, validate_u64_range, validate_url, validate_usize_range,
+    validate_model, validate_name, validate_u64_max, validate_u64_range, validate_url,
+    validate_usize_range,
 };
 use super::{
     DEFAULT_CODEX_EXECUTABLE, DEFAULT_PROVIDER_MAX_IN_FLIGHT, MAX_CONCURRENCY,
@@ -39,7 +40,7 @@ pub(super) fn validate_providers(
             raw.timeout_ms,
             raw.first_byte_timeout_ms,
         )?;
-        validate_u64_range(
+        validate_u64_max(
             "fabric.providers.readiness_ttl_ms",
             raw.readiness_ttl_ms,
             MAX_PROVIDER_READINESS_TTL_MS,

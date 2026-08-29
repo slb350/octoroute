@@ -314,6 +314,11 @@ impl LlamaCppPool {
                     continue;
                 }
                 MemberState::Unhealthy => continue,
+                MemberState::Unauthenticated => {
+                    return Ok(PoolAdmissionOutcome::Rejected(
+                        PoolAdmissionState::Unauthenticated,
+                    ));
+                }
                 MemberState::Ready => {}
             }
             let input_tokens = match member.input_tokens(request_body.clone()).await {
@@ -407,6 +412,7 @@ impl LlamaCppPool {
                 }
                 MemberState::Busy => degraded.busy = true,
                 MemberState::Unhealthy => {}
+                MemberState::Unauthenticated => degraded.unauthenticated = true,
             }
         }
         degraded.state()

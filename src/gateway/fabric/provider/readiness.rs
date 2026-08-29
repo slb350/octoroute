@@ -8,7 +8,7 @@
 
 use super::{
     CodexProvider, HttpProvider, ProviderAdmissionState, ProviderProtocol, codex,
-    is_provider_credential_rejection,
+    is_upstream_credential_rejection,
 };
 use axum::http::StatusCode;
 use reqwest::{RequestBuilder, Url};
@@ -52,7 +52,7 @@ impl HttpProvider {
     /// Without this a provider that dies right after a successful probe keeps
     /// reporting `ready` for the whole TTL, which can be an hour.
     pub(super) async fn invalidate_readiness(&self, status: Option<StatusCode>) {
-        if status.is_some_and(is_provider_credential_rejection) {
+        if status.is_some_and(is_upstream_credential_rejection) {
             self.credential.invalidate().await;
         }
         *self.readiness.lock().await = CachedReadiness::default();
@@ -88,7 +88,7 @@ impl HttpProvider {
             status if status.is_success() => ProviderAdmissionState::Ready,
             // A credential the provider rejects is an operator error, not an
             // outage, and must not be collapsed into it.
-            status if is_provider_credential_rejection(status) => self.reject_credential().await,
+            status if is_upstream_credential_rejection(status) => self.reject_credential().await,
             // `/models` is not uniformly implemented. These statuses prove the
             // endpoint answered, which is what readiness asks.
             StatusCode::METHOD_NOT_ALLOWED | StatusCode::TOO_MANY_REQUESTS => {
@@ -123,7 +123,7 @@ impl HttpProvider {
     async fn corroborate_missing_models(&self, api_key: &SecretString) -> ProviderAdmissionState {
         match self.probe_status(self.request_url.clone(), api_key).await {
             None | Some(StatusCode::NOT_FOUND) => ProviderAdmissionState::Unavailable,
-            Some(status) if is_provider_credential_rejection(status) => {
+            Some(status) if is_upstream_credential_rejection(status) => {
                 self.reject_credential().await
             }
             Some(status) if status.is_server_error() => ProviderAdmissionState::Unavailable,

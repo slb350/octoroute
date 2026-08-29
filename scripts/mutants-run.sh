@@ -43,26 +43,42 @@ mkdir -p "$TMPDIR"
 # this is the backstop. The caller's lock means nothing else is copying into
 # this directory right now.
 cleanup_mutation_scratch() {
-  # `find` does not follow symlinks by default. Descendants match the path arm,
-  # then -depth removes the matching top-level cargo-mutants directory last.
-  # No other entry directly under a caller-supplied TMPDIR can match.
-  #
-  # `|| true` because -delete races with anything still tearing down its own
-  # copy and reports ENOENT per vanished entry. Under `set -e` that non-zero
-  # status aborts the sweep before cargo-mutants starts; from the EXIT trap it
-  # overwrites the real exit status and reports a clean sweep as a failure.
-  # Losing a stale directory is harmless, so the status is discarded.
-  find "$TMPDIR" -depth -mindepth 1 \
-    \( -name 'cargo-mutants-*.tmp' -o \
-    -path "$TMPDIR"/'cargo-mutants-*.tmp/*' -o \
-    -name 'octoroute-diff-test-*' -o \
-    -path "$TMPDIR"/'octoroute-diff-test-*/*' \) -delete 2>/dev/null || true
+  local trash_command=()
+  if command -v trash >/dev/null 2>&1; then
+    trash_command=(trash)
+  elif command -v gio >/dev/null 2>&1; then
+    trash_command=(gio trash)
+  else
+    echo 'trash or gio is required for recoverable mutation scratch cleanup' >&2
+    return 1
+  fi
+
+  # Only matching directories directly below the dedicated scratch root are
+  # moved. Trashing the root entry carries all descendants without recursively
+  # deleting anything or following symlinks.
+  while IFS= read -r -d '' scratch; do
+    [[ -e "$scratch" ]] || continue
+    "${trash_command[@]}" "$scratch"
+  done < <(
+    find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d \
+      \( -name 'cargo-mutants-*.tmp' -o -name 'octoroute-diff-test-*' \) -print0
+  )
 }
 
 cleanup_mutation_scratch
 # Preserve the verdict across the trap: the trap runs on the way out, and its
 # own exit status would otherwise become the script's.
-trap 'mutants_exit_status=$?; cleanup_mutation_scratch; exit "$mutants_exit_status"' EXIT
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
+finish_mutation_run() {
+  local mutants_exit_status=$?
+  local cleanup_status=0
+  cleanup_mutation_scratch || cleanup_status=$?
+  if [[ "$mutants_exit_status" -ne 0 ]]; then
+    exit "$mutants_exit_status"
+  fi
+  exit "$cleanup_status"
+}
+trap finish_mutation_run EXIT
 
 # --minimum-test-timeout: cargo-mutants derives the per-mutant timeout from the
 # unmutated baseline, which on a fast suite is a second or two. With -j running

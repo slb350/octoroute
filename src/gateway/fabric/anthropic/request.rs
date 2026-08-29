@@ -90,13 +90,32 @@ pub(crate) fn build_request(
     // enable thinking on a provider that was never configured for it.
     let thinking = match requested_thinking(source)? {
         Some(RequestedThinking::Disabled) => None,
-        Some(RequestedThinking::Effort(effort)) => thinking_budget(effort, max_tokens),
-        Some(RequestedThinking::Budget(budget)) => affordable_budget(budget, max_tokens),
-        None => config
-            .reasoning_effort
-            .and_then(|effort| thinking_budget(effort, max_tokens)),
+        Some(RequestedThinking::Effort(effort)) => Some(
+            thinking_budget(effort, max_tokens)
+                .ok_or(AnthropicAdapterError::Incompatible("reasoning budget"))?,
+        ),
+        Some(RequestedThinking::Budget(budget)) => Some(
+            affordable_budget(budget, max_tokens)
+                .ok_or(AnthropicAdapterError::Incompatible("reasoning budget"))?,
+        ),
+        None => match config.reasoning_effort {
+            Some(effort) => Some(
+                thinking_budget(effort, max_tokens)
+                    .ok_or(AnthropicAdapterError::Incompatible("reasoning budget"))?,
+            ),
+            None => None,
+        },
     };
     if let Some(budget) = thinking {
+        if ["temperature", "top_p", "top_k"]
+            .iter()
+            .any(|field| source.get(*field).is_some_and(|value| !value.is_null()))
+            || config.temperature.is_some()
+        {
+            return Err(AnthropicAdapterError::Incompatible(
+                "sampling with reasoning",
+            ));
+        }
         body.insert(
             "thinking".to_string(),
             json!({"type": "enabled", "budget_tokens": budget}),

@@ -34,7 +34,11 @@ use axum::http::StatusCode;
 use bytes::Bytes;
 use reqwest::{Client, Url};
 use secrecy::SecretString;
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    sync::Arc,
+};
 use thiserror::Error;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
@@ -42,9 +46,14 @@ const CHAT_COMPLETIONS_PATH: &str = "chat/completions";
 const ANTHROPIC_MESSAGES_PATH: &str = "messages";
 const MODELS_PATH: &str = "models";
 
-/// Whether an HTTP provider refused Octoroute's own credential.
-pub(super) const fn is_provider_credential_rejection(status: StatusCode) -> bool {
-    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+/// Whether an upstream or its authenticating proxy refused Octoroute's credential.
+pub(super) const fn is_upstream_credential_rejection(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::UNAUTHORIZED
+            | StatusCode::FORBIDDEN
+            | StatusCode::PROXY_AUTHENTICATION_REQUIRED
+    )
 }
 
 /// Bounded provider state used by readiness, fallback policy, and error mapping.
@@ -244,8 +253,11 @@ impl ProviderRegistry {
     }
 
     /// Run cached, bounded authentication/reachability probes concurrently.
-    pub(super) async fn readiness(&self) -> BTreeMap<String, ProviderAdmissionState> {
-        let probes = self.providers.iter().map(|(name, runtime)| {
+    pub(super) async fn readiness(
+        &self,
+        reachable: &BTreeSet<String>,
+    ) -> BTreeMap<String, ProviderAdmissionState> {
+        let probes = self.readiness_targets(reachable).map(|(name, runtime)| {
             let name = name.clone();
             async move {
                 let state = match runtime {
@@ -263,6 +275,15 @@ impl ProviderRegistry {
             .await
             .into_iter()
             .collect()
+    }
+
+    fn readiness_targets<'a>(
+        &'a self,
+        reachable: &'a BTreeSet<String>,
+    ) -> impl Iterator<Item = (&'a String, &'a ProviderRuntime)> {
+        reachable
+            .iter()
+            .filter_map(|name| self.providers.get_key_value(name))
     }
 }
 

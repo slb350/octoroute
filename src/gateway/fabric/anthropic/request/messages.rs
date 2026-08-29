@@ -12,13 +12,9 @@ use serde_json::{Value, json};
 /// the next turn. An allowlist narrower than that makes every multi-turn
 /// conversation from a raw-JSON client unroutable through an Anthropic step.
 ///
-/// Each field here either translates or cannot change what the caller receives
-/// when it is dropped:
-///
-/// - `name` identifies a participant. Anthropic has no per-message author
-///   field, and OpenAI documents `name` as an optional hint a model may ignore,
-///   so dropping it cannot answer a different question.
-/// - `annotations` are URL citations attached to text the model already
+/// `name` remains in the accepted shape because clients may emit it as null,
+/// but a non-null participant name is rejected below: Anthropic has no
+/// semantics-preserving author field. `annotations` are URL citations attached to text the model already
 ///   produced. They describe a previous answer rather than instructing the next
 ///   one, and OpenAI emits `annotations: []` on every assistant response.
 ///
@@ -50,6 +46,9 @@ pub(super) fn translate_message(
         .get("role")
         .and_then(Value::as_str)
         .ok_or(AnthropicAdapterError::Incompatible("message role"))?;
+    if message.get("name").is_some_and(|value| !value.is_null()) {
+        return Err(AnthropicAdapterError::Incompatible("message name"));
+    }
     match role {
         "system" | "developer" => {
             reject_unknown_keys(message, &PLAIN_MESSAGE_FIELDS, "message field")?;

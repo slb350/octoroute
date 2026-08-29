@@ -33,20 +33,16 @@ fi
 command -v "$curl_bin" >/dev/null 2>&1 || fail "curl executable not found: $curl_bin"
 command -v awk >/dev/null 2>&1 || fail 'awk is required for SSE validation'
 
-temp_root=${TMPDIR:-/tmp}
-curl_config=$(mktemp "$temp_root/octoroute-v3-canary.XXXXXX") \
-  || fail 'could not create the temporary curl config'
-cleanup() {
-  if [[ -n ${curl_config:-} && -f "$curl_config" ]]; then
-    rm -f -- "$curl_config"
-  fi
-}
-trap cleanup EXIT HUP INT TERM
-chmod 600 "$curl_config"
-
 escaped_key=${api_key//\\/\\\\}
 escaped_key=${escaped_key//\"/\\\"}
-printf 'header = "Authorization: Bearer %s"\n' "$escaped_key" >"$curl_config"
+
+# Keep the bearer out of argv and off disk. curl reads this one-line config
+# from stdin before starting the request; request payloads are supplied with
+# --data-binary, so the config stream is never confused with a request body.
+curl_auth() {
+  printf 'header = "Authorization: Bearer %s"\n' "$escaped_key" \
+    | "$curl_bin" --config - "$@"
+}
 
 common=(
   --silent
@@ -62,10 +58,12 @@ check_get() {
   local auth=$3
   local args=("${common[@]}" --output /dev/null)
   if [[ "$auth" == yes ]]; then
-    args+=(--config "$curl_config")
+    curl_auth "${args[@]}" "$base_url$path" \
+      || fail "$label"
+  else
+    "$curl_bin" "${args[@]}" "$base_url$path" \
+      || fail "$label"
   fi
-  "$curl_bin" "${args[@]}" "$base_url$path" \
-    || fail "$label"
   printf 'ok: %s\n' "$label"
 }
 
@@ -84,7 +82,6 @@ check_chat() {
   payload=$(chat_payload "$model" false)
   local args=(
     "${common[@]}"
-    --config "$curl_config"
     --header 'Content-Type: application/json'
     --data-binary "$payload"
     --output /dev/null
@@ -92,7 +89,7 @@ check_chat() {
   if [[ "$privacy" == local-only ]]; then
     args+=(--header 'X-Octoroute-Privacy: local-only')
   fi
-  "$curl_bin" "${args[@]}" "$base_url/v1/chat/completions" \
+  curl_auth "${args[@]}" "$base_url/v1/chat/completions" \
     || fail "$label"
   printf 'ok: %s\n' "$label"
 }
@@ -102,8 +99,7 @@ check_stream() {
   local model=$2
   local payload
   payload=$(chat_payload "$model" true)
-  "$curl_bin" "${common[@]}" \
-    --config "$curl_config" \
+  curl_auth "${common[@]}" \
     --header 'Content-Type: application/json' \
     --header 'Accept: text/event-stream' \
     --header 'X-Octoroute-Privacy: local-only' \

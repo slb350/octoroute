@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod credential;
 mod governing;
 
 #[tokio::test]

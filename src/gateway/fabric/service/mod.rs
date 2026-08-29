@@ -59,6 +59,8 @@ pub struct FabricGatewayService<T> {
     providers: ProviderRegistry,
     metrics: Arc<FabricMetrics>,
     transport: T,
+    reachable_pools: BTreeSet<String>,
+    reachable_providers: BTreeSet<String>,
     inbound_permits: Arc<Semaphore>,
     rate_limiter: FixedWindowRateLimiter,
     readiness_cache: Mutex<Option<(Instant, FabricReadiness)>>,
@@ -167,6 +169,18 @@ where
         let metrics = Arc::new(FabricMetrics::new(&config));
         let providers =
             ProviderRegistry::new(&config.providers, environment, Arc::clone(&metrics), client)?;
+        let mut reachable_pools = BTreeSet::new();
+        let mut reachable_providers = BTreeSet::new();
+        for step in config.routes.values().flat_map(|route| &route.steps) {
+            match step {
+                super::RouteTarget::LocalPool(name) => {
+                    reachable_pools.insert(name.clone());
+                }
+                super::RouteTarget::Provider(name) => {
+                    reachable_providers.insert(name.clone());
+                }
+            }
+        }
 
         Ok(Self {
             authenticator: BearerAuthenticator::new(inbound_key),
@@ -177,6 +191,8 @@ where
             providers,
             metrics,
             transport,
+            reachable_pools,
+            reachable_providers,
             readiness_cache: Mutex::new(None),
         })
     }
@@ -212,31 +228,16 @@ where
             Ok(preflight) => preflight,
             Err(response) => return *response,
         };
-        let bytes = match read_bounded_body(body, self.config.server.max_request_bytes).await {
+        let bytes = match read_bounded_body_before_deadline(
+            body,
+            self.config.server.max_request_bytes,
+            Duration::from_millis(self.config.server.request_body_timeout_ms),
+        )
+        .await
+        {
             Ok(bytes) => bytes,
-            Err(BodyReadError::TooLarge) => {
-                return hold_response_guard(
-                    error_response(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "request body exceeds the configured size limit",
-                        "invalid_request_error",
-                        "request_too_large",
-                        &request_id,
-                    ),
-                    permit,
-                );
-            }
-            Err(BodyReadError::Incomplete) => {
-                return hold_response_guard(
-                    error_response(
-                        StatusCode::BAD_REQUEST,
-                        "the request body could not be read to completion",
-                        "invalid_request_error",
-                        "request_body_incomplete",
-                        &request_id,
-                    ),
-                    permit,
-                );
+            Err(error) => {
+                return hold_response_guard(body_read_error_response(error, &request_id), permit);
             }
         };
         let response = self
@@ -289,25 +290,34 @@ where
 
     /// Probe all configured local pools and providers concurrently.
     pub async fn readiness(&self) -> FabricReadiness {
-        let probes = self.config.local_pools.iter().map(|(name, pool_config)| {
-            let pool = self.pools.get(name).cloned();
-            let name = name.clone();
-            let enabled = pool_config.enabled;
-            async move {
-                let state = if !enabled {
-                    PoolAdmissionState::Disabled
-                } else {
-                    match pool {
-                        Some(pool) => pool.readiness_state().await,
-                        None => PoolAdmissionState::Unhealthy,
-                    }
-                };
-                (name, state)
-            }
-        });
+        let probes = self
+            .reachable_pools
+            .iter()
+            .filter_map(|name| {
+                self.config
+                    .local_pools
+                    .get(name)
+                    .map(|pool_config| (name, pool_config))
+            })
+            .map(|(name, pool_config)| {
+                let pool = self.pools.get(name).cloned();
+                let name = name.clone();
+                let enabled = pool_config.enabled;
+                async move {
+                    let state = if !enabled {
+                        PoolAdmissionState::Disabled
+                    } else {
+                        match pool {
+                            Some(pool) => pool.readiness_state().await,
+                            None => PoolAdmissionState::Unhealthy,
+                        }
+                    };
+                    (name, state)
+                }
+            });
         FabricReadiness {
             pools: join_all(probes).await.into_iter().collect(),
-            providers: self.providers.readiness().await,
+            providers: self.providers.readiness(&self.reachable_providers).await,
         }
     }
 
@@ -419,6 +429,38 @@ impl FabricGatewayService<FabricTransport> {
 enum BodyReadError {
     TooLarge,
     Incomplete,
+    Timeout,
+}
+
+async fn read_bounded_body_before_deadline(
+    body: Body,
+    limit: usize,
+    deadline: Duration,
+) -> Result<Bytes, BodyReadError> {
+    tokio::time::timeout(deadline, read_bounded_body(body, limit))
+        .await
+        .map_err(|_| BodyReadError::Timeout)?
+}
+
+fn body_read_error_response(error: BodyReadError, request_id: &str) -> Response<Body> {
+    let (status, message, code) = match error {
+        BodyReadError::TooLarge => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request body exceeds the configured size limit",
+            "request_too_large",
+        ),
+        BodyReadError::Incomplete => (
+            StatusCode::BAD_REQUEST,
+            "the request body could not be read to completion",
+            "request_body_incomplete",
+        ),
+        BodyReadError::Timeout => (
+            StatusCode::REQUEST_TIMEOUT,
+            "the request body was not received before the configured deadline",
+            "request_body_timeout",
+        ),
+    };
+    error_response(status, message, "invalid_request_error", code, request_id)
 }
 
 /// Read a request body, refusing it as soon as it passes `limit` bytes.
