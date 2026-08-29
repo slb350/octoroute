@@ -54,7 +54,17 @@ impl ProcessGroup {
 
     pub(crate) async fn terminate(&mut self, child: &mut Child) -> io::Result<()> {
         #[cfg(unix)]
-        let signal = self.signal(libc::SIGKILL);
+        let signal = self.signal(libc::SIGKILL).or_else(|error| {
+            // Only `terminate` can settle `EPERM`, because only here is the
+            // leader's state knowable. `try_wait` reaps nothing that `wait`
+            // below then needs.
+            let leader_exited = matches!(child.try_wait(), Ok(Some(_)));
+            if already_terminated(&error, leader_exited) {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        });
         #[cfg(not(unix))]
         let signal = child.kill().await;
         let wait = child.wait().await.map(|_| ());
@@ -77,7 +87,12 @@ impl ProcessGroup {
             Ok(())
         } else {
             let error = io::Error::last_os_error();
-            if already_terminated(&error) {
+            // `leader_exited: false` because this is also the `Drop` path,
+            // which has no child to ask, so only `ESRCH` is forgiven here.
+            // `terminate` re-settles `EPERM` where the answer is knowable.
+            // Routed through the one classifier rather than repeating its
+            // `ESRCH` comparison, which no test could tell from its inverse.
+            if already_terminated(&error, false) {
                 Ok(())
             } else {
                 Err(error)
@@ -88,15 +103,25 @@ impl ProcessGroup {
 
 /// Whether a failed group signal means there is nothing of ours left to kill.
 ///
-/// `ESRCH` is the documented "no such process group". Darwin also answers
-/// `EPERM` once the leader has exited and been reaped, because the pgid no
-/// longer names a group this process owns; the kernel reports the permission
-/// failure rather than an absent target. Both say the same thing to a cleanup
-/// path, and treating `EPERM` as fatal made routine cleanup fail roughly one
-/// run in ten, which then masked the error that cleanup was running for.
+/// `ESRCH` is the documented "no such process group", and says so on its own.
+///
+/// `EPERM` does not. A leader we still own would have accepted the signal, so
+/// `EPERM` means our leader is unsignalable, which has two causes that must
+/// not be conflated. Once the leader has exited, the pgid names an empty or
+/// recycled group that is no longer ours - Darwin reports that as `EPERM`
+/// rather than `ESRCH`, and treating it as fatal made routine cleanup fail
+/// roughly one run in ten, masking the error cleanup was running for. But a
+/// leader still running that we may no longer signal is a genuine failure:
+/// `api_key_command` runs an operator's own executable, and one that changes
+/// credentials leaves a process this guard cannot reap. Reporting that as a
+/// clean shutdown would hide it.
 #[cfg(unix)]
-fn already_terminated(error: &io::Error) -> bool {
-    matches!(error.raw_os_error(), Some(libc::ESRCH) | Some(libc::EPERM))
+fn already_terminated(error: &io::Error, leader_exited: bool) -> bool {
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => true,
+        Some(libc::EPERM) => leader_exited,
+        _ => false,
+    }
 }
 
 // Only Unix has a group to signal. Elsewhere `kill_on_drop` on the command
@@ -171,16 +196,29 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_group_that_is_already_gone_is_not_a_signal_failure() {
-        for code in [libc::ESRCH, libc::EPERM] {
-            assert!(
-                already_terminated(&io::Error::from_raw_os_error(code)),
-                "errno {code} means the group is gone, not that cleanup failed"
-            );
-        }
+        let esrch = io::Error::from_raw_os_error(libc::ESRCH);
+        let eperm = io::Error::from_raw_os_error(libc::EPERM);
+        let einval = io::Error::from_raw_os_error(libc::EINVAL);
+
+        // ESRCH says the group is gone whatever the leader is doing.
+        assert!(already_terminated(&esrch, true));
+        assert!(already_terminated(&esrch, false));
+
+        // EPERM only means "gone" once our own leader has exited.
         assert!(
-            !already_terminated(&io::Error::from_raw_os_error(libc::EINVAL)),
-            "a real signal failure must still be reported"
+            already_terminated(&eperm, true),
+            "a reaped leader makes EPERM a recycled pgid, not a failure"
         );
+        assert!(
+            !already_terminated(&eperm, false),
+            "a running leader we may not signal is a real failure: an \
+             api_key_command that changes credentials must not report a clean \
+             shutdown while its process survives"
+        );
+
+        // Anything else is a real failure regardless.
+        assert!(!already_terminated(&einval, true));
+        assert!(!already_terminated(&einval, false));
     }
 
     #[cfg(unix)]

@@ -23,9 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `reasoning.max_tokens` is pinned to the nested parser's own rejection label
   rather than the downstream affordability check's.
 - A group signal that fails with `EPERM` is treated as an already-terminated
-  group, as `ESRCH` always was. Darwin reports `EPERM` once the leader has been
-  reaped, so Codex cleanup failed on roughly one run in ten and returned
-  `Process` in place of the `OutputTooLarge` or `Timeout` that had triggered it.
+  group only once our own leader has exited. Darwin reports `EPERM` rather than
+  `ESRCH` for a recycled pgid, so Codex cleanup failed on roughly one run in ten
+  and returned `Process` in place of the `OutputTooLarge` or `Timeout` that had
+  triggered it. A leader still running that we may no longer signal stays a
+  failure: `api_key_command` runs an operator's own executable, and one that
+  changes credentials must not report a clean shutdown.
 - Codex cleanup failure no longer replaces the error that caused cleanup. The
   route's fallback policy reads that trigger, so the substitution changed
   routing decisions for a request that had actually hit a bound.
