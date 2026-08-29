@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- CI mutation shards are now shifted to cargo-mutants' zero-based `k/n`
+  indexing: the one-based matrix passed `8/8` straight through, failing that
+  shard as an argument error and never running shard `0/8`.
+- Executable test fixtures are written from a child process, eliminating the
+  Linux-only `ETXTBSY` spawn flake that failed mutation baselines and could
+  record an uncaught mutant as caught.
+
 ## [3.0.0] - 2026-08-27
 
 ### Added
