@@ -121,7 +121,10 @@ jobs:
   # the tree (a rewrite, or a long-lived feature branch) puts the pull-request
   # job back at tree size. Both scopes are therefore sharded with
   # `cargo mutants --shard k/n`, which splits the mutant list across independent
-  # runners so wall-clock stays bounded whatever the diff size.
+  # runners so wall-clock stays bounded whatever the diff size. cargo-mutants
+  # numbers k from zero, so the 1-based matrix is shifted at the call site: a
+  # direct pass-through makes shard 8/8 an argument error and silently never
+  # runs shard 0/8.
   #
   # Every job also sets an explicit `timeout-minutes`. Without one a long sweep
   # inherits the 360-minute default and is cancelled with no missed.txt, which
@@ -184,7 +187,7 @@ jobs:
 
       - name: Run mutation sweep (changed lines)
         if: steps.diff.outputs.has_rust_changes == 'true'
-        run: ./scripts/mutants-run.sh --in-diff pr.diff --shard ${{ matrix.shard }}/8
+        run: ./scripts/mutants-run.sh --in-diff pr.diff --shard $(( ${{ matrix.shard }} - 1 ))/8
 
   mutants-full:
     name: Mutation Testing (full sweep, shard ${{ matrix.shard }}/8)
@@ -218,7 +221,7 @@ jobs:
           tool: cargo-mutants@27.1.0
 
       - name: Run mutation sweep
-        run: ./scripts/mutants-run.sh --shard ${{ matrix.shard }}/8
+        run: ./scripts/mutants-run.sh --shard $(( ${{ matrix.shard }} - 1 ))/8
 
   docs:
     name: Documentation Build
