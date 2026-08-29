@@ -65,6 +65,39 @@ cleanup_mutation_scratch() {
   )
 }
 
+# Reap what the sweep spawned and could not kill itself.
+#
+# Trashing directories is not enough cleanup. cargo-mutants kills its own
+# `cargo test` children, but the mutants that disable the process-group kill
+# path are exactly the ones that then time out, so the fixture those tests
+# spawned outlives the run. `endless-codex` is a `while :; do printf` loop:
+# one orphan burns a core until somebody notices, and two of them were found
+# holding 15 CPU-minutes on 2026-08-29.
+#
+# Matched on the scratch root, which appears in an orphan's argv because the
+# fixture is executed out of the tree copy. This script's own process tree is
+# excluded so a caller that happens to name TMPDIR cannot be killed by it.
+self_and_ancestors() {
+  local pid=$$
+  while [[ "$pid" -gt 1 ]]; do
+    printf '%s ' "$pid"
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    [[ -n "$pid" ]] || break
+  done
+}
+
+reap_mutation_orphans() {
+  command -v pgrep >/dev/null 2>&1 || return 0
+  local protected pid
+  protected=" $(self_and_ancestors) "
+  # pgrep exits non-zero when nothing matches, which is the normal case.
+  for pid in $(pgrep -f "$TMPDIR" 2>/dev/null || true); do
+    [[ "$protected" == *" $pid "* ]] && continue
+    kill -9 "$pid" 2>/dev/null || true
+  done
+}
+
+reap_mutation_orphans
 cleanup_mutation_scratch
 # Preserve the verdict across the trap: the trap runs on the way out, and its
 # own exit status would otherwise become the script's.
@@ -72,6 +105,7 @@ cleanup_mutation_scratch
 finish_mutation_run() {
   local mutants_exit_status=$?
   local cleanup_status=0
+  reap_mutation_orphans
   cleanup_mutation_scratch || cleanup_status=$?
   if [[ "$mutants_exit_status" -ne 0 ]]; then
     exit "$mutants_exit_status"

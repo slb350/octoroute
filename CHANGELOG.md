@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Codex cleanup failure no longer replaces the error that caused cleanup. The
   route's fallback policy reads that trigger, so the substitution changed
   routing decisions for a request that had actually hit a bound.
+- `scripts/mutants-run.sh` now reaps processes the sweep spawned and could not
+  kill itself, on entry and on its EXIT trap. The mutants that disable the
+  process-group kill path are the ones that time out, so their fixture outlives
+  the run; two `endless-codex` spinners were found holding 15 CPU-minutes.
+  Trashing scratch directories had no process-side counterpart.
 - The three remaining `#[cfg(all(test, unix))]` gates are now bare
   `#[cfg(test)]`, so cargo-mutants stops reporting five test helpers as
   production mutants. `tests/source_hygiene.rs` fails the build if either that
