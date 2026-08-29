@@ -1,5 +1,6 @@
 //! Thinking budgets, reasoning controls, and sampling parameters.
 
+use super::super::AnthropicAdapterError;
 use super::{build_request, chat, config, provider_with, request, translate};
 use crate::gateway::fabric::{ProviderConfig, ReasoningEffort};
 use serde_json::{Value, json};
@@ -156,6 +157,25 @@ fn reasoning_max_tokens_maps_onto_the_thinking_budget() {
     )
     .expect_err("a sub-minimum explicit budget must fail closed");
     assert!(error.is_incompatible());
+
+    // Zero must be rejected by the nested parser itself, not rescued later by
+    // the affordability check: only the parser's label proves zero never
+    // became a budget.
+    let error = build_request(
+        &config().providers["kimi"],
+        &request(chat(json!({
+            "max_tokens": 8_192,
+            "reasoning": {"max_tokens": 0}
+        }))),
+    )
+    .expect_err("a zero explicit budget must fail closed");
+    assert!(
+        matches!(
+            error,
+            AnthropicAdapterError::Incompatible("reasoning max_tokens")
+        ),
+        "zero must be rejected as a malformed reasoning.max_tokens, got {error:?}"
+    );
 }
 
 /// A provider-level `reasoning_effort` is the fallback when the caller names

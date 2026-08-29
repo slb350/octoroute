@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Executable test fixtures are written from a child process, eliminating the
   Linux-only `ETXTBSY` spawn flake that failed mutation baselines and could
   record an uncaught mutant as caught.
+- `ProcessGroup` is one cross-platform type with cfg'd blocks instead of a
+  `cfg(not(unix))` module the sweep could never compile, and a test now pins
+  that dropping the guard kills the whole process group. A zero nested
+  `reasoning.max_tokens` is pinned to the nested parser's own rejection label
+  rather than the downstream affordability check's.
 
 ## [3.0.0] - 2026-08-27
 
