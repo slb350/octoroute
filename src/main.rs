@@ -1,77 +1,49 @@
-//! Octoroute v2 local-first HTTP gateway.
+//! Octoroute v3 inference-fabric executable.
 
 use clap::Parser;
 use octoroute::{
-    calibration::{CalibrationError, MAX_ARTIFACT_BYTES, analyze_jsonl},
     cli::{Cli, Command, generate_config_template},
     gateway::{
-        config::{GatewayConfig, ProcessEnvironment},
-        env::DotenvEnvironment,
-        http::gateway_app,
-        service::GatewayService,
+        env::{DotenvEnvironment, ProcessEnvironment},
+        fabric::{FabricConfig, FabricGatewayService, fabric_gateway_app},
     },
     telemetry,
 };
-use std::{
-    io::{Read, Write},
-    net::SocketAddr,
-    path::{Path, PathBuf},
-};
+use std::{io::Write, net::SocketAddr, path::Path};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
-    match cli.command {
+    let result = match cli.command {
         Some(Command::Config { output }) => handle_config_command(output),
-        Some(Command::Calibrate {
-            input,
-            output,
-            grid_step,
-        }) => handle_calibrate_command(&input, output, grid_step),
         None => run_server(Path::new(&cli.config)).await,
-    }
-}
-
-fn handle_calibrate_command(
-    input: &str,
-    output: Option<String>,
-    grid_step: f64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let artifact = read_bounded_artifact(std::fs::File::open(input)?, MAX_ARTIFACT_BYTES)?;
-    let report = analyze_jsonl(&artifact, grid_step)?;
-    match output {
-        Some(path) => {
-            let path = PathBuf::from(path);
-            write_new_artifact(&path, "calibration report", report.as_bytes())?;
+    };
+    // Every startup failure carries a written `#[error]` message. Returning the
+    // error from `main` would print its `Debug` form instead and make all of
+    // them unreachable from the CLI.
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("octoroute: {error}");
+            let mut source = error.source();
+            while let Some(cause) = source {
+                eprintln!("  caused by: {cause}");
+                source = cause.source();
+            }
+            std::process::ExitCode::FAILURE
         }
-        None => println!("{report}"),
     }
-    Ok(())
-}
-
-fn read_bounded_artifact(
-    reader: impl Read,
-    max_bytes: usize,
-) -> Result<String, Box<dyn std::error::Error>> {
-    // Read one extra byte so non-regular or concurrently growing inputs cannot bypass the cap.
-    let read_limit = u64::try_from(max_bytes)?.saturating_add(1);
-    let mut bytes = Vec::new();
-    reader.take(read_limit).read_to_end(&mut bytes)?;
-    if bytes.len() > max_bytes {
-        return Err(CalibrationError::ArtifactTooLarge.into());
-    }
-    String::from_utf8(bytes).map_err(|_| CalibrationError::InvalidEncoding.into())
 }
 
 fn handle_config_command(output: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let template = generate_config_template();
     match output {
         Some(path) => {
-            let path = PathBuf::from(path);
-            write_new_artifact(&path, "configuration file", template.as_bytes())?;
-            eprintln!("Octoroute v2 configuration written to {}", path.display());
+            let path = Path::new(&path);
+            write_new_artifact(path, "configuration file", template.as_bytes())?;
+            eprintln!("Octoroute v3 configuration written to {}", path.display());
             eprintln!(
-                "Add OCTOROUTE_API_KEY and OPENROUTER_API_KEY to {} or the process environment.",
+                "Add OCTOROUTE_API_KEY and credentials for enabled providers to {} or the process environment.",
                 path.parent()
                     .unwrap_or_else(|| Path::new("."))
                     .join(".env")
@@ -103,30 +75,79 @@ fn write_new_artifact(path: &Path, label: &str, contents: &[u8]) -> std::io::Res
 
 async fn run_server(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let input = std::fs::read_to_string(config_path)?;
+    let config = FabricConfig::from_toml(&input)?;
+    let address = SocketAddr::from((config.server.host, config.server.port));
+    // Telemetry starts before service construction so warnings emitted while
+    // building pools and the provider registry are not discarded.
+    telemetry::init(&config.observability.log_level);
     let dotenv_path = config_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join(".env");
     let environment = DotenvEnvironment::from_optional_path(&dotenv_path, ProcessEnvironment)?;
-    let config = GatewayConfig::from_toml(&input, &environment)?;
-    telemetry::init(config.observability().log_level().as_str());
+    let service = FabricGatewayService::from_config(config, environment)?;
+    let app = fabric_gateway_app(service);
 
-    let address = SocketAddr::from((config.server().host(), config.server().port()));
-    let service = GatewayService::from_config(config)?;
-    let app = gateway_app(service);
-
-    tracing::info!(%address, "starting Octoroute v2 gateway");
+    tracing::info!(%address, config_version = 3, "starting Octoroute gateway");
     tracing::info!("POST /v1/chat/completions");
     tracing::info!("GET /v1/models");
     tracing::info!("GET /health/live, /health/ready, /health");
     tracing::info!("GET /metrics");
 
     let listener = tokio::net::TcpListener::bind(address).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let (shutdown_started_tx, shutdown_started_rx) = tokio::sync::oneshot::channel();
+    let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        let _ = shutdown_started_tx.send(());
+    });
+    // Graceful shutdown waits for in-flight responses, and an upstream deadline
+    // can be 30 minutes. Without a bound, one long generation holds the process
+    // past any service-manager stop timeout and it is killed anyway - after the
+    // supervisor has stopped waiting, which is the worst of both.
+    if wait_for_server_shutdown(
+        std::future::IntoFuture::into_future(serve),
+        shutdown_started_rx,
+        SHUTDOWN_GRACE,
+    )
+    .await?
+    {
+        tracing::warn!(
+            timeout_s = SHUTDOWN_GRACE.as_secs(),
+            "graceful shutdown deadline elapsed with responses still in flight"
+        );
+    }
     tracing::info!("Octoroute shutdown complete");
     Ok(())
+}
+
+/// Longest the gateway waits for in-flight responses after a stop signal.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Wait for normal server completion, applying `grace` only after shutdown starts.
+async fn wait_for_server_shutdown<F, E>(
+    serve: F,
+    mut shutdown_started: tokio::sync::oneshot::Receiver<()>,
+    grace: std::time::Duration,
+) -> Result<bool, E>
+where
+    F: std::future::Future<Output = Result<(), E>>,
+{
+    tokio::pin!(serve);
+    tokio::select! {
+        result = &mut serve => {
+            result?;
+            Ok(false)
+        }
+        _ = &mut shutdown_started => {
+            match tokio::time::timeout(grace, &mut serve).await {
+                Ok(result) => {
+                    result?;
+                    Ok(false)
+                }
+                Err(_) => Ok(true),
+            }
+        }
+    }
 }
 
 async fn shutdown_signal() {
@@ -156,18 +177,112 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{fs, io};
+    use tempfile::TempDir;
 
     #[test]
-    fn calibration_reader_enforces_limit_during_read() {
-        let accepted = read_bounded_artifact(std::io::Cursor::new(b"test"), 4)
-            .expect("artifact at the byte limit");
-        assert_eq!(accepted, "test");
+    fn write_new_artifact_writes_exact_bytes() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("artifact.bin");
+        let contents = b"exact artifact bytes\n\0with a binary suffix";
 
-        let error = read_bounded_artifact(std::io::repeat(b'x'), 4)
-            .expect_err("an unbounded reader must stop at the byte limit");
-        assert!(matches!(
-            error.downcast_ref::<CalibrationError>(),
-            Some(CalibrationError::ArtifactTooLarge)
+        write_new_artifact(&path, "test artifact", contents).expect("write new artifact");
+
+        assert_eq!(fs::read(path).expect("read artifact"), contents);
+    }
+
+    #[test]
+    fn write_new_artifact_remaps_only_already_exists_errors() {
+        let directory = TempDir::new().expect("temporary directory");
+        let existing_path = directory.path().join("existing.toml");
+        fs::write(&existing_path, "preserve me").expect("create existing file");
+
+        let existing_error =
+            write_new_artifact(&existing_path, "configuration file", b"replacement")
+                .expect_err("existing path must be refused");
+        assert_eq!(existing_error.kind(), io::ErrorKind::AlreadyExists);
+        let message = existing_error.to_string();
+        assert!(message.contains("configuration file"), "{message}");
+        assert!(message.contains("already exists"), "{message}");
+        assert!(
+            message.contains(&existing_path.display().to_string()),
+            "{message}"
+        );
+        assert_eq!(
+            fs::read_to_string(&existing_path).expect("read preserved file"),
+            "preserve me"
+        );
+
+        let missing_parent_path = directory.path().join("missing").join("artifact.toml");
+        let expected_error = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&missing_parent_path)
+            .expect_err("missing parent must fail");
+        let actual_error =
+            write_new_artifact(&missing_parent_path, "configuration file", b"contents")
+                .expect_err("missing parent must fail");
+
+        assert_eq!(actual_error.kind(), expected_error.kind());
+        assert_eq!(actual_error.raw_os_error(), expected_error.raw_os_error());
+        assert_eq!(actual_error.to_string(), expected_error.to_string());
+    }
+
+    #[test]
+    fn handle_config_command_writes_parseable_v3_template() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("octoroute.toml");
+
+        handle_config_command(Some(path.display().to_string())).expect("generate configuration");
+
+        let contents = fs::read_to_string(&path).expect("read generated configuration");
+        assert_eq!(contents, generate_config_template());
+        let config = FabricConfig::from_toml(&contents).expect("valid v3 configuration");
+        assert_eq!(config.default_model, "auto-route");
+    }
+
+    #[test]
+    fn handle_config_command_refuses_to_overwrite_existing_file() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("octoroute.toml");
+        fs::write(&path, "operator-owned contents").expect("create existing configuration");
+
+        let error = handle_config_command(Some(path.display().to_string()))
+            .expect_err("existing configuration must be refused");
+        let io_error = error
+            .downcast_ref::<io::Error>()
+            .expect("configuration error must preserve its I/O type");
+        assert_eq!(io_error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(io_error.to_string().contains("configuration file"));
+        assert!(io_error.to_string().contains("already exists"));
+        assert!(io_error.to_string().contains(&path.display().to_string()));
+        assert_eq!(
+            fs::read_to_string(path).expect("read preserved configuration"),
+            "operator-owned contents"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_grace_starts_only_after_the_stop_signal() {
+        let (shutdown_started_tx, shutdown_started_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(wait_for_server_shutdown(
+            std::future::pending::<std::io::Result<()>>(),
+            shutdown_started_rx,
+            std::time::Duration::from_millis(20),
         ));
+
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        assert!(
+            !task.is_finished(),
+            "the grace period must not age while the server is healthy"
+        );
+
+        shutdown_started_tx
+            .send(())
+            .expect("announce the stop signal");
+        assert!(
+            task.await.expect("join shutdown waiter").expect("waiter"),
+            "a server still draining after the grace period must time out"
+        );
     }
 }

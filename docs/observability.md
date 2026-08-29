@@ -1,113 +1,108 @@
 # Observability
 
-## Response headers
+Octoroute exposes bounded logs, request/response identity headers, readiness,
+and Prometheus text without inspecting streamed content.
 
-Every response has `X-Octoroute-Request-Id`, an Octoroute-generated correlation
-UUID. Every response also has `X-Request-Id`; Octoroute preserves an allowlisted
-upstream request ID and otherwise uses the gateway correlation UUID. Use
-`X-Octoroute-Request-Id` to join responses to shadow forecast events.
-Successful upstream responses also expose:
+## Logs
 
-- `X-Octoroute-Destination`
-- `X-Octoroute-Reason`
-- `X-Octoroute-Upstream`
+`observability.log_level` accepts `trace`, `debug`, `info`, `warn`, or `error`.
+The runtime logs startup/shutdown, bounded route identities, admission states,
+pre-commit failures, and committed statuses.
 
-The response records the destination actually returned. A local attempt that
-falls back is reported as cloud with `local_early_failure`.
+Safe fields include:
 
-## Prometheus
+- generated request ID;
+- configured route, pool, member, provider, and model revision;
+- bounded admission/fallback state;
+- HTTP status and failure phase.
 
-`GET /metrics` requires the configured bearer credential.
+Prompts, responses, credentials, credential-command output, and arbitrary
+provider errors are not log fields.
 
-Current v2 metrics:
+## Correlation headers
+
+`X-Octoroute-Request-Id` is generated for every request and is the primary log
+join key. `X-Request-Id` preserves an allowlisted upstream request ID when one
+exists; otherwise it receives the gateway ID.
+
+Successful routed responses also identify the configured route and selected
+target. These values are bounded by configuration validation.
+
+## Metrics
+
+`GET /metrics` requires bearer authentication and exposes fixed-cardinality v3
+gauges and counters:
 
 ```text
-octoroute_route_decisions_total{destination,reason}
-octoroute_semantic_decisions_total{mode,outcome}
-octoroute_semantic_sampling_total{outcome}
-octoroute_semantic_local_success_probability{mode,boundary}
-octoroute_local_fallbacks_total
-octoroute_local_busy_spillovers_total
-octoroute_upstream_requests_total{upstream,outcome,status_class}
-octoroute_upstream_failures_total{upstream,phase}
-octoroute_request_duration_seconds{destination}
-octoroute_time_to_first_byte_seconds{destination}
-octoroute_routing_duration_seconds
-octoroute_in_flight_requests{destination}
+octoroute_fabric_runtime_info{config_version="3",provider_runtime="complete"} 1
+octoroute_fabric_pool_enabled{pool="workers"} 1
+octoroute_fabric_provider_enabled{provider="openrouter"} 1
+octoroute_fabric_provider_admissions_total{provider="openrouter",state="admitted"} 0
+octoroute_fabric_provider_responses_total{provider="openrouter",outcome="success"} 0
+octoroute_fabric_provider_fallbacks_total{provider="openrouter",trigger="rate_limited"} 0
+octoroute_fabric_provider_probes_total{provider="openrouter",state="ready"} 0
+octoroute_fabric_pool_admissions_total{pool="workers",state="admitted"} 0
+octoroute_fabric_pool_fallbacks_total{pool="workers",trigger="busy"} 0
+octoroute_fabric_routing_duration_seconds_bucket{le="0.05"} 0
+octoroute_fabric_unknown_upstream_types_total{adapter="anthropic"} 0
+octoroute_fabric_unknown_upstream_types_total{adapter="codex"} 0
 ```
 
-`request_duration` measures the lifetime of a committed response body through
-completion or cancellation. `time_to_first_byte` measures dispatch through
-the first upstream body chunk, which Octoroute buffers before commitment.
-`upstream_requests` classifies HTTP responses by status class and transport
-failures as `status_class="none"`.
-`semantic_decisions` separates the configured `shadow` or `enforced` mode
-from the bounded `local`, `cloud`, or `failure` policy outcome. Compare it
-with `route_decisions` to evaluate shadow judgment without confusing the
-observed decision with the actual destination.
-`semantic_sampling` counts compatible automatic shadow requests using only the
-closed `sampled` and `skipped` outcomes. It is absent for disabled, enforced,
-forced-local, and already cloud-bound traffic.
-`semantic_local_success_probability` is a histogram with ten fixed
-upper-inclusive deciles `(previous, upper]`, with the first bin `[0.0, 0.1]`,
-and only the closed `mode` and `boundary` labels. Offline calibration uses the
-same boundaries. Its count also provides the boundary distribution. Failed or
-skipped forecasts are not observed in this histogram.
+`octoroute_fabric_pool_fallbacks_total` is the signal that local capacity is
+spilling to cloud. Without it the first sign of a degraded local fleet is the
+provider bill. `octoroute_fabric_routing_duration_seconds` measures the admission work for one
+route step: the health, slot, and token-count probes, credential resolution, and
+body construction, excluding that step's upstream call. Every step that reaches
+admission is observed, whether it goes on to hold a lease or is rejected, so the
+histogram keeps reporting during an outage rather than going quiet exactly when
+it is most needed. A request that falls forward contributes one observation per
+step it reaches, so `_count` counts admission attempts rather than requests.
 
-All labels come from bounded enums or HTTP status classes. Prompt and model
-text are never used as metric labels. Octoroute deliberately does not parse
-opaque response bodies merely to calculate spend; use OpenRouter generation
-accounting for authoritative cloud cost reporting.
+`octoroute_fabric_unknown_upstream_types_total` records content blocks, events,
+and deltas Octoroute skipped as unrecognized. A rising count means an upstream
+added something this release does not translate. It is process-global rather
+than per-configuration, because the translation functions are pure.
 
-Suggested alerts:
+Pool and provider labels come only from validated configuration. Prompt text,
+model output, credentials, session IDs, and provider error strings must never
+become labels.
 
-- increasing `octoroute_upstream_failures_total{upstream="openrouter"}`;
-- sustained `octoroute_local_busy_spillovers_total`;
-- sustained `local_early_failure` route decisions;
-- high local or cloud first-byte latency;
-- in-flight requests that remain near configured concurrency limits;
-- unexpected disappearance of local route decisions;
-- forecast probabilities or capability boundaries drifting materially from
-  the labeled calibration population;
-- readiness returning 503.
+Admission states, response outcomes, fallback triggers, and probe states are
+closed enums. Every configured provider/enumerated-value pair is emitted even
+when its value is zero, so series cardinality is bounded at startup.
 
-## Health
+## Liveness and readiness
 
-`/health/live` proves the process can serve HTTP.
+`GET /health/live` confirms the process is serving the v3 runtime.
 
-`/health/ready` and `/health` concurrently inspect:
+`/health/ready` and `/health` are unauthenticated so an orchestrator can probe
+them, and return the status code plus an aggregate `status` of `ready`,
+`degraded`, or `not_ready`. `degraded` means some configured target is
+unavailable while others still serve - the case where a dead local fleet is
+being covered by billed cloud capacity. The per-pool and per-provider breakdown
+names every configured target, so it is returned only to an authenticated
+caller. Readiness answers are cached briefly: a readiness pass spawns
+`codex doctor` and sends credentialed `/models` probes, and the endpoints are
+reachable by anyone who can reach the port.
 
-- Octoroute local permit availability;
-- cached llama.cpp health;
-- llama.cpp free-slot state;
-- cached authenticated OpenRouter key probe.
+`GET /health/ready` and `/health` return per-pool and per-provider states. Pools
+and providers are checked concurrently; each pool checks eligible members in
+selection order, with a member's health and slot probes concurrent when its
+health cache is stale. Enabled HTTP providers resolve their credential and
+perform a body-free authenticated reachability request;
+Codex providers perform `codex doctor --json` and require ChatGPT-managed auth.
+Each provider result is cached for `readiness_ttl_ms`, refreshes coalesce, and
+the operation is bounded by `readiness_timeout_ms`. A provider with no available
+permit reports `busy` immediately.
 
-The gateway is ready when either local is ready or OpenRouter is reachable.
-Busy local capacity is reported separately and does not make the gateway
-unready when cloud is available.
+The process reports ready when at least one pool or provider runtime is ready.
+Readiness is unauthenticated and contains no prompt data, but a cache refresh
+can resolve a provider credential or launch the Codex diagnostic. Restrict it
+to operator networks and avoid polling faster than the configured TTL.
 
-## Logging
+## Streaming failures
 
-Set `RUST_LOG` for an explicit filter or use `[observability].log_level`.
-
-Safe logs may include:
-
-- request ID;
-- bounded destination/reason/upstream;
-- safe status classes and timing;
-- configuration field names.
-
-Never log:
-
-- bearer/OpenRouter/local keys;
-- Authorization headers;
-- prompt or message bodies;
-- arbitrary model text as a metrics label;
-- raw invalid TOML/dotenv lines.
-
-## Upstream response headers
-
-Octoroute filters upstream headers. It preserves content type, cache control,
-retry-after, request IDs, `X-Generation-Id`, and common rate-limit
-diagnostics. It strips connection-specific headers, cookies, and other
-non-allowlisted data.
+The first upstream body chunk is obtained before commitment. A failure before
+that point can be mapped to configured fallback policy. Errors after commitment
+remain stream failures and cannot switch targets. Surrounding proxies should
+retain request IDs when recording those failures.

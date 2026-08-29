@@ -34,10 +34,17 @@ pub fn init(default_level: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn test_telemetry_module_exists() {
-        // Note: We can't actually test init() fully because it can only be called once
-        // per process. This test just verifies the module compiles.
-        // Real testing would be done via integration tests.
+    fn initialization_installs_the_process_subscriber() {
+        assert!(
+            !tracing::dispatcher::has_been_set(),
+            "no other library test should initialize process telemetry"
+        );
+
+        init("info");
+
+        assert!(tracing::dispatcher::has_been_set());
     }
 }

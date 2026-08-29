@@ -1,59 +1,196 @@
-# Octoroute v2 production configuration for Strix.
-# Secrets are loaded from process environment variables or the ignored `.env`
-# file beside this configuration.
+# Octoroute v3 inference-fabric example and generated configuration template.
+# Provider secrets are loaded lazily on selection or an expired readiness probe
+# from process environment variables or the ignored `.env` file beside this
+# configuration.
 
-config_version = 2
+config_version = 3
 
 [server]
 host = "0.0.0.0"
 port = 8081
 api_key_env = "OCTOROUTE_API_KEY"
 max_request_bytes = 8388608
+request_body_timeout_ms = 30000
 max_header_bytes = 32768
-max_in_flight = 32
+max_in_flight = 64
 requests_per_minute = 120
 
-[upstreams.local]
-kind = "llama_cpp"
-name = "strix"
-base_url = "http://127.0.0.1:8080"
-model = "strixtea"
-# Immutable weights release; change this whenever the file behind the alias changes.
-model_revision = "agents-a1-q8_0"
-context_window = 65536
-context_safety_tokens = 1024
-default_max_output_tokens = 4096
-max_in_flight = 1
-health_cache_ttl_ms = 1000
-probe_timeout_ms = 2000
-capabilities = ["chat", "stream"]
-health_path = "/health"
-slots_path = "/slots?fail_on_no_slot=1"
-input_tokens_path = "/v1/chat/completions/input_tokens"
+[fabric]
 
-[upstreams.openrouter]
-base_url = "https://openrouter.ai/api/v1"
+# Example pool of equivalent local coding-model endpoints.
+[[fabric.local_pools]]
+name = "workers"
+enabled = true
+model = "coding-worker-model"
+model_revision = "example-worker-revision"
+context_window = 131072
+context_safety_tokens = 2048
+default_max_output_tokens = 16384
+timeout_ms = 1800000
+capabilities = ["chat", "stream", "tools", "structured_output", "reasoning"]
+strategy = "least_loaded"
+default_reasoning_effort = "medium"
+
+[[fabric.local_pools.members]]
+name = "worker-0"
+base_url = "http://192.168.1.20:8000"
+max_in_flight = 1
+priority = 100
+
+[[fabric.local_pools.members]]
+name = "worker-1"
+base_url = "http://192.168.1.21:8000"
+max_in_flight = 1
+priority = 100
+
+[[fabric.local_pools.members]]
+name = "worker-2"
+base_url = "http://192.168.1.22:8000"
+max_in_flight = 1
+priority = 100
+
+# Optional higher-capability local supervisor pool. Enabling it should not
+# require changing OpenCode or any other client-facing route.
+[[fabric.local_pools]]
+name = "supervisor-local"
+enabled = false
+model = "local-supervisor"
+model_revision = "example-supervisor-revision"
+context_window = 262144
+context_safety_tokens = 4096
+default_max_output_tokens = 32768
+timeout_ms = 1800000
+capabilities = ["chat", "stream", "tools", "structured_output", "image_input", "reasoning"]
+strategy = "least_loaded"
+default_reasoning_effort = "xhigh"
+
+[[fabric.local_pools.members]]
+name = "supervisor-0"
+enabled = true
+base_url = "http://192.168.1.30:8000"
+max_in_flight = 1
+priority = 10
+
+# Provider entries below are examples. Operators may replace, disable, or
+# reorder them while retaining the same virtual-model contracts.
+# Moonshot's Kimi for Coding plan. The endpoint speaks the Anthropic protocol,
+# requires max_tokens, and rejects arbitrary temperature values.
+[[fabric.providers]]
+name = "kimi"
+enabled = true
+kind = "http"
+endpoint = "https://api.kimi.com/coding/v1"
+protocol = "anthropic"
+model = "k3"
+api_key_env = "KIMI_API_KEY"
+max_in_flight = 2
+timeout_ms = 1800000
+max_tokens = 200000
+
+# z.ai's GLM Coding Plan.
+[[fabric.providers]]
+name = "zai"
+enabled = true
+kind = "http"
+endpoint = "https://api.z.ai/api/coding/paas/v4"
+protocol = "open_ai"
+model = "glm-5.3"
+api_key_env = "ZAI_API_KEY"
+max_in_flight = 2
+timeout_ms = 1800000
+temperature = 0.2
+
+# OpenRouter remains the broad cloud fallback and SOTA model broker.
+[[fabric.providers]]
+name = "openrouter"
+enabled = true
+kind = "http"
+endpoint = "https://openrouter.ai/api/v1"
+protocol = "open_ai"
+model = "openrouter/auto"
 api_key_env = "OPENROUTER_API_KEY"
-auto_model = "openrouter/auto"
-cost_quality_tradeoff = 9
-allowed_models = []
-app_title = "Octoroute"
-max_in_flight = 8
-health_cache_ttl_ms = 10000
-probe_timeout_ms = 3000
+max_in_flight = 4
+timeout_ms = 1800000
+temperature = 0.2
+profile = "open_router_auto"
+
+# Direct OpenAI API use is optional and separately metered.
+[[fabric.providers]]
+name = "openai"
+enabled = false
+kind = "http"
+endpoint = "https://api.openai.com/v1"
+protocol = "open_ai"
+model = "gpt-5.6-sol"
+api_key_env = "OPENAI_API_KEY"
+max_in_flight = 2
+timeout_ms = 1800000
+reasoning_effort = "xhigh"
+
+# Subscription-backed Codex execution follows Drep's locked-down CLI pattern:
+# ChatGPT-managed login, ephemeral runs, a filtered child environment, and no
+# direct reading or storage of the account token by Octoroute.
+[[fabric.providers]]
+name = "codex"
+enabled = true
+kind = "codex_cli"
+model = "gpt-5.6-sol"
+executable = "codex"
+max_in_flight = 1
+timeout_ms = 1800000
+reasoning_effort = "xhigh"
 
 [routing]
-default = "prefer_local"
-fallback_before_commit = true
-semantic_mode = "shadow"
-decision_timeout_ms = 30000
-local_success_threshold = 0.50
-boundary_threshold_step = 0.10
-shadow_sample_rate = 1.0
-session_latch_enabled = false
-session_latch_ttl_ms = 900000
-session_latch_max_entries = 1024
-session_latch_evidence_threshold = 2
+default_model = "auto-route"
+
+# Local-first general route. OpenCode should still request `worker` or
+# `supervisor` explicitly when it has already classified the task.
+[[routing.routes]]
+model = "auto-route"
+privacy = "cloud_allowed"
+steps = ["pool:workers", "pool:supervisor-local", "provider:kimi", "provider:zai", "provider:openrouter"]
+default_reasoning_effort = "medium"
+fallback_on = ["busy", "unhealthy", "context_overflow", "incompatible", "rate_limited", "precommit_failure"]
+
+# Bounded delegated work. This route can never disclose a prompt to cloud.
+[[routing.routes]]
+model = "worker"
+privacy = "local_only"
+steps = ["pool:workers"]
+default_reasoning_effort = "medium"
+fallback_on = ["busy", "unhealthy", "context_overflow", "incompatible", "precommit_failure"]
+
+# High-level planning and review. It prefers a local supervisor when enabled,
+# then uses the configured cloud or subscription chain.
+[[routing.routes]]
+model = "supervisor"
+privacy = "cloud_allowed"
+steps = ["pool:supervisor-local", "provider:kimi", "provider:zai", "provider:openrouter", "provider:codex"]
+default_reasoning_effort = "xhigh"
+fallback_on = ["busy", "unhealthy", "context_overflow", "incompatible", "rate_limited", "precommit_failure"]
+
+# Force all-local operation while still allowing worker-to-supervisor escalation.
+[[routing.routes]]
+model = "local"
+privacy = "local_only"
+steps = ["pool:workers", "pool:supervisor-local"]
+default_reasoning_effort = "medium"
+fallback_on = ["busy", "unhealthy", "context_overflow", "incompatible", "precommit_failure"]
+
+# Deliberate SOTA escalation. Subscription Codex is preferred before metered
+# OpenRouter/OpenAI, but every target is non-local by definition.
+[[routing.routes]]
+model = "cloud-sota"
+privacy = "cloud_only"
+steps = ["provider:codex", "provider:openrouter", "provider:openai"]
+default_reasoning_effort = "xhigh"
+fallback_on = [
+  "busy",
+  "unhealthy",
+  "incompatible",
+  "rate_limited",
+  "precommit_failure",
+]
 
 [observability]
 log_level = "info"

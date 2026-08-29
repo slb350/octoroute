@@ -1,122 +1,117 @@
 # Development
 
-## Toolchain
+Octoroute supports Rust 1.90 and stable Rust. The repository keeps one v3
+runtime; there is no version-dispatch compatibility path.
 
-- Rust edition 2024
-- Development toolchain Rust 1.97.1
-- MSRV 1.90
-- Axum/Tokio
-- reqwest with rustls and streaming
+## Checks
 
-The tracked toolchain file selects the development compiler automatically:
-
-```bash
-cargo test --locked --all-targets --all-features
-```
-
-CI validates both the current stable toolchain and the Rust 1.90.0 MSRV.
-
-## Workflow
-
-Every behavior change follows:
-
-1. write a failing test;
-2. implement the smallest correct typed behavior;
-3. format and run the focused tests;
-4. refactor while green;
-5. run the full suite and Clippy.
-
-Commands:
+Run the same gates as CI:
 
 ```bash
 cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
-cargo doc --no-deps
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+cargo test --locked --no-default-features
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --all-features --no-deps
+cargo audit --deny warnings
+./scripts/mutants-run.sh
 ```
 
-Wiremock tests bind loopback ports. Sandboxed environments must permit local
-listeners.
+The repository has no `benches/` directory and no `[[bench]]` target, so there
+is no benchmark step. The mutation sweep is the slowest gate; `just mutants`
+offloads it to `homelab-1.local` when that host is reachable, and falls back to
+a local run with a warning when it is not. That host is shared with self-hosted
+CI runners, so the sweep is capped at `CPUQuota=500%` of its 16 cores; raise it
+with `OCTOROUTE_MUTANTS_CPUQUOTA` when you know the box is idle.
 
-## Test layers
-
-- configuration, secret, auth, request, and policy unit contracts;
-- llama.cpp health/slot/token admission tests;
-- permit cancellation and panic-unwind tests;
-- OpenRouter policy mutation tests;
-- credential-isolated transport and opaque stream tests;
-- service fallback/privacy/limit tests using a fake transport;
-- public Axum integration tests using real reqwest-to-wiremock local traffic;
-- live Strix and low-cost OpenRouter canaries before release.
-
-Fixtures use synthetic prompts and test credentials. Never record a personal
-prompt or real key.
+`just check` runs clippy and the formatting check. `just test` runs the tests,
+`just mutants` the mutation sweep, and `just validate` all of them. The focused
+public-contract tests are `cli_config_command` and `gateway_v3`.
 
 ## Source layout
 
 ```text
 src/
-  calibration.rs
-  main.rs
   cli.rs
+  main.rs
   telemetry.rs
   gateway/
     auth.rs
-    config.rs
-    config/validation.rs
     env.rs
-    http.rs
-    local.rs
-    metrics.rs
-    openrouter.rs
+    http_client.rs
     request.rs
-    routing.rs
-    sampling.rs
-    session_latch.rs
-    service/
-    trajectory.rs
-    transport.rs
+    fabric/
+      config.rs
+      policy.rs
+      local_pool.rs
+      provider.rs
+      anthropic.rs
+      codex.rs
+      metrics.rs
+      transport.rs
+      service.rs
+      http.rs
+      http_support.rs
 ```
 
-Keep source and test files below 600 lines where practical and never above
-800 lines. Split by responsibility before adding a second concern.
+The `fabric` module owns all runtime routing and dispatch. `auth`, `env`, `http_client`, and `request`
+are protocol and security primitives shared by that one implementation.
 
-## Live contracts
+## Testing boundaries
 
-For Strix:
+Unit and integration coverage should preserve these invariants:
 
-```bash
-curl http://strix.local:8080/health
-curl 'http://strix.local:8080/slots?fail_on_no_slot=1'
-curl -H 'Content-Type: application/json' \
-  -d '{"model":"strixtea","messages":[{"role":"user","content":"probe"}]}' \
-  http://strix.local:8080/v1/chat/completions/input_tokens
-```
+- unknown request fields survive destination model rewriting;
+- malformed or unsupported content is not admitted locally;
+- local pool admission distinguishes disabled, incompatible, busy, unhealthy,
+  context-overflow, and token-count-unavailable states, asserted against the
+  production admission path;
+- member and provider permits remain held until response bodies are dropped;
+- `local-only` removes provider targets before any credential resolution;
+- cached readiness resolves credentials only on refresh, coalesces concurrent
+  callers, and never includes prompt data;
+- Anthropic messages, tools, reasoning, finish reasons, usage, errors, and
+  fragmented SSE translate into OpenAI-compatible shapes;
+- Codex child environments exclude gateway/provider secrets and every run is
+  ephemeral, read-only, bounded, and contract-validated;
+- each fallback class requires its matching configured trigger;
+- 429 and pre-commit failures do not fall forward indiscriminately;
+- committed non-retryable provider responses are returned;
+- safe errors do not echo TOML values, prompts, or credentials;
+- generated `config.toml` round-trips through `FabricConfig`;
+- the complete Axum application forwards local SSE bytes opaquely.
 
-For OpenRouter, run canaries through Octoroute rather than calling the
-provider directly. Keep output limits small and inspect:
+Use WireMock for local/provider contract tests. Use a temporary fake executable
+for Codex lifecycle and environment assertions. Tests should assert exact
+request bodies and bounded headers, and should use zero-contact or
+environment-read assertions for privacy guarantees. The OpenCode-style
+Anthropic tool/SSE and Codex end-to-end cases live in `service_tests.rs`.
 
-- actual response model;
-- usage/cost;
-- streaming `[DONE]`;
-- Octoroute destination/reason/upstream headers.
+## Adding an HTTP provider adapter
 
-## Security review checklist
+Keep protocol translation isolated from the registry and executor:
 
-- no raw secret fields or debug leakage;
-- auth occurs before body consumption;
-- request/header/rate/concurrency limits are active;
-- outbound Authorization is chosen by destination, never forwarded;
-- cookies and hop-by-hop headers are stripped;
-- local-only invariants are tested;
-- fallback only happens pre-commit;
-- metrics labels are bounded;
-- OpenRouter uses HTTPS;
-- config and dotenv parser errors omit source values.
+1. validate protocol-specific configuration statically;
+2. advertise compatibility only for verified request features;
+3. resolve credentials only after selection or a body-free expired readiness
+   probe;
+4. prepare headers plus the first body chunk before commitment;
+5. classify failures into the closed route trigger set;
+6. retain permits through the response body;
+7. test streaming, tools, reasoning, errors, and secret redaction.
 
-## Design record
+OpenAI-compatible providers share one schema-preserving adapter.
+Anthropic-compatible providers go through the explicit message, tool,
+reasoning, error, and streaming translator, because the two wire formats differ.
 
-See [plans/intelligent-auto-routing.md](plans/intelligent-auto-routing.md) for
-the v2 decision table and failure semantics. See
-[plans/calibrated-semantic-routing.md](plans/calibrated-semantic-routing.md) for
-the shipped forecast policy and its still-pending labeled evaluation gate.
+## Adding a command provider
+
+Execution providers must be compiled known kinds, never arbitrary shell
+commands. The Codex adapter requires a filtered child environment, ChatGPT-
+managed authentication, ephemeral non-interactive execution, bounded timeout
+and output, disabled unrelated capabilities, and structured event parsing.
+
+## Documentation
+
+Update the generated template, configuration/API docs, runtime status, and
+public integration tests in the same change as a new user-visible contract.

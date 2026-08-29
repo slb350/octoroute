@@ -1,191 +1,131 @@
 # Deployment
 
-## Build
+Octoroute v3 is a single Rust service in front of local llama.cpp pools and
+configured provider endpoints.
 
-```bash
-cargo build --release --locked
-```
+## Prepare configuration
 
-The binary is `target/release/octoroute`. Octoroute requires Rust 1.90 to
-build; the deployed binary has no Rust runtime dependency.
+Start from `config.toml` or `config.laptop.toml`. Set stable pool/member names,
+immutable model revisions, context limits, provider chains, and route privacy.
 
-## Files
-
-Install:
-
-```text
-/opt/octoroute/bin/octoroute
-/opt/octoroute/config.toml
-/opt/octoroute/.env
-```
-
-`.env` must be readable only by the service account:
+Create a `.env` beside the selected config file:
 
 ```dotenv
-OCTOROUTE_API_KEY=<long random client credential>
-OPENROUTER_API_KEY=<OpenRouter API credential>
+OCTOROUTE_API_KEY=<long random inbound secret>
+OPENROUTER_API_KEY=<provider credential when used>
+ZAI_API_KEY=<provider credential when used>
+KIMI_API_KEY=<Anthropic-compatible provider credential when used>
 ```
 
-Never include secrets in `config.toml`, command arguments, unit files, logs,
-or source control.
+The process environment overrides `.env`. Provider variables can be omitted at
+startup, but the provider will remain unavailable when selected or probed.
+The inbound key and credentials for enabled authenticated local members must
+exist at startup.
 
-If Octoroute runs on Strix itself, keep the repository local base URL,
-`http://127.0.0.1:8080`. If it runs elsewhere on the LAN, use
-`http://strix.local:8080`.
+Restrict both files to the service account.
 
-The repository profile already uses loopback and binds Octoroute to port
-8081. Port 3000 is occupied by Gitea on Strix.
-
-## systemd system service
-
-```ini
-[Unit]
-Description=Octoroute local-first LLM gateway
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=octoroute
-Group=octoroute
-WorkingDirectory=/opt/octoroute
-ExecStart=/opt/octoroute/bin/octoroute --config /opt/octoroute/config.toml
-Restart=on-failure
-RestartSec=2
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateDevices=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-RestrictNamespaces=true
-RestrictRealtime=true
-RestrictSUIDSGID=true
-LockPersonality=true
-MemoryDenyWriteExecute=true
-UMask=0077
-
-[Install]
-WantedBy=multi-user.target
-```
-
-The tracked `deploy/octoroute.service` contains this unit. Create a locked
-service account and install the files:
+For an enabled `codex_cli` provider, install the official `codex` executable
+for the service account and complete ChatGPT login under its `CODEX_HOME`.
+The supplied systemd unit creates and uses
+`/var/lib/octoroute/codex`; log in and verify the diagnostic with the same
+identity and environment before startup:
 
 ```bash
-sudo useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin octoroute
-sudo install -d -o root -g octoroute -m 0750 /opt/octoroute/bin
-sudo install -o root -g root -m 0755 target/release/octoroute /opt/octoroute/bin/octoroute
-sudo install -o root -g octoroute -m 0640 config.toml /opt/octoroute/config.toml
-sudo install -o root -g octoroute -m 0640 .env /opt/octoroute/.env
-sudo install -o root -g root -m 0644 deploy/octoroute.service /etc/systemd/system/octoroute.service
+sudo install -d -o octoroute -g octoroute -m 0700 /var/lib/octoroute/codex
+sudo -u octoroute env CODEX_HOME=/var/lib/octoroute/codex codex login
+sudo -u octoroute env CODEX_HOME=/var/lib/octoroute/codex codex doctor --json
 ```
 
-The production `.env` should contain only the inbound Octoroute credential
-and OpenRouter credential, even if the development `.env` contains other
-provider keys. Do not print secret values while creating the deployment file.
-
-Then:
+## Build and run
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now octoroute.service
-sudo systemctl status octoroute.service
+cargo build --locked --release
+target/release/octoroute --config /opt/octoroute/config.toml
 ```
 
-## Existing Strix llama.cpp process
+The repository includes example systemd units in `deploy/`. Adjust user/group,
+paths, network dependencies, and local-model service relationships for the
+deployment.
 
-The inspected Strix server was launched manually from an SSH session. The
-tracked `deploy/strix-llama-server.service` preserves its tested model and
-generation arguments while changing only these ingress/observability
-arguments:
+## Network placement
 
-```text
---host 127.0.0.1
---port 8080
---metrics
-```
+- Bind `127.0.0.1` for a same-host client.
+- For remote clients, bind a private address and place authenticated TLS in
+  front of Octoroute.
+- Keep llama.cpp members on trusted private networks.
+- Restrict outbound traffic to configured HTTPS provider endpoints at the
+  network, not through proxy variables: Octoroute's own client sets
+  `no_proxy`, so `HTTP_PROXY` and friends do not route its provider calls. The
+  Codex child does inherit them.
+- Do not expose local health, slot, or token-count endpoints publicly.
+- Restrict Octoroute's unauthenticated readiness endpoint to operator networks:
+  a cache refresh resolves provider credentials and can execute the bounded
+  Codex diagnostic, though it sends no prompt body.
 
-Do not run the manual and managed llama.cpp processes on port 8080
-simultaneously. After the managed process is healthy, verify the endpoint is
-reachable from Strix loopback and no longer reachable directly from another
-LAN host.
+## Startup sequence
 
-Install the unit before the controlled cutover:
+Startup performs static config validation, loads the optional `.env`, resolves
+the inbound secret and enabled local-member secrets, constructs local pools,
+and constructs OpenAI, Anthropic, and Codex provider adapters without reading
+provider credentials or launching the CLI.
+
+The listener binds only after those steps succeed. Provider credentials and
+Codex availability remain lazy until selection or an expired readiness probe.
+
+## Verification
+
+After startup:
+
+1. call `/health/live` and verify `config_version: 3`;
+2. call `/health/ready` and inspect every configured pool/provider;
+3. authenticate to `/v1/models` and confirm the expected virtual routes;
+4. send a non-streaming `worker` request;
+5. send a streaming `worker` request and verify opaque SSE completion;
+6. send `auto` with `X-Octoroute-Privacy: local-only` while local admission is
+   unavailable and verify that no provider credential or endpoint is touched;
+7. canary each enabled HTTP or Codex provider route separately;
+8. scrape authenticated `/metrics` and retain request IDs in proxy logs.
+
+Run the repository canary against the deployed listener:
 
 ```bash
-sudo install -o root -g root -m 0644 deploy/strix-llama-server.service \
-  /etc/systemd/system/strix-llama-server.service
-sudo systemctl daemon-reload
+OCTOROUTE_URL=https://octoroute.internal \
+OCTOROUTE_API_KEY="$OCTOROUTE_API_KEY" \
+OCTOROUTE_LOCAL_MODEL=worker \
+OCTOROUTE_PROVIDER_MODEL=cloud-sota \
+scripts/v3-canary.sh
 ```
 
-At cutover, terminate the current manual process gracefully, start the unit,
-and validate `/health`, `/slots?fail_on_no_slot=1`, and
-`/v1/chat/completions/input_tokens` from Strix loopback before starting
-Octoroute. Roll back by stopping the unit and restoring the previous manual
-command with `--host 0.0.0.0` only while clients are still configured for the
-legacy direct endpoint.
+Omit `OCTOROUTE_PROVIDER_MODEL` to test only the local-only boundary. The
+script checks liveness, active readiness, model listing, local-only completion,
+local-only SSE, and the optional explicit provider route without printing
+response bodies or placing the bearer secret in curl's argument list.
 
-## Network
+Readiness verifies bounded authentication/reachability, but it is not a model
+generation test. A successful explicit-route canary is still required before
+directing production traffic.
 
-The gateway itself always requires bearer auth, but it should still be
-limited to trusted LAN/VPN clients with a firewall or reverse proxy.
-See [Security](security.md) for browser, rotation, reverse-proxy, and
-incident-response requirements.
+## Rolling changes
 
-Allow outbound:
+Virtual model names are the client contract. Pool membership, model revisions,
+provider settings and route chains can change without reconfiguring clients.
 
-- Strix llama.cpp;
-- `https://openrouter.ai`.
+For a model replacement:
 
-Do not expose llama.cpp directly to untrusted clients if Octoroute is meant
-to enforce privacy, admission, and spend controls.
+1. deploy the new llama.cpp member under a new or updated immutable revision;
+2. verify its health, slot, input-token, and chat endpoints;
+3. add/enable it in a pool with bounded capacity;
+4. canary through Octoroute;
+5. remove the old member after in-flight streams finish.
 
-## Readiness
+For provider changes, add the credential out of band, canary an explicit route,
+then adjust route order. Local targets must remain before providers.
 
-Use:
+## Rollback
 
-```bash
-curl --fail http://127.0.0.1:8081/health/live
-curl --fail http://127.0.0.1:8081/health/ready
-```
+Keep the previous v3 binary and configuration as a pair. To roll back, stop the
+service, restore both artifacts, and restart. Avoid restoring a configuration
+that names a model revision no longer deployed.
 
-The second endpoint is healthy when at least one upstream is available.
-
-Protected smoke test:
-
-```bash
-curl --fail http://127.0.0.1:8081/v1/models \
-  -H "Authorization: Bearer $OCTOROUTE_API_KEY"
-```
-
-## Rollout validation
-
-1. Verify `/health/live`.
-2. Verify `/health/ready` reports both component states.
-3. Send `model: local` with `X-Octoroute-Privacy: local-only`.
-4. Occupy the single Strix slot and verify `model: auto` reports
-   `X-Octoroute-Reason: local_busy` and a cloud destination.
-5. Verify the same busy condition with local-only returns 503.
-6. Verify OpenRouter non-streaming and SSE responses expose the actual model.
-7. Scrape `/metrics` with authentication.
-
-## Shutdown
-
-SIGINT and SIGTERM trigger graceful Axum shutdown. In-flight body streams are
-allowed to finish according to Axum/hyper shutdown behavior; dropping a
-client stream releases its Octoroute and upstream permits.
-
-## Release
-
-The initial `2.0.0` release introduced the breaking v2 configuration/API
-change. Minor release `2.2.0` adds calibrated local-success forecasting,
-offline threshold evaluation, bounded shadow trajectory signals, and an
-opt-in enforced-mode session latch while retaining shadow mode as the default.
-Do not publish or tag while the tree is dirty or verification is incomplete.
-
-See [Migrating from Octoroute v1 to v2](migration-v2.md) for staged rollout
-and rollback instructions.
+Credential revocation is independent of binary rollback. Revoke suspected
+provider keys immediately, update the environment, and restart the service.

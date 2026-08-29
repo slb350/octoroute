@@ -1,0 +1,35 @@
+#!/bin/bash
+#
+# Pre-commit hook for Octoroute.
+#
+# Tracked in .githooks/ so the checks are the same for every clone. Enable with:
+#   git config core.hooksPath .githooks
+
+set -e
+
+echo "Running pre-commit checks..."
+
+if ! cargo fmt --all --check &>/dev/null; then
+    echo "Code is not formatted. Running cargo fmt..."
+    cargo fmt --all
+    git diff --name-only --cached | grep '\.rs$' | xargs -r git add
+    echo "Code formatted and staged"
+else
+    echo "Code is properly formatted"
+fi
+
+if ! cargo clippy --all-targets --all-features -- -D warnings; then
+    echo "Clippy reported warnings. Fix them before committing."
+    exit 1
+fi
+
+# Mutation-test the staged change. A green suite proves the tests ran, not that
+# they would notice if the code were wrong; a surviving mutant is a test that
+# cannot distinguish correct behaviour from incorrect. Scoped to the diff, so
+# the cost tracks the change rather than the tree.
+if [ -x ./scripts/mutants-staged.sh ]; then
+    ./scripts/mutants-staged.sh
+fi
+
+echo "Pre-commit checks passed"
+exit 0

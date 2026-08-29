@@ -1,161 +1,161 @@
 # Architecture
 
-## Responsibility boundary
-
-Octoroute is a gateway and a local/cloud router:
+Octoroute v3 separates a stable client contract from physical inference
+targets.
 
 ```text
-client
-  |
-  v
-authentication + bounds + rate/concurrency limits
-  |
-  v
-minimal request facts (model, stream, capabilities, privacy)
-  |
-  +-- explicit cloud / incompatible / local unavailable --> OpenRouter
-  |
-  `-- automatic local candidate
-        |
-        +-- active hashed session latch ------> OpenRouter `openrouter/auto`
-        |
-        `-- semantic mode
-              |
-              +-- disabled --------------------> local admission
-              +-- shadow decision -------------> local admission
-              `-- enforced decision
-                    +-- cloud ------------------> OpenRouter `openrouter/auto`
-                    `-- local ------------------> local admission
-                    |
-                    +-- Octoroute semaphore
-                    +-- llama.cpp health and free slot
-                    `-- exact input tokens + output budget + safety margin
-                |
-                `-- Strix chat completions
+OpenAI-compatible request
+          |
+   authenticate + bound
+          |
+    resolve virtual route
+          |
+  apply local-only privacy
+          |
+   ordered target executor
+      /             \
+local pool       provider registry
 ```
 
-When semantic routing is enabled, Octoroute uses Strix itself for a bounded
-success forecast, so a prompt selected for local work has not first been
-disclosed to a cloud classifier. Strix returns a probability, capability
-boundary, closed rule, and short crux; deterministic Octoroute policy selects
-the destination from that forecast. `shadow` is the default mode and records
-the policy outcome without acting on it; `disabled` skips forecasting;
-`enforced` lets the policy outcome select local or cloud. OpenRouter Auto
-performs cloud model/provider selection only after Octoroute chooses cloud.
+## Static configuration boundary
 
-The local forecast prompt carries `octoroute-strix-capability-card/v2`, built
-once at gateway construction from the configured upstream name, model alias,
-immutable model revision, and closed enabled-capability set. Its qualitative
-rules include measured limitations and prohibit inferring task difficulty from
-phrasing. Dynamic identity values are JSON-escaped data; the card contains no
-origin, credential, prompt, health, slot, or other mutable runtime state.
-Octoroute fingerprints the exact rendered card with SHA-256 and emits that
-bounded identity in shadow forecast events so offline calibration rejects mixed
-model or capability populations.
+`FabricConfig` validates the complete document before startup:
 
-## Request path
+- stable names and cross-references;
+- local-before-provider ordering;
+- reserved `auto` alias and non-repeating route targets;
+- route privacy versus target kinds;
+- URL, model, environment-name, credential-argv, context, concurrency, and
+  timeout bounds;
+- exactly one credential source for each HTTP provider;
+- provider-kind-specific fields.
 
-1. Reject oversized headers.
-2. Authenticate exactly one bearer credential.
-3. Enforce the configured fixed-window rate and request-concurrency limits.
-4. Read the body with a hard byte bound.
-5. Parse only the routing envelope while retaining the complete JSON object.
-6. Resolve model intent and `X-Octoroute-Privacy`.
-7. Skip semantic routing when cloud is explicit, local capabilities are
-   incompatible, or configuration defaults automatic work to cloud.
-8. For an opt-in enforced-mode session latch, hash a bounded `session_id` and
-   send an active latch directly to `openrouter/auto`. Forced-local intent
-   bypasses this lookup.
-9. In shadow mode, deterministically sample the server-generated request ID at
-   `shadow_sample_rate`; skipped requests continue directly to local admission.
-   Benchmark and calibration traffic uses `1.0`. Enforced mode is never sampled.
-10. For sampled shadow or enforced mode, reserve an idle Strix slot and request
-    a constrained success forecast with thinking disabled, then apply the
-    configured deterministic threshold policy. Disabled mode skips forecasting.
-11. In shadow mode, record the bounded outcome and continue local admission.
-   In enforced mode, send a cloud decision or safe classifier failure to
-   `openrouter/auto`. An enabled latch records only consecutive hard
-   `unsupported`/`known_local_limit` cloud evidence.
-12. For a local path or forced-local request, acquire a non-blocking local
-    permit, verify health and a free slot, obtain exact input tokens, and
-    include the requested or default output reservation in the safe context
-    calculation.
-13. Dispatch to one upstream with its own credential.
-14. Buffer the first upstream body chunk. Before this commit point, eligible
-    automatic local failures may spill to cloud.
-15. Stream all remaining bytes with backpressure. The upstream and concurrency
-    permits live until the body completes or is dropped.
+The parser denies unknown fields and omits source values from errors.
 
-## Schema fidelity
+## Request boundary
 
-`GatewayRequest` keeps the complete JSON object. Octoroute patches only:
+`GatewayRequest` retains the parsed OpenAI object and rewrites only fields owned
+by the selected destination. It validates the minimum envelope and lazily
+infers features needed for local admission. Unknown or malformed local feature
+shapes become `incompatible`; they are never guessed safe.
 
-- the destination `model`;
-- the server-owned OpenRouter `auto-router` plugin fields for automatic cloud
-  routing.
+Virtual routing is deterministic. Octoroute does not infer agent roles, git
+semantics, or task difficulty from prompt text. Clients such as OpenCode choose
+`worker` or `supervisor`; ordinary clients can use `auto`.
 
-Unknown fields, message content blocks, OpenRouter plugins, `session_id`,
-streaming comments, data frames, `[DONE]`, usage, cost, and actual response
-model pass through. Routing inspects message roles and typed-content shapes
-without rewriting them; malformed shapes fail closed, and historical tool
-messages require the configured local tool capability.
+## Local pool runtime
 
-## Privacy and fallback
+Each `LlamaCppPool` owns equivalent members. A member owns:
 
-Forced-local intent is defined by:
+- a pool-scoped HTTP client handle;
+- resolved optional local credential;
+- health, slot, input-token, and chat URLs;
+- a concurrency semaphore;
+- a short bounded health cache.
 
-- `model: local`;
-- the configured local alias (`strixtea`);
-- `X-Octoroute-Privacy: local-only`.
+Admission filters capabilities and context, then tries members by live load,
+configured priority, and rotating tie order. Health, slot availability, and
+exact input tokens are checked before a `PoolLease` is issued.
 
-Those paths never return a cloud destination. Automatic local attempts may
-fall back only on a pre-commit connection/body failure or retryable local 5xx.
-After one body byte is client-visible, upstream switching is impossible.
+The lease carries physical identity, destination request bytes, and its permit.
+The transport moves that permit into the response body stream, so capacity is
+released only when the body completes or is dropped.
 
-## Modules
+## Provider registry
 
-| Module | Responsibility |
-| --- | --- |
-| `calibration` | Offline forecast validation, threshold sweeps, and reports |
-| `gateway/config` | Versioned parsing, validation, secret resolution |
-| `gateway/env` | Process-over-dotenv secret layering without global mutation |
-| `gateway/auth` | Fixed-length hashed constant-time bearer verification |
-| `gateway/request` | Minimal facts and schema-preserving model mutation |
-| `gateway/routing` | Typed intent, privacy, decision, and bounded reasons |
-| `gateway/intelligence` | Local forecast, card, and threshold policy |
-| `gateway/sampling` | Stateless request-ID-based shadow sampling |
-| `gateway/session_latch` | Bounded hashed enforced-mode session state |
-| `gateway/trajectory` | Strict shadow-only tool-trajectory aggregation |
-| `gateway/local` | llama.cpp health/slot/token admission and permit lifecycle |
-| `gateway/openrouter` | Auto Router plugin and model policy mutation |
-| `gateway/transport` | Credential isolation and pre-commit streaming state |
-| `gateway/service` | Limits, routing, fallback, response headers |
-| `gateway/http` | Axum endpoints |
-| `gateway/metrics` | Bounded Prometheus registry |
+`ProviderRegistry` is keyed only by validated provider names. Construction does
+not read provider credentials or run commands.
 
-## Failure posture
+An HTTP provider owns:
 
-- Configuration and secret failures stop startup.
-- Probe transport, status, and schema failures are fail-closed for local
-  admission.
-- Enforced semantic-routing failures send automatic traffic to OpenRouter
-  with the bounded `router_failure` reason. Shadow failures do not select a
-  destination when local capacity was successfully reserved.
-- Explicit local returns an error when unavailable; it never silently spills.
-- OpenRouter failures are returned without an Octoroute retry to another cloud
-  model. Provider fallback belongs to OpenRouter.
-- Prompt bodies and credentials are never included in safe error messages.
+- normalized protocol-specific request and models URLs;
+- isolated lazy credential source;
+- an OpenAI-preserving or Anthropic-translating adapter;
+- timeout;
+- bounded cached readiness state;
+- concurrency semaphore.
 
-## Current live contract
+Provider preference is represented only by route order. There is no separate
+provider priority that could disagree with the executable chain.
 
-Verified on 2026-07-22:
+Credential resolution occurs after the executor selects the provider and
+acquires its permit. The only other resolution path is an explicit readiness
+request after that provider's probe cache expires. Readiness is body-free,
+bounded, and coalesced per provider.
 
-- Strix alias: `strixtea`
-- model file: `Agents-A1-Q8_0.gguf`
-- context: 65,536
-- parallel slots: 1
-- `/health`: `{"status":"ok"}`
-- `/slots?fail_on_no_slot=1`: 200 when idle, 503 when busy
-- `/v1/chat/completions/input_tokens`: `{input_tokens, object}`
-- OpenRouter Auto non-streaming and SSE both return the actual selected
-  model and usage/cost.
+The OpenAI adapter clones the schema-preserving body, patches the model, and
+applies configured defaults only when the caller omitted them. OpenRouter Auto is an explicit profile,
+so the behavior stays out of every other provider.
+
+The Anthropic adapter explicitly maps system/developer messages, alternating
+user/assistant text, tool definitions and history, sampling controls, output
+budget, and reasoning effort into Messages. It translates bounded non-streaming
+responses and incremental SSE back into OpenAI response, tool-call, reasoning,
+usage, finish-reason, and error shapes. Features without a verified mapping
+fail as `incompatible` before credential resolution or prompt disclosure.
+
+The Codex provider is a separate command runtime. Admission serializes the
+OpenAI request as data for a stateless backend contract. Execution uses the
+official CLI with ChatGPT-managed login, a filtered environment, an empty
+temporary working directory, read-only sandboxing, ephemeral state, ignored
+user config/rules, and tools, apps, web, hooks, memories, and subagents
+disabled. A strict bounded JSONL lifecycle and output schema must validate
+before the response can commit.
+
+## Disclosure and fallback
+
+The executor first resolves the virtual route, then applies request-level
+privacy. `local-only` removes every provider step before any admission or
+credential operation.
+
+Configuration requires local steps before providers. Once a request is sent to
+a provider, no local target can appear later in the same chain.
+
+Every continuation is authorized by the route's closed `fallback_on` set.
+Target admission states map to `busy`, `unhealthy`, `context_overflow`, or
+`incompatible`; HTTP 429 maps only to `rate_limited`; transport and upstream
+server failures map only to `precommit_failure`.
+
+## Commitment point
+
+The production transport obtains response headers and buffers the first usable
+body chunk before returning a prepared response. Anthropic streaming buffers
+the first translated event; Anthropic non-streaming and Codex CLI execution
+validate their complete bounded result before commitment. Until then, the
+executor may drop the response and select another target when policy allows.
+After decoration and return to Axum, the target is committed.
+
+Safe upstream response headers are allowlisted. Request IDs, route identity,
+pool/member/provider names, and model revisions come from generated or validated
+bounded values.
+
+## Runtime HTTP controls
+
+Inbound processing applies these controls before route execution:
+
+1. aggregate header bound;
+2. constant-time bearer authentication;
+3. fixed-window authenticated request rate limit;
+4. inbound concurrency permit;
+5. bounded body read;
+6. minimum request validation.
+
+The inbound permit is also held by the response body stream.
+
+Authentication precedes the body read, so an oversized body from a caller with
+no valid credential is refused without being read.
+
+`requests_per_minute` is one counter for the whole process, not a quota per
+caller: every authenticated client draws on the same allowance, so one client at
+the limit blocks the rest. The window is fixed rather than sliding, which means
+a caller can issue up to twice the limit across a window boundary. Both are
+acceptable for a gateway fronting a known set of clients and are the reason the
+limit is not a substitute for per-tenant quota.
+
+## Adapter isolation
+
+OpenAI-compatible HTTP, Anthropic-compatible HTTP, and Codex CLI are explicit
+runtime variants, declared in configuration and never inferred from an endpoint
+or a prompt. Each adapter advertises only verified request features, uses its own
+authentication mechanism, and fails closed before disclosure when a request
+cannot be translated safely.

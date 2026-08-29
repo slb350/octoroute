@@ -1,6 +1,5 @@
-//! Layered process and repository `.env` configuration.
+//! Secret-bearing process and repository `.env` configuration.
 
-use crate::gateway::config::Environment;
 use secrecy::{ExposeSecret, SecretString};
 use std::{
     collections::HashMap,
@@ -8,6 +7,26 @@ use std::{
     path::{Path, PathBuf},
 };
 use thiserror::Error;
+
+/// Source used to resolve secret-bearing environment variables.
+pub trait Environment {
+    /// Return an environment variable without logging its value.
+    ///
+    /// The value is a [`SecretString`] because every caller of this trait is
+    /// resolving a credential. A plain `String` puts the secret one `Debug`
+    /// format or stray interpolation away from a log line.
+    fn get(&self, name: &str) -> Option<SecretString>;
+}
+
+/// Environment source backed by the current process.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProcessEnvironment;
+
+impl Environment for ProcessEnvironment {
+    fn get(&self, name: &str) -> Option<SecretString> {
+        std::env::var(name).ok().map(SecretString::from)
+    }
+}
 
 /// Environment composed from process values over an optional dotenv file.
 pub struct DotenvEnvironment<E> {
@@ -40,12 +59,16 @@ impl<E> DotenvEnvironment<E> {
 }
 
 impl<E: Environment> Environment for DotenvEnvironment<E> {
-    fn get(&self, name: &str) -> Option<String> {
-        self.parent.get(name).or_else(|| {
-            self.file_values
-                .get(name)
-                .map(|value| value.expose_secret().to_string())
-        })
+    /// Process values take precedence, but an empty one is not a value.
+    ///
+    /// An exported-but-empty variable is the shape a shell leaves behind after
+    /// `export KEY=` or a failed substitution. Treating it as a value shadows a
+    /// perfectly good `.env` entry and surfaces as a missing credential.
+    fn get(&self, name: &str) -> Option<SecretString> {
+        self.parent
+            .get(name)
+            .filter(|value| !value.expose_secret().is_empty())
+            .or_else(|| self.file_values.get(name).cloned())
     }
 }
 
@@ -100,14 +123,49 @@ fn load_error(path: &Path, error: dotenvy::Error, parsing: bool) -> DotenvLoadEr
     }
 }
 
+/// Read a dotenv file into secrets, last assignment wins.
+///
+/// Two rules, chosen together so they cannot disagree about which line is
+/// authoritative:
+///
+/// A repeated key resolves to its last assignment. Rotating a credential means
+/// appending the new line, and first-wins would keep serving the stale value
+/// with nothing in the log to say so.
+///
+/// An empty assignment is not a value, matching how an exported-but-empty
+/// process variable is treated in [`DotenvEnvironment::get`]. `KEY=` is what a
+/// truncated edit or a failed substitution leaves behind; stored as an empty
+/// secret it reaches the upstream and returns as "invalid credential" rather
+/// than the "missing credential" it actually is. Under last-wins a later blank
+/// assignment therefore clears the key instead of silently deferring to the
+/// earlier line.
 fn load_values(path: &Path) -> Result<HashMap<String, SecretString>, DotenvLoadError> {
     let iterator = dotenvy::from_path_iter(path).map_err(|error| load_error(path, error, false))?;
     let mut file_values = HashMap::new();
     for item in iterator {
         let (name, value) = item.map_err(|error| load_error(path, error, true))?;
-        file_values
-            .entry(name)
-            .or_insert_with(|| SecretString::from(value));
+        if value.is_empty() {
+            file_values.remove(&name);
+        } else {
+            file_values.insert(name, SecretString::from(value));
+        }
     }
     Ok(file_values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    #[test]
+    fn an_error_while_reading_entries_is_invalid_even_if_it_is_not_line_parse() {
+        let error = load_error(
+            Path::new("secrets.env"),
+            dotenvy::Error::Io(io::ErrorKind::PermissionDenied.into()),
+            true,
+        );
+
+        assert!(matches!(error, DotenvLoadError::Invalid { .. }));
+    }
 }

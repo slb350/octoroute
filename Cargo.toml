@@ -1,10 +1,10 @@
 [package]
 name = "octoroute"
-version = "2.2.2"
+version = "3.0.0"
 edition = "2024"
 rust-version = "1.90"
 authors = ["Steve Brandon"]
-description = "Local-first OpenAI-compatible gateway for llama.cpp and OpenRouter"
+description = "OpenAI-compatible inference fabric for local pools and cloud providers"
 license = "MIT"
 repository = "https://github.com/slb350/octoroute"
 exclude = ["AGENTS.md", "CLAUDE.md"]
@@ -12,7 +12,7 @@ exclude = ["AGENTS.md", "CLAUDE.md"]
 [dependencies]
 axum = "0.8"
 bytes = "1"
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
@@ -27,16 +27,15 @@ futures = "0.3"
 async-trait = "0.1"
 # Keep the URL/IDNA graph above GHSA-7fx9-626j-vqph's vulnerable validators.
 zerovec = "0.11.8"
-zerovec-derive = "0.11.5"
+zerovec-derive = "0.11.6"
 # Keep downstream resolution above RUSTSEC-2026-0258's vulnerable h2 range.
 h2 = "0.4.16"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"] }
-prometheus = "0.14"
+tempfile = "3"
+libc = "0.2"
 
 [dev-dependencies]
-proptest = "1.4"
-tempfile = "3"
 wiremock = "0.6"
 tower = { version = "0.5", features = ["util"] }

@@ -1,13 +1,13 @@
 //! Minimally parsed, schema-preserving chat-completion requests.
 
-use crate::gateway::config::LocalCapability;
+use crate::gateway::fabric::LocalCapability;
 use bytes::Bytes;
 use serde::{Serialize, Serializer, ser::SerializeMap as _};
 use serde_json::{Map, Value};
 use std::{collections::BTreeSet, sync::OnceLock};
 use thiserror::Error;
 
-const MAX_SESSION_ID_BYTES: usize = 128;
+const MAX_VIRTUAL_MODEL_BYTES: usize = 128;
 
 /// A feature inferred from the request envelope without rewriting messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -23,11 +23,23 @@ pub enum RequestFeature {
 }
 
 /// Bounded chat request retaining both original bytes and parsed JSON.
-#[derive(Debug)]
 pub struct GatewayRequest {
     body: Map<String, Value>,
     model: String,
     features: OnceLock<BTreeSet<RequestFeature>>,
+}
+
+/// Redacting `Debug`: the body is the client's prompt, and safe logs must never
+/// contain request bodies. A derived impl would print the whole prompt from a
+/// single `?request` in a `tracing` call.
+impl std::fmt::Debug for GatewayRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GatewayRequest")
+            .field("model", &self.model)
+            .field("body", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl GatewayRequest {
@@ -45,8 +57,13 @@ impl GatewayRequest {
         let model = body
             .get("model")
             .and_then(Value::as_str)
-            .filter(|model| !model.trim().is_empty())
-            .ok_or_else(|| invalid("model", "must be a non-empty string"))?
+            .filter(|model| valid_virtual_model(model))
+            .ok_or_else(|| {
+                invalid(
+                    "model",
+                    "must use 1..=128 ASCII letters, digits, dots, underscores, or hyphens",
+                )
+            })?
             .to_string();
 
         body.get("messages")
@@ -76,31 +93,35 @@ impl GatewayRequest {
         self.features.get_or_init(|| infer_features(&self.body))
     }
 
-    /// Original OpenAI messages supplied as unmodified routing context.
-    pub(crate) fn messages(&self) -> &[Value] {
-        self.body
-            .get("messages")
-            .and_then(Value::as_array)
-            .expect("validated gateway requests always contain messages")
-    }
-
-    /// Bounded client session identifier eligible for hashed in-memory policy state.
-    pub(crate) fn session_id(&self) -> Option<&str> {
-        self.body
-            .get("session_id")
-            .and_then(Value::as_str)
-            .filter(|value| {
-                !value.is_empty()
-                    && value.len() <= MAX_SESSION_ID_BYTES
-                    && !value.chars().any(char::is_control)
-            })
-    }
-
     /// Resolve the output-token reservation used for local context admission.
+    ///
+    /// The order matches llama.cpp's own precedence in
+    /// `oaicompat_chat_params_parse`: it overwrites a `max_tokens`-derived
+    /// `n_predict` with an explicit `n_predict` from the body. Because the body
+    /// is forwarded verbatim, budgeting from the OpenAI aliases alone would
+    /// reserve one number while the member generated another, voiding the
+    /// input + output + reserve guarantee after the response commits.
     pub fn output_token_budget(
         &self,
         default_max_output_tokens: u32,
     ) -> Result<u32, GatewayRequestError> {
+        // `n_predict` carries llama.cpp's semantics, not OpenAI's. A negative
+        // value is unlimited, so it cannot satisfy the finite local context
+        // reservation Octoroute proves before dispatch. Zero remains a real
+        // budget meaning "evaluate the prompt without generating".
+        if let Some(value) = self.body.get("n_predict").filter(|value| !value.is_null()) {
+            let tokens = value
+                .as_i64()
+                .ok_or_else(|| invalid("n_predict", "must be an integer within the i64 range"))?;
+            if tokens < 0 {
+                return Err(invalid(
+                    "n_predict",
+                    "must be non-negative for bounded local admission",
+                ));
+            }
+            return u32::try_from(tokens)
+                .map_err(|_| invalid("n_predict", "must be within the u32 range"));
+        }
         for field in ["max_completion_tokens", "max_tokens"] {
             if let Some(value) = self.body.get(field).filter(|value| !value.is_null()) {
                 let tokens = value.as_u64().filter(|tokens| *tokens > 0).ok_or_else(|| {
@@ -120,14 +141,6 @@ impl GatewayRequest {
         Ok(default_max_output_tokens)
     }
 
-    /// Consume the complete body and patch only its model field.
-    pub fn into_body_for_model(mut self, model: &str) -> Result<Value, GatewayRequestError> {
-        validate_destination_model(model)?;
-        self.body
-            .insert("model".to_string(), Value::String(model.to_string()));
-        Ok(Value::Object(self.body))
-    }
-
     /// Serialize one destination-specific body for reuse across local probes and dispatch.
     pub fn body_bytes_for_model(&self, model: &str) -> Result<Bytes, GatewayRequestError> {
         validate_destination_model(model)?;
@@ -137,6 +150,51 @@ impl GatewayRequest {
         })
         .map(Bytes::from)
         .map_err(|_| GatewayRequestError::Serialization)
+    }
+
+    /// Serialize a local body, supplying the pool reasoning default only when
+    /// the caller omitted every supported reasoning control.
+    pub(crate) fn body_bytes_for_model_with_reasoning_default(
+        &self,
+        model: &str,
+        reasoning_effort: &str,
+    ) -> Result<Bytes, GatewayRequestError> {
+        let mut body = self.body_value_for_model(model)?;
+        let object = body
+            .as_object_mut()
+            .expect("gateway request bodies are validated objects");
+        let has_reasoning_control = ["reasoning_effort", "reasoning", "include_reasoning"]
+            .iter()
+            .any(|field| object.get(*field).is_some_and(|value| !value.is_null()));
+        if !has_reasoning_control {
+            object.insert(
+                "reasoning_effort".to_string(),
+                Value::String(reasoning_effort.to_string()),
+            );
+        }
+        serde_json::to_vec(&body)
+            .map(Bytes::from)
+            .map_err(|_| GatewayRequestError::Serialization)
+    }
+
+    /// Whether the caller asked for a streamed response.
+    ///
+    /// Reads the validated body in place. The alternative - cloning the whole
+    /// body through `body_value_for_model` to look at one boolean - costs a deep
+    /// clone of an arbitrarily large prompt per admission.
+    pub(crate) fn is_stream(&self) -> bool {
+        self.body
+            .get("stream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// Clone the schema-preserving body while replacing only the destination model.
+    pub(crate) fn body_value_for_model(&self, model: &str) -> Result<Value, GatewayRequestError> {
+        validate_destination_model(model)?;
+        let mut body = self.body.clone();
+        body.insert("model".to_string(), Value::String(model.to_string()));
+        Ok(Value::Object(body))
     }
 }
 
@@ -362,6 +420,14 @@ fn validate_destination_model(model: &str) -> Result<(), GatewayRequestError> {
         return Err(invalid("model", "destination model must not be empty"));
     }
     Ok(())
+}
+
+fn valid_virtual_model(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= MAX_VIRTUAL_MODEL_BYTES
+        && model
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 fn invalid(field: impl Into<String>, message: impl Into<String>) -> GatewayRequestError {

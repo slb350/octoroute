@@ -1,12 +1,8 @@
-//! Octoroute v2 local-first OpenAI-compatible gateway.
+//! Octoroute v3 OpenAI-compatible tiered inference fabric.
 //!
-//! The gateway sends compatible work to one local llama.cpp service and routes
-//! everything else to OpenRouter while preserving explicit local-only privacy.
+//! Virtual routes select among local llama.cpp pools and isolated provider
+//! adapters while preserving strict local-only privacy and pre-commit fallback.
 
-pub mod calibration;
 pub mod cli;
 pub mod gateway;
 pub mod telemetry;
-
-#[cfg(test)]
-mod calibration_tests;
