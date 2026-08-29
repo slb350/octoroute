@@ -22,6 +22,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that dropping the guard kills the whole process group. A zero nested
   `reasoning.max_tokens` is pinned to the nested parser's own rejection label
   rather than the downstream affordability check's.
+- A group signal that fails with `EPERM` is treated as an already-terminated
+  group, as `ESRCH` always was. Darwin reports `EPERM` once the leader has been
+  reaped, so Codex cleanup failed on roughly one run in ten and returned
+  `Process` in place of the `OutputTooLarge` or `Timeout` that had triggered it.
+- Codex cleanup failure no longer replaces the error that caused cleanup. The
+  route's fallback policy reads that trigger, so the substitution changed
+  routing decisions for a request that had actually hit a bound.
+- The three remaining `#[cfg(all(test, unix))]` gates are now bare
+  `#[cfg(test)]`, so cargo-mutants stops reporting five test helpers as
+  production mutants. `tests/source_hygiene.rs` fails the build if either that
+  gate or a `cfg(not(unix))` module reappears.
+
+### Changed
+
+- Child-process execution moved from `codex/mod.rs` into `codex/process.rs`,
+  keeping both files inside the 600-line limit.
 
 ## [3.0.0] - 2026-08-27
 

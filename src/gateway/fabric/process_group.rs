@@ -77,13 +77,26 @@ impl ProcessGroup {
             Ok(())
         } else {
             let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ESRCH) {
+            if already_terminated(&error) {
                 Ok(())
             } else {
                 Err(error)
             }
         }
     }
+}
+
+/// Whether a failed group signal means there is nothing of ours left to kill.
+///
+/// `ESRCH` is the documented "no such process group". Darwin also answers
+/// `EPERM` once the leader has exited and been reaped, because the pgid no
+/// longer names a group this process owns; the kernel reports the permission
+/// failure rather than an absent target. Both say the same thing to a cleanup
+/// path, and treating `EPERM` as fatal made routine cleanup fail roughly one
+/// run in ten, which then masked the error that cleanup was running for.
+#[cfg(unix)]
+fn already_terminated(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(libc::ESRCH) | Some(libc::EPERM))
 }
 
 // Only Unix has a group to signal. Elsewhere `kill_on_drop` on the command
@@ -151,6 +164,23 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+    }
+
+    /// Cleanup of a group that is already gone is not a failure, and Darwin
+    /// reports that state as `EPERM` rather than `ESRCH`.
+    #[cfg(unix)]
+    #[test]
+    fn a_group_that_is_already_gone_is_not_a_signal_failure() {
+        for code in [libc::ESRCH, libc::EPERM] {
+            assert!(
+                already_terminated(&io::Error::from_raw_os_error(code)),
+                "errno {code} means the group is gone, not that cleanup failed"
+            );
+        }
+        assert!(
+            !already_terminated(&io::Error::from_raw_os_error(libc::EINVAL)),
+            "a real signal failure must still be reported"
+        );
     }
 
     #[cfg(unix)]

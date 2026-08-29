@@ -353,3 +353,33 @@ fn streaming_tool_calls_are_present_only_when_nonempty() {
             .is_none()
     );
 }
+
+/// Cleanup runs because something already failed, so a failure inside cleanup
+/// must not overwrite the diagnosis. `OutputTooLarge` and `Timeout` drive the
+/// route's fallback decision; `Process` does not mean the same thing.
+#[test]
+fn cleanup_failure_never_replaces_the_error_that_caused_it() {
+    let bound = surviving_error(
+        CodexAdapterError::OutputTooLarge,
+        Err(CodexAdapterError::Process),
+    );
+    assert_eq!(
+        bound.to_string(),
+        CodexAdapterError::OutputTooLarge.to_string(),
+        "a failing cleanup must not replace the bound that tripped"
+    );
+
+    let deadline = surviving_error(CodexAdapterError::Timeout, Err(CodexAdapterError::Process));
+    assert_eq!(
+        deadline.to_string(),
+        CodexAdapterError::Timeout.to_string(),
+        "a failing cleanup must not replace the timeout that tripped"
+    );
+
+    let clean = surviving_error(CodexAdapterError::Timeout, Ok(()));
+    assert_eq!(
+        clean.to_string(),
+        CodexAdapterError::Timeout.to_string(),
+        "a successful cleanup must not alter the primary error"
+    );
+}
