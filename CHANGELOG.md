@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Correct the README fallback contract: `unauthenticated` is a seventh, opt-in fallback trigger, and a missing or rejected upstream credential falls forward when a route configures it instead of always returning to the client.
+- Fill README gaps against the runtime: the `X-Octoroute-Reason` and `X-Octoroute-Upstream` response headers, `OPENAI_API_KEY` in the quick-start env sample, the inbound per-minute rate limit, the pool/routing-duration metrics coverage, the optional `first_byte_timeout_ms` knob, and the full seven-command CI gate. Align AGENTS.md with `config.laptop.toml`'s loopback member address.
+
 ## [3.0.1] - 2026-08-29
 
 ### Fixed

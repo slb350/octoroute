@@ -25,7 +25,7 @@ to a provider.
 - `GET /v1/models`, liveness, readiness, and Prometheus endpoints.
 - Named virtual routes with ordered local-pool and provider steps.
 - Exact local context/capability checks and least-loaded member selection.
-- Per-member, per-provider, and inbound concurrency limits.
+- Per-member, per-provider, and inbound concurrency limits, plus an inbound per-minute request rate limit.
 - Lazy, isolated provider credentials from environment variables or bounded
   argv commands.
 - OpenAI-compatible HTTP dispatch for z.ai, OpenRouter, direct OpenAI, and
@@ -36,10 +36,8 @@ to a provider.
   allowlisted child environment, ephemeral read-only execution, and bounded
   structured output.
 - An explicit OpenRouter Auto profile owned by Octoroute.
-- Cached, bounded provider authentication/reachability probes and fixed-label
-  provider admission, response, fallback, and probe counters.
-- Closed fallback triggers and a held first byte, preventing target changes
-  after response commitment.
+- Cached, bounded provider authentication/reachability probes and fixed-label Prometheus metrics for pool and provider admissions, responses, fallbacks, probes, and routing duration.
+- Closed fallback triggers and a held first byte, preventing target changes after response commitment; an optional `first_byte_timeout_ms` bounds how long a hung upstream holds its permits before the route falls forward.
 
 ## Quick start
 
@@ -58,8 +56,9 @@ credentials for providers you intend to use:
 ```dotenv
 OCTOROUTE_API_KEY=generate-a-long-random-client-secret
 OPENROUTER_API_KEY=your-openrouter-key
-ZAI_API_KEY=your-zai-key
 KIMI_API_KEY=your-kimi-key
+ZAI_API_KEY=your-zai-key
+OPENAI_API_KEY=your-openai-key
 ```
 
 Provider credentials are resolved when their route step is selected or when an
@@ -137,17 +136,17 @@ Each route opts into a subset of these bounded triggers:
 - `incompatible`
 - `rate_limited`
 - `precommit_failure`
+- `unauthenticated`
 
-Local targets must precede provider targets. A rate limit falls forward only
-when `rate_limited` is configured; a transport or upstream server failure falls
-forward only when `precommit_failure` is configured. Authentication failures
-and other committed provider responses are returned to the client.
+Local targets must precede provider targets. A rate limit falls forward only when `rate_limited` is configured; a transport or upstream server failure falls forward only when `precommit_failure` is configured. A missing or rejected upstream credential is returned to the client unless the route opts into `unauthenticated`; that trigger is never in the default set, because falling forward on an expired key silently redirects traffic and spend to the next step. Other committed provider responses are returned to the client.
 
 ## Response headers
 
-Successful routed responses include bounded identity such as:
+Successful routed responses include this bounded identity:
 
 - `X-Octoroute-Destination: local|cloud`
+- `X-Octoroute-Reason: local_pool|provider`
+- `X-Octoroute-Upstream: pool/member` for local work, or the provider name
 - `X-Octoroute-Route`
 - `X-Octoroute-Target: pool:name|provider:name`
 - `X-Octoroute-Pool` and `X-Octoroute-Member` for local work
@@ -181,7 +180,10 @@ See [configuration](docs/configuration.md), [API reference](docs/api-reference.m
 cargo fmt --all --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
-cargo doc --locked --all-features --no-deps
+cargo test --locked --no-default-features
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --all-features --no-deps
+cargo audit --deny warnings
+./scripts/mutants-run.sh
 ```
 
 The implementation and merge contract are tracked in
