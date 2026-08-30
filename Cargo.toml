@@ -7,7 +7,7 @@ authors = ["Steve Brandon"]
 description = "OpenAI-compatible inference fabric for local pools and cloud providers"
 license = "MIT"
 repository = "https://github.com/slb350/octoroute"
-exclude = ["AGENTS.md", "CLAUDE.md"]
+exclude = ["AGENTS.md", "CLAUDE.md", ".Codex", "scripts", ".githooks", ".github", "docs/plans", "Cross.toml", "clippy.toml", "justfile", "rust-toolchain.toml", ".markdownlint.json", ".markdownlintignore"]
 
 [dependencies]
 axum = "0.8"
