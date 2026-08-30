@@ -4,6 +4,7 @@
 //! [`events`] parses the CLI's event stream and renders the OpenAI reply.
 
 mod events;
+mod process;
 
 #[cfg(test)]
 mod tests;
@@ -11,15 +12,17 @@ mod tests;
 #[cfg(test)]
 mod mutation_tests;
 
-#[cfg(all(test, unix))]
+// Exactly `#[cfg(test)]`; the Unix bound is an inner attribute on the module.
+// See the note in `gateway::fabric`.
+#[cfg(test)]
 mod process_tests;
 
 #[cfg(test)]
 const VALID_AGENT_MESSAGE: &str = "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"content\\\":\\\"answer\\\",\\\"reasoning_content\\\":null,\\\"tool_calls\\\":[],\\\"finish_reason\\\":\\\"stop\\\"}\"}}\n";
 
 use events::{parse_events, render_open_ai_reply};
+use process::*;
 
-use crate::gateway::fabric::process_group::{self, ProcessGroup};
 use crate::gateway::fabric::{ProviderConfig, ReasoningEffort};
 use crate::gateway::request::{GatewayRequest, RequestFeature};
 use bytes::Bytes;
@@ -28,13 +31,10 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
-    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    process::{ExitStatus, Stdio},
     time::Duration,
 };
 use thiserror::Error;
-use tokio::io::AsyncWriteExt;
 
 const STDOUT_MAX_BYTES: usize = 16 * 1024 * 1024;
 const STDERR_CAPTURE_MAX_BYTES: usize = 16 * 1024 * 1024;
@@ -284,162 +284,6 @@ fn output_schema() -> &'static [u8] {
       },
       "required": ["content", "reasoning_content", "tool_calls", "finish_reason"]
     }"#
-}
-
-struct ProcessOutput {
-    stdout: Vec<u8>,
-    status: ExitStatus,
-}
-
-async fn run_process(
-    executable: &Path,
-    args: &[OsString],
-    environment: &ChildEnvironment,
-    cwd: &Path,
-    input: &[u8],
-    timeout: Duration,
-    stdout_limit: usize,
-) -> Result<ProcessOutput, CodexAdapterError> {
-    let mut stdout = BoundedCapture::new().map_err(|_| CodexAdapterError::Workspace)?;
-    let stderr = BoundedCapture::new().map_err(|_| CodexAdapterError::Workspace)?;
-    let mut command = tokio::process::Command::new(executable);
-    command
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .stdout(
-            stdout
-                .child_stdio()
-                .map_err(|_| CodexAdapterError::Workspace)?,
-        )
-        .stderr(
-            stderr
-                .child_stdio()
-                .map_err(|_| CodexAdapterError::Workspace)?,
-        )
-        .kill_on_drop(true);
-    environment.apply(&mut command);
-    process_group::isolate(&mut command);
-    let mut child = command.spawn().map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            CodexAdapterError::Missing
-        } else {
-            CodexAdapterError::Process
-        }
-    })?;
-    let mut process_group =
-        ProcessGroup::for_child(&child).map_err(|_| CodexAdapterError::Process)?;
-    let mut stdin = child.stdin.take().ok_or(CodexAdapterError::Process)?;
-    let send_input = async move {
-        stdin.write_all(input).await?;
-        stdin.shutdown().await
-    };
-    let execution = async {
-        let mut completion = std::pin::pin!(async { tokio::join!(child.wait(), send_input) });
-        let mut poll = tokio::time::interval(Duration::from_millis(10));
-        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tokio::select! {
-                results = &mut completion => return Ok::<_, CodexAdapterError>(results),
-                // The bound has to be enforced while the child runs, not only
-                // after it exits: a `codex exec` that streams without ever
-                // finishing is exactly the case the capture bound exists for,
-                // and waiting for its exit would let it write for the whole
-                // timeout window.
-                _ = poll.tick() => {
-                    if capture_exceeded(&stdout, &stderr, stdout_limit) {
-                        return Err(CodexAdapterError::OutputTooLarge);
-                    }
-                }
-            }
-        }
-    };
-    let (status, stdin_result) = match tokio::time::timeout(timeout, execution).await {
-        Ok(Ok(results)) => results,
-        Ok(Err(error)) => {
-            stop(&mut child, &mut process_group).await?;
-            return Err(error);
-        }
-        Err(_) => {
-            stop(&mut child, &mut process_group).await?;
-            return Err(CodexAdapterError::Timeout);
-        }
-    };
-    let status = match status {
-        Ok(status) => {
-            stop(&mut child, &mut process_group).await?;
-            status
-        }
-        Err(_) => {
-            stop(&mut child, &mut process_group).await?;
-            return Err(CodexAdapterError::Process);
-        }
-    };
-    if capture_exceeded(&stdout, &stderr, stdout_limit) {
-        return Err(CodexAdapterError::OutputTooLarge);
-    }
-    if status.success() && stdin_result.is_err() {
-        return Err(CodexAdapterError::Process);
-    }
-    let stdout = stdout
-        .read_bounded(stdout_limit)
-        .map_err(|_| CodexAdapterError::OutputTooLarge)?;
-    Ok(ProcessOutput { stdout, status })
-}
-
-/// Whether either captured stream has outgrown its bound.
-///
-/// Both streams are bounded, and stderr is not the lesser half: the CLI writes
-/// its progress and diagnostics there, and nothing downstream ever reads it, so
-/// an unbounded stderr is a child filling the disk with output no one will look
-/// at. A capture whose size cannot be read is treated as over budget, because
-/// the alternative is capturing without a bound at all.
-fn capture_exceeded(stdout: &BoundedCapture, stderr: &BoundedCapture, stdout_limit: usize) -> bool {
-    stdout.exceeds(stdout_limit).unwrap_or(true)
-        || stderr.exceeds(STDERR_CAPTURE_MAX_BYTES).unwrap_or(true)
-}
-
-async fn stop(
-    child: &mut tokio::process::Child,
-    process_group: &mut ProcessGroup,
-) -> Result<(), CodexAdapterError> {
-    process_group
-        .terminate(child)
-        .await
-        .map_err(|_| CodexAdapterError::Process)
-}
-
-struct BoundedCapture {
-    file: std::fs::File,
-}
-
-impl BoundedCapture {
-    fn new() -> std::io::Result<Self> {
-        tempfile::tempfile().map(|file| Self { file })
-    }
-
-    fn child_stdio(&self) -> std::io::Result<Stdio> {
-        self.file.try_clone().map(Stdio::from)
-    }
-
-    fn exceeds(&self, limit: usize) -> std::io::Result<bool> {
-        self.file
-            .metadata()
-            .map(|metadata| metadata.len() > limit as u64)
-    }
-
-    fn read_bounded(&mut self, limit: usize) -> std::io::Result<Vec<u8>> {
-        self.file.seek(SeekFrom::Start(0))?;
-        let mut bytes = Vec::new();
-        self.file
-            .by_ref()
-            .take(limit.saturating_add(1) as u64)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() > limit {
-            return Err(std::io::Error::other("bounded capture exceeded"));
-        }
-        Ok(bytes)
-    }
 }
 
 fn parse_diagnostic(input: &[u8]) -> Result<(), CodexAdapterError> {

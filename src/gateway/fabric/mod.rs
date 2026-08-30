@@ -15,7 +15,10 @@ mod service;
 mod transport;
 mod unknown_types;
 
-#[cfg(all(test, unix))]
+// Exactly `#[cfg(test)]`: cargo-mutants treats only that literal gate as test
+// scaffolding, so a compound one leaves the helpers below mutated and reported
+// as production survivors. The Unix bound lives inside the module.
+#[cfg(test)]
 mod test_support;
 
 pub use config::{

@@ -222,10 +222,15 @@ impl ProviderCredentialError {
     }
 }
 
-#[cfg(all(test, unix))]
+// Exactly `#[cfg(test)]`; see the note in `gateway::fabric`. The Unix bound is
+// per item rather than an inner attribute, which clippy rejects as mixed
+// attribute styles - and the three tests below that drive no process do not
+// need it at all.
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn output_command(bytes: usize) -> [String; 3] {
         [
             "/bin/sh".to_string(),
@@ -273,6 +278,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn command_output_accepts_the_limit_and_rejects_one_more_byte() {
         let exact = resolve_command_credential(
@@ -299,6 +305,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn terminate_kills_and_reaps_the_child_before_returning() {
         let mut command = Command::new("/bin/sh");
@@ -340,6 +347,7 @@ mod tests {
     /// `api_key_command`: `op`/`pass`/`gcloud` return in milliseconds, and a
     /// deadline computed backwards would time every one of them out and report
     /// every provider unauthenticated.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_prompt_command_resolves_within_its_budget() {
         let command = [
@@ -364,6 +372,7 @@ mod tests {
     /// budget has to be a single wall-clock bound. A per-half bound lets a
     /// command that reads slowly and then exits slowly hold it for twice as
     /// long as the timeout says.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_slow_command_is_bounded_in_total_not_per_phase() {
         let timeout = Duration::from_millis(500);

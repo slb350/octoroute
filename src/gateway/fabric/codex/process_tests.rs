@@ -3,7 +3,10 @@
 //!
 //! Every fixture here drives a shell script, so the whole module is Unix-only.
 
+#![cfg(unix)]
+
 use super::*;
+use crate::gateway::fabric::process_group::{self, ProcessGroup};
 use crate::gateway::fabric::test_support::write_executable_fixture as fake_codex;
 
 fn codex_request(executable: &Path, timeout: Duration) -> CodexRequest {

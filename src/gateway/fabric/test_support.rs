@@ -1,5 +1,7 @@
 //! Unix-only fixtures shared by the fabric's process-driving tests.
 
+#![cfg(unix)]
+
 use std::path::{Path, PathBuf};
 
 /// Write a named executable fixture into `directory`.
