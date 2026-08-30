@@ -9,21 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- CI mutation shards are now shifted to cargo-mutants' zero-based `k/n` indexing: the one-based matrix passed `8/8` straight through, failing that shard as an argument error and never running shard `0/8`.
-- Executable test fixtures are written from a child process, eliminating the Linux-only `ETXTBSY` spawn flake that failed mutation baselines and could record an uncaught mutant as caught.
-- `ProcessGroup` is one cross-platform type with cfg'd blocks instead of a `cfg(not(unix))` module the sweep could never compile, and a test now pins that dropping the guard kills the whole process group. A zero nested `reasoning.max_tokens` is pinned to the nested parser's own rejection label rather than the downstream affordability check's.
-- A group signal that fails with `EPERM` is treated as an already-terminated group only once our own leader has exited. Darwin reports `EPERM` rather than `ESRCH` for a recycled pgid, so Codex cleanup failed on roughly one run in ten and returned `Process` in place of the `OutputTooLarge` or `Timeout` that had triggered it. A leader still running that we may no longer signal stays a failure: `api_key_command` runs an operator's own executable, and one that changes credentials must not report a clean shutdown.
-- Codex cleanup failure no longer replaces the error that caused cleanup. The route's fallback policy reads that trigger, so the substitution changed routing decisions for a request that had actually hit a bound.
-- `scripts/mutants-run.sh` now reaps processes the sweep spawned and could not kill itself, on entry and on its EXIT trap. The mutants that disable the process-group kill path are the ones that time out, so their fixture outlives the run; two `endless-codex` spinners were found holding 15 CPU-minutes. Trashing scratch directories had no process-side counterpart.
-- The three remaining `#[cfg(all(test, unix))]` gates are now bare `#[cfg(test)]`, so cargo-mutants stops reporting five test helpers as production mutants. `tests/source_hygiene.rs` fails the build if either that gate or a `cfg(not(unix))` module reappears.
-
-### Changed
-
-- Child-process execution moved from `codex/mod.rs` into `codex/process.rs`, keeping both files inside the 600-line limit.
-
-## [3.0.0] - 2026-08-27
+## [3.0.0] - 2026-08-29
 
 ### Added
 
@@ -116,6 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   telemetry before service construction.
 - Raise the `zerovec-derive` manifest floor to 0.11.6, matching what 2.2.2
   states for unlocked builds.
+- Child-process execution moved from `codex/mod.rs` into `codex/process.rs`, keeping both files inside the 600-line limit.
 
 ### Removed
 
@@ -172,6 +159,13 @@ gaps, and 45 smaller findings. The suite grew from 126 tests to 212.
   carries an error type consistent with its 503, an incomplete request body is
   no longer reported as too large, and gateway-side translation failures are no
   longer labelled client errors.
+- CI mutation shards are now shifted to cargo-mutants' zero-based `k/n` indexing: the one-based matrix passed `8/8` straight through, failing that shard as an argument error and never running shard `0/8`.
+- Executable test fixtures are written from a child process, eliminating the Linux-only `ETXTBSY` spawn flake that failed mutation baselines and could record an uncaught mutant as caught.
+- `ProcessGroup` is one cross-platform type with cfg'd blocks instead of a `cfg(not(unix))` module the sweep could never compile, and a test now pins that dropping the guard kills the whole process group. A zero nested `reasoning.max_tokens` is pinned to the nested parser's own rejection label rather than the downstream affordability check's.
+- A group signal that fails with `EPERM` is treated as an already-terminated group only once our own leader has exited. Darwin reports `EPERM` rather than `ESRCH` for a recycled pgid, so Codex cleanup failed on roughly one run in ten and returned `Process` in place of the `OutputTooLarge` or `Timeout` that had triggered it. A leader still running that we may no longer signal stays a failure: `api_key_command` runs an operator's own executable, and one that changes credentials must not report a clean shutdown.
+- Codex cleanup failure no longer replaces the error that caused cleanup. The route's fallback policy reads that trigger, so the substitution changed routing decisions for a request that had actually hit a bound.
+- `scripts/mutants-run.sh` now reaps processes the sweep spawned and could not kill itself, on entry and on its EXIT trap. The mutants that disable the process-group kill path are the ones that time out, so their fixture outlives the run; two `endless-codex` spinners were found holding 15 CPU-minutes. Trashing scratch directories had no process-side counterpart.
+- The three remaining `#[cfg(all(test, unix))]` gates are now bare `#[cfg(test)]`, so cargo-mutants stops reporting five test helpers as production mutants. `tests/source_hygiene.rs` fails the build if either that gate or a `cfg(not(unix))` module reappears.
 
 ### Security
 
