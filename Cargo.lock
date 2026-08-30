@@ -874,7 +874,7 @@ dependencies = [
 
 [[package]]
 name = "octoroute"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "async-trait",
  "axum",

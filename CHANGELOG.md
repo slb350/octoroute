@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-08-29
+
+### Fixed
+
+- Stop shipping `rust-toolchain.toml` in the published crate. rustup honours that file in an extracted crate, so building or `cargo install`ing 3.0.0 could pull the consumer onto the 1.97.1 toolchain and trigger a download they did not ask for.
+
+### Changed
+
+- Exclude dev-only files from the crate: internal review notes, the mutation-sweep scripts, git hooks, CI workflows, design plans, and the local lint and build config. 121 files down to 104. No code change.
+
 ## [3.0.0] - 2026-08-29
 
 ### Added
@@ -524,7 +534,8 @@ gaps, and 45 smaller findings. The suite grew from 126 tests to 212.
 
 ---
 
-[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/slb350/octoroute/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/slb350/octoroute/compare/v2.2.2...v3.0.0
 [2.2.2]: https://github.com/slb350/octoroute/compare/v2.2.1...v2.2.2
 [2.2.1]: https://github.com/slb350/octoroute/compare/v2.2.0...v2.2.1
