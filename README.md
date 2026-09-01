@@ -191,7 +191,7 @@ or renamed. Inline tests rerun every mutant in their owning source files;
 integration tests, fixtures, snapshots, and ambiguous mappings conservatively
 fall back to the full sweep. Production-only revisions skip mutation. Manual
 dispatch and the monthly run on the fifth day always sweep the complete tree.
-On the following day, the `Monthly Octoroute Mutation Repair` automation repairs
+On the following day, the shared `Monthly Mutation Repair` automation repairs
 survivors on a branch and enables auto-merge only after every required check is
 green. The command above remains the explicit local equivalent.
 

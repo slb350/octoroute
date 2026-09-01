@@ -24,7 +24,7 @@ source files; integration tests, fixtures, snapshots, and ambiguous mappings
 fall back to the complete sweep. Production-only revisions stop after the fast
 policy preflight. Manual dispatch and the monthly run on the fifth day always
 sweep the tree. A failed run retains only its bounded mutation repair evidence;
-the following day's `Monthly Octoroute Mutation Repair` automation fixes
+the following day's shared `Monthly Mutation Repair` automation fixes
 survivors through a branch-protected PR and auto-merges only after all gates are
 green. `just mutants` remains the
 explicit local sweep and offloads to `homelab-1.local` when that host is
