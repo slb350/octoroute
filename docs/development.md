@@ -18,10 +18,15 @@ cargo audit --deny warnings
 ```
 
 The repository has no `benches/` directory and no `[[bench]]` target, so there
-is no benchmark step. Ordinary CI runs the complete full-tree mutation sweep
-only when the pushed or pull-request diff adds a Rust test; manual dispatch and
-the monthly run on the fifth day also run it. Other revisions stop after the
-fast policy preflight and start no mutation shards. `just mutants` remains the
+is no benchmark step. Ordinary CI starts mutation work only for added, modified,
+deleted, or renamed tests. Inline tests rerun every mutant in their owning
+source files; integration tests, fixtures, snapshots, and ambiguous mappings
+fall back to the complete sweep. Production-only revisions stop after the fast
+policy preflight. Manual dispatch and the monthly run on the fifth day always
+sweep the tree. A failed run retains only its bounded mutation repair evidence;
+the following day's `Monthly Octoroute Mutation Repair` automation fixes
+survivors through a branch-protected PR and auto-merges only after all gates are
+green. `just mutants` remains the
 explicit local sweep and offloads to `homelab-1.local` when that host is
 reachable, falling back to a local run with a warning when it is not. That host
 is shared with self-hosted CI runners, so the sweep is capped at

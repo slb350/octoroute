@@ -186,10 +186,14 @@ cargo audit --deny warnings
 ./scripts/mutants-run.sh
 ```
 
-Ordinary CI runs the full mutation sweep only when the complete pushed or
-pull-request diff adds a Rust test. The full sweep also runs by manual dispatch
-and monthly on the fifth day. The command above remains the explicit local
-equivalent.
+Ordinary CI starts mutation work only when tests are added, modified, deleted,
+or renamed. Inline tests rerun every mutant in their owning source files;
+integration tests, fixtures, snapshots, and ambiguous mappings conservatively
+fall back to the full sweep. Production-only revisions skip mutation. Manual
+dispatch and the monthly run on the fifth day always sweep the complete tree.
+On the following day, the `Monthly Octoroute Mutation Repair` automation repairs
+survivors on a branch and enables auto-merge only after every required check is
+green. The command above remains the explicit local equivalent.
 
 The implementation and merge contract are tracked in
 [the v3 design](docs/plans/octoroute-v3-tiered-inference-fabric.md).

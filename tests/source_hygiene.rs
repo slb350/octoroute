@@ -17,19 +17,26 @@ fn mutation_workflow_policy_is_bounded() {
     );
     assert!(
         CI_WORKFLOW.contains("  mutation-policy:\n")
-            && CI_WORKFLOW.contains("git diff --unified=0")
-            && CI_WORKFLOW.contains("new-tests.diff")
-            && CI_WORKFLOW.contains("outputs:\n      run:"),
-        "ordinary CI must detect newly added Rust tests before admitting mutation work"
+            && CI_WORKFLOW.contains("./scripts/mutants-ci-scope.sh")
+            && CI_WORKFLOW.contains("outputs:\n      run:")
+            && CI_WORKFLOW.contains("mode: ${{ steps.test-policy.outputs.mode }}")
+            && CI_WORKFLOW.contains("base: ${{ steps.test-policy.outputs.base }}"),
+        "ordinary CI must classify added, modified, deleted, and renamed tests before mutation"
     );
     assert!(
         CI_WORKFLOW.contains("  mutants:\n")
             && CI_WORKFLOW.contains("needs: mutation-policy")
             && CI_WORKFLOW.contains("if: needs.mutation-policy.outputs.run == 'true'")
-            && CI_WORKFLOW.contains("./scripts/mutants-run.sh --shard")
+            && CI_WORKFLOW.contains("mapfile -t mutation_scope")
+            && CI_WORKFLOW.contains("./scripts/mutants-run.sh \"${mutation_args[@]}\" --shard")
+            && CI_WORKFLOW.contains("name: Retain mutation repair evidence")
+            && CI_WORKFLOW.contains("if [[ \"$status\" -eq 2 && -s \"$missed\" ]]")
+            && CI_WORKFLOW.contains("${{ runner.temp }}/mutation-repair/missed.txt")
+            && CI_WORKFLOW
+                .contains("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02")
             && !CI_WORKFLOW.contains("--in-diff pr.diff")
             && !CI_WORKFLOW.contains("  mutants-full:\n"),
-        "one full sharded sweep must run only after the mutation policy admits it"
+        "one sharded sweep must honor the policy's full or file-scoped classification"
     );
 }
 
