@@ -18,11 +18,15 @@ cargo audit --deny warnings
 ```
 
 The repository has no `benches/` directory and no `[[bench]]` target, so there
-is no benchmark step. The mutation sweep is the slowest gate; `just mutants`
-offloads it to `homelab-1.local` when that host is reachable, and falls back to
-a local run with a warning when it is not. That host is shared with self-hosted
-CI runners, so the sweep is capped at `CPUQuota=500%` of its 16 cores; raise it
-with `OCTOROUTE_MUTANTS_CPUQUOTA` when you know the box is idle.
+is no benchmark step. Ordinary CI runs the complete full-tree mutation sweep
+only when the pushed or pull-request diff adds a Rust test; manual dispatch and
+the monthly run on the fifth day also run it. Other revisions stop after the
+fast policy preflight and start no mutation shards. `just mutants` remains the
+explicit local sweep and offloads to `homelab-1.local` when that host is
+reachable, falling back to a local run with a warning when it is not. That host
+is shared with self-hosted CI runners, so the sweep is capped at
+`CPUQuota=500%` of its 16 cores; raise it with
+`OCTOROUTE_MUTANTS_CPUQUOTA` when you know the box is idle.
 
 `just check` runs clippy and the formatting check. `just test` runs the tests,
 `just mutants` the mutation sweep, and `just validate` all of them. The focused

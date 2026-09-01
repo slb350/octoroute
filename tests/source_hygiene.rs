@@ -6,6 +6,33 @@
 
 use std::{fs, path::Path};
 
+const CI_WORKFLOW: &str = include_str!("../.github/workflows/ci.yml");
+
+#[test]
+fn mutation_workflow_policy_is_bounded() {
+    assert!(
+        CI_WORKFLOW.contains("schedule:\n    - cron: '17 9 5 * *'")
+            && CI_WORKFLOW.contains("workflow_dispatch:"),
+        "mutation testing must run on the fifth day of each month and on manual dispatch"
+    );
+    assert!(
+        CI_WORKFLOW.contains("  mutation-policy:\n")
+            && CI_WORKFLOW.contains("git diff --unified=0")
+            && CI_WORKFLOW.contains("new-tests.diff")
+            && CI_WORKFLOW.contains("outputs:\n      run:"),
+        "ordinary CI must detect newly added Rust tests before admitting mutation work"
+    );
+    assert!(
+        CI_WORKFLOW.contains("  mutants:\n")
+            && CI_WORKFLOW.contains("needs: mutation-policy")
+            && CI_WORKFLOW.contains("if: needs.mutation-policy.outputs.run == 'true'")
+            && CI_WORKFLOW.contains("./scripts/mutants-run.sh --shard")
+            && !CI_WORKFLOW.contains("--in-diff pr.diff")
+            && !CI_WORKFLOW.contains("  mutants-full:\n"),
+        "one full sharded sweep must run only after the mutation policy admits it"
+    );
+}
+
 /// Every `.rs` file under `src/`, as (repo-relative path, contents).
 fn source_files() -> Vec<(String, String)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

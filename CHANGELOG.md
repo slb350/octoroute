@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Stop running `cargo-mutants` for every ordinary CI revision. A complete full-tree sweep now
+  runs when a pushed or pull-request diff adds a Rust test, on manual dispatch, and monthly on
+  the fifth day; the ordinary policy preflight starts no mutation shards otherwise.
+
 ### Fixed
 
 - Correct the README fallback contract: `unauthenticated` is a seventh, opt-in fallback trigger, and a missing or rejected upstream credential falls forward when a route configures it instead of always returning to the client.

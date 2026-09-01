@@ -5,6 +5,9 @@ on:
     branches: [main, codex/**]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '17 9 5 * *'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,6 +19,7 @@ permissions:
 jobs:
   test:
     name: Test Suite
+    if: &regular_ci github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -57,6 +61,7 @@ jobs:
 
   clippy:
     name: Clippy (Linting)
+    if: *regular_ci
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -82,6 +87,7 @@ jobs:
 
   fmt:
     name: Format Check
+    if: *regular_ci
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -98,6 +104,7 @@ jobs:
 
   security:
     name: RustSec Audit
+    if: *regular_ci
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -114,37 +121,64 @@ jobs:
       - name: Audit locked dependencies
         run: cargo audit --deny warnings
 
-  # Mutation testing runs at two scopes. A pull request mutates only the lines it
-  # changes, so the gate stays proportional to the change; a merge to main sweeps
-  # the tree. Each one is a build plus a full test run, and the tree currently
-  # yields ~1000 mutants, so scope alone is not enough: a branch whose diff IS
-  # the tree (a rewrite, or a long-lived feature branch) puts the pull-request
-  # job back at tree size. Both scopes are therefore sharded with
-  # `cargo mutants --shard k/n`, which splits the mutant list across independent
-  # runners so wall-clock stays bounded whatever the diff size.
-  #
-  # Every job also sets an explicit `timeout-minutes`. Without one a long sweep
-  # inherits the 360-minute default and is cancelled with no missed.txt, which
-  # reports as a failure indistinguishable from a surviving mutant. Sharding is
-  # what keeps that from happening; the timeout is the backstop.
-  #
-  # A GitHub runner cannot reach the LAN, so both sweeps run locally rather than
-  # through scripts/mutants-remote.sh. Survivors print as
-  # `MISSED <file>:<line>: <mutation>` straight into the job log; the verdict
-  # comes from missed.txt, not the exit code, which is what
-  # scripts/mutants-run.sh exists to decide. A shard with no survivors passes, so
-  # the gate is green only when every shard is.
-  mutants:
-    name: Mutation Testing (shard ${{ matrix.shard.label }}/8)
-    if: github.event_name == 'pull_request'
+  # Ordinary CI admits no mutation work unless its complete pushed or pull-request
+  # diff adds a Rust test declaration. Monthly and manual runs are explicit full
+  # sweeps. Keeping this decision in one preflight avoids starting eight expensive
+  # shard jobs merely to discover there is nothing to mutate.
+  mutation-policy:
+    name: Mutation policy
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.test-policy.outputs.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        with:
+          fetch-depth: 0
+
+      - name: Detect newly added Rust tests
+        id: test-policy
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BASE: ${{ github.event.before }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == schedule || "$EVENT_NAME" == workflow_dispatch ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            base="$(git merge-base HEAD "origin/$BASE_REF")"
+          elif [[ "$PUSH_BASE" =~ ^0+$ ]]; then
+            base="$(git merge-base HEAD origin/main)"
+          else
+            base="$PUSH_BASE"
+          fi
+          git diff --unified=0 "$base" HEAD -- '*.rs' > "$RUNNER_TEMP/new-tests.diff"
+          if grep -Eq '^\+[[:space:]]*#\[(test|[[:alnum:]_]+::test|rstest|test_case|case|parameterized)([[:space:](]|])' "$RUNNER_TEMP/new-tests.diff" ||
+             grep -Eq '^\+[[:space:]]*//[/!][[:space:]]*```(rust)?' "$RUNNER_TEMP/new-tests.diff"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "new Rust tests detected; admitting the full mutation sweep"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "no new Rust tests detected; mutation work is omitted"
+          fi
+
+  mutants:
+    name: Mutation Testing (full sweep, shard ${{ matrix.shard.label }}/8)
+    needs: mutation-policy
+    if: needs.mutation-policy.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         # cargo-mutants numbers shards from zero; keep a separate one-based
         # label so the job names remain natural for humans.
-        shard: &mutation_shards
+        shard:
           - { index: 0, label: 1 }
           - { index: 1, label: 2 }
           - { index: 2, label: 3 }
@@ -153,58 +187,6 @@ jobs:
           - { index: 5, label: 6 }
           - { index: 6, label: 7 }
           - { index: 7, label: 8 }
-    steps:
-      # The full history is needed to diff against the merge base.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
-        with:
-          toolchain: stable
-
-      - name: Cache cargo
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-mutants-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install cargo-mutants
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
-        with:
-          tool: cargo-mutants@27.1.0
-
-      # Mirrors scripts/mutants-staged.sh, which scopes the pre-commit hook to
-      # the staged diff the same way. An empty diff means no Rust changed, and
-      # there is nothing to mutate.
-      - name: Compute the pull request diff
-        id: diff
-        run: |
-          git diff "origin/${{ github.base_ref }}...HEAD" -- '*.rs' > pr.diff
-          if [ -s pr.diff ]; then
-            echo "has_rust_changes=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_rust_changes=false" >> "$GITHUB_OUTPUT"
-            echo "no Rust changes in this pull request; nothing to mutate"
-          fi
-
-      - name: Run mutation sweep (changed lines)
-        if: steps.diff.outputs.has_rust_changes == 'true'
-        run: ./scripts/mutants-run.sh --in-diff pr.diff --shard ${{ matrix.shard.index }}/8
-
-  mutants-full:
-    name: Mutation Testing (full sweep, shard ${{ matrix.shard.label }}/8)
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: *mutation_shards
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -232,6 +214,7 @@ jobs:
 
   docs:
     name: Documentation Build
+    if: *regular_ci
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

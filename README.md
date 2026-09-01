@@ -186,6 +186,11 @@ cargo audit --deny warnings
 ./scripts/mutants-run.sh
 ```
 
+Ordinary CI runs the full mutation sweep only when the complete pushed or
+pull-request diff adds a Rust test. The full sweep also runs by manual dispatch
+and monthly on the fifth day. The command above remains the explicit local
+equivalent.
+
 The implementation and merge contract are tracked in
 [the v3 design](docs/plans/octoroute-v3-tiered-inference-fabric.md).
 
