@@ -1,8 +1,8 @@
 # Octoroute v3: Tiered Inference Fabric
 
-Status: implementation branch
+Status: implemented and released in v3.0.0 on 2026-08-29
 
-Branch: `feat/v3-tiered-inference-fabric`
+Historical branch: `feat/v3-tiered-inference-fabric`
 
 ## Goal
 
@@ -255,16 +255,16 @@ routing. It is not part of the current runtime or configuration.
 
 ## Runtime replacement
 
-The feature branch is the migration unit and will not merge until the v3
-runtime is complete. `config.toml`, the generated CLI template, the binary, and
-all public integration tests now use only version 3. Shared request, auth,
-environment, HTTP-limit, and streaming primitives live under neutral or fabric
-ownership; the superseded runtime and version switch have been removed.
+The migration branch merged and shipped as v3.0.0. `config.toml`, the generated
+CLI template, the binary, and all public integration tests use only version 3.
+Shared request, auth, environment, HTTP-limit, and streaming primitives live
+under neutral or fabric ownership; the superseded runtime and version switch
+have been removed.
 
-This keeps one executable contract during implementation. A document that is
-not the exact v3 schema fails closed in `FabricConfig`.
+This leaves one executable contract. A document that is not the exact v3
+schema fails closed in `FabricConfig`.
 
-## Runtime implementation plan
+## Runtime implementation record
 
 ### Phase 1: schema and deterministic policy
 
@@ -379,9 +379,9 @@ V3 does not:
 - promise that every subscription CLI can be losslessly represented as OpenAI
   chat completions.
 
-## Completion criteria
+## Completion record
 
-The v3 branch is ready to merge when:
+The repository implementation gates satisfied before v3.0.0 merged were:
 
 - all v3 unit, integration, lint, format, docs, audit, and benchmark gates pass;
 - the binary and generated template accept only the exact v3 schema;
@@ -391,5 +391,7 @@ The v3 branch is ready to merge when:
 - response streaming holds leases and forbids post-commit switching;
 - OpenCode can use `worker`, `supervisor`, `local`, and `cloud-sota` through one
   endpoint;
-- operator documentation and production deployment profiles are complete;
-- representative traffic confirms the intended predominantly-local routing mix.
+- operator documentation and production deployment profiles are complete.
+
+Representative traffic confirming the intended predominantly-local routing mix
+is ongoing operational validation, not unfinished branch implementation.
