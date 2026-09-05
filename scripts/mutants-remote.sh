@@ -82,7 +82,8 @@ stop_runner() {
     kill -TERM -- "-$runner" 2>/dev/null || true
     for _ in {1..50}; do
       kill -0 -- "-$runner" 2>/dev/null || break
-      sleep 0.1
+      # A timer must not retain the lease after its cleanup owner exits.
+      sleep 0.1 8<&- 9<&-
     done
     kill -KILL -- "-$runner" 2>/dev/null || true
     wait "$runner" 2>/dev/null || true
