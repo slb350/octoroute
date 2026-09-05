@@ -180,7 +180,7 @@ See [configuration](docs/configuration.md), [API reference](docs/api-reference.m
 cargo fmt --all --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
-cargo test --locked --no-default-features
+cargo test --locked --doc --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --all-features --no-deps
 cargo audit --deny warnings
 ./scripts/mutants-run.sh

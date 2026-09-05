@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-#
-# The one definition of where mutation results live, sourced by every script in
-# this trio.
-#
-# mutants-run.sh reads `missed.txt` out of this directory to reach its verdict,
-# mutants-staged.sh writes the staged diff into it, and mutants-remote.sh
-# mirrors it back from the remote host. It was the same string literal in six
-# places across three files, all of them silently wrong the day one of them
-# changed: a stale copy does not error, it just stops finding missed.txt.
-#
-# target/ because it is already gitignored. Overridable so a caller with a
-# different layout does not have to edit three scripts.
+# Shared output location for verdicts, staged diffs, and mirrored results.
+
 MUTANTS_OUT_DIR="${MUTANTS_OUT_DIR:-target/mutants}"
+
+# Tests can consume fixtures outside src/, so qualify the complete tracked tree.
+require_matching_index() {
+  if ! git diff --quiet -- || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+    echo 'mutation gate requires the working tree to match the index, without untracked inputs' >&2
+    echo 'stage intended changes or isolate the commit; no files have been altered' >&2
+    return 1
+  fi
+}

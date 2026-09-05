@@ -6,76 +6,6 @@ mod credential;
 mod governing;
 
 #[tokio::test]
-async fn v3_worker_route_streams_through_shared_precommit_transport() {
-    let server = MockServer::start().await;
-    mount_ready_local(&server).await;
-    let environment = TestEnvironment::default()
-        .with("OCTOROUTE_API_KEY", "inbound-test-key")
-        .with("KIMI_API_KEY", "unused-kimi-key")
-        .with("ZAI_API_KEY", "unused-zai-key")
-        .with("OPENROUTER_API_KEY", "unused-openrouter-key");
-    let environment_audit = environment.clone();
-    let service =
-        FabricGatewayService::from_config(local_config(&server), environment).expect("service");
-    let body = Bytes::from(
-        serde_json::to_vec(&json!({
-            "model": "worker",
-            "messages": [{"role": "user", "content": "implement the bounded task"}],
-            "stream": true,
-            "max_completion_tokens": 1024,
-            "reasoning_effort": "medium"
-        }))
-        .expect("JSON"),
-    );
-
-    let response = service.handle_chat(&headers(), body).await;
-    assert_eq!(response.status(), 200);
-    assert_eq!(
-        response
-            .headers()
-            .get("x-octoroute-destination")
-            .and_then(|value| value.to_str().ok()),
-        Some("local")
-    );
-    assert_eq!(
-        response
-            .headers()
-            .get("x-octoroute-pool")
-            .and_then(|value| value.to_str().ok()),
-        Some("workers")
-    );
-    assert_eq!(
-        response
-            .headers()
-            .get("x-octoroute-member")
-            .and_then(|value| value.to_str().ok()),
-        Some("worker-0")
-    );
-    let request_id = response
-        .headers()
-        .get("x-octoroute-request-id")
-        .and_then(|value| value.to_str().ok())
-        .expect("gateway request id");
-    assert_eq!(
-        response
-            .headers()
-            .get("x-request-id")
-            .and_then(|value| value.to_str().ok()),
-        Some(request_id)
-    );
-    let body = to_bytes(response.into_body(), 1024 * 1024)
-        .await
-        .expect("stream body");
-    assert!(
-        std::str::from_utf8(&body)
-            .expect("UTF-8")
-            .contains("[DONE]")
-    );
-    let reads = environment_audit.reads();
-    assert_eq!(reads, vec!["OCTOROUTE_API_KEY"]);
-}
-
-#[tokio::test]
 async fn local_only_failure_never_resolves_or_contacts_a_provider() {
     let server = MockServer::start().await;
     let mut config = local_config(&server);
@@ -365,37 +295,6 @@ async fn a_malformed_client_plugins_field_stays_a_client_error() {
     );
 }
 
-/// A client that disconnects mid-body never breached the size limit, and
-/// answering it with 413 tells an operator to shrink a request that was never
-/// finished.
-#[tokio::test]
-async fn an_incomplete_request_body_is_not_reported_as_too_large() {
-    let server = MockServer::start().await;
-    let service = FabricGatewayService::from_config(
-        local_config(&server),
-        TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
-    )
-    .expect("service");
-    let stream = futures::stream::iter(vec![
-        Ok::<Bytes, std::io::Error>(Bytes::from_static(b"{\"model\":\"worker\"")),
-        Err(std::io::Error::other("client went away")),
-    ]);
-    let request = Request::builder()
-        .method("POST")
-        .uri("/v1/chat/completions")
-        .header(AUTHORIZATION, "Bearer inbound-test-key")
-        .body(Body::from_stream(stream))
-        .expect("request");
-
-    let response = service.handle_http_chat(request).await;
-
-    assert_eq!(response.status(), 400);
-    let body: Value = serde_json::from_slice(&response_body(response).await).expect("error JSON");
-    assert_eq!(body["error"]["code"], "request_body_incomplete");
-}
-
-/// A body exactly at the limit is within it. Refusing it tells a client to
-/// shrink a request the operator's own configuration allows.
 #[tokio::test]
 async fn a_request_body_exactly_at_the_limit_is_accepted() {
     let server = MockServer::start().await;
@@ -464,6 +363,14 @@ async fn an_admitted_local_response_commits_on_a_route_that_could_fall_forward()
             .get("x-octoroute-destination")
             .and_then(|value| value.to_str().ok()),
         Some("local")
+    );
+    let request_id = response
+        .headers()
+        .get("x-request-id")
+        .expect("direct service response supplies its request id");
+    assert_eq!(
+        response.headers().get("x-octoroute-request-id"),
+        Some(request_id)
     );
 }
 

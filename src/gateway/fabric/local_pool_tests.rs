@@ -119,16 +119,7 @@ pub(super) async fn mount_probes_ready(server: &MockServer) {
 /// Selection tests dispatch to one member of several, so the members that lose
 /// the selection legitimately receive probes but no token count.
 pub(super) async fn mount_available(server: &MockServer, input_tokens: u32) {
-    Mock::given(method("GET"))
-        .and(path("/health"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
-        .mount(server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/slots"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])))
-        .mount(server)
-        .await;
+    mount_probes_ready(server).await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions/input_tokens"))
         .respond_with(

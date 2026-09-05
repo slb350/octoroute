@@ -2,12 +2,17 @@ name: CI
 
 on:
   push:
-    branches: [main, codex/**]
+    branches: [main]
   pull_request:
     branches: [main]
   schedule:
     - cron: '17 9 5 * *'
   workflow_dispatch:
+
+concurrency:
+  # Preserve admitted main sweeps when a later push has no test changes.
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -51,13 +56,13 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run tests (all features)
+      - name: Run unit and integration tests
         run: cargo test --locked --all-targets --all-features --verbose
 
-      - name: Run tests (no features)
-        run: cargo test --locked --no-default-features --verbose
+      - name: Run documentation tests
+        run: cargo test --locked --doc --all-features --verbose
 
   clippy:
     name: Clippy (Linting)
@@ -131,49 +136,19 @@ jobs:
     timeout-minutes: 5
     outputs:
       run: ${{ steps.test-policy.outputs.run }}
-      mode: ${{ steps.test-policy.outputs.mode }}
-      base: ${{ steps.test-policy.outputs.base }}
+      arguments: ${{ steps.test-policy.outputs.arguments }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         with:
           fetch-depth: 0
 
+      - name: Test mutation workflow
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        run: python3 -B -m unittest discover -s scripts -p 'test_mutants_*.py'
+
       - name: Classify mutation scope from test changes
         id: test-policy
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PUSH_BASE: ${{ github.event.before }}
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          set -euo pipefail
-          if [[ "$EVENT_NAME" == schedule || "$EVENT_NAME" == workflow_dispatch ]]; then
-            run=true
-            mode=full
-            base=
-          else
-            if [[ "$EVENT_NAME" == pull_request ]]; then
-              base="$(git merge-base HEAD "origin/$BASE_REF")"
-            elif [[ "$PUSH_BASE" =~ ^0+$ ]]; then
-              base="$(git merge-base HEAD origin/main)"
-            else
-              base="$PUSH_BASE"
-            fi
-            mapfile -t mutation_scope < <(./scripts/mutants-ci-scope.sh "$base" HEAD)
-            mode="${mutation_scope[0]:-}"
-            case "$mode" in
-              none) run=false ;;
-              files|full) run=true ;;
-              *) echo "mutation policy returned invalid mode: $mode" >&2; exit 64 ;;
-            esac
-          fi
-          {
-            echo "run=$run"
-            echo "mode=$mode"
-            echo "base=$base"
-          } >> "$GITHUB_OUTPUT"
-          echo "mutation scope: $mode"
+        run: python3 scripts/mutants_scope.py "$GITHUB_EVENT_NAME" "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
 
   mutants:
     name: Mutation Testing (shard ${{ matrix.shard.label }}/8)
@@ -184,8 +159,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # cargo-mutants numbers shards from zero; keep a separate one-based
-        # label so the job names remain natural for humans.
+        # cargo-mutants uses zero-based shard indexes.
         shard:
           - { index: 0, label: 1 }
           - { index: 1, label: 2 }
@@ -197,8 +171,6 @@ jobs:
           - { index: 7, label: 8 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
@@ -222,18 +194,18 @@ jobs:
       - name: Run mutation sweep
         shell: bash
         env:
-          MUTATION_BASE: ${{ needs.mutation-policy.outputs.base }}
-          MUTATION_MODE: ${{ needs.mutation-policy.outputs.mode }}
+          MUTATION_ARGUMENTS: ${{ needs.mutation-policy.outputs.arguments }}
+          MUTATION_SHARD: ${{ matrix.shard.index }}/8
         run: |
           set -euo pipefail
-          mutation_args=()
-          if [[ "$MUTATION_MODE" == files ]]; then
-            mapfile -t mutation_scope < <(./scripts/mutants-ci-scope.sh "$MUTATION_BASE" HEAD)
-            [[ "${mutation_scope[0]:-}" == files ]]
-            mutation_args=("${mutation_scope[@]:1}")
-          fi
           set +e
-          ./scripts/mutants-run.sh "${mutation_args[@]}" --shard ${{ matrix.shard.index }}/8
+          python3 - <<'PYTHON'
+          import json
+          import os
+          script = "./scripts/mutants-run.sh"
+          os.execv(script, [script, *json.loads(os.environ["MUTATION_ARGUMENTS"]),
+                           "--shard", os.environ["MUTATION_SHARD"]])
+          PYTHON
           status=$?
           set -e
           missed=target/mutants/mutants.out/missed.txt

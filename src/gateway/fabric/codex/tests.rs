@@ -32,11 +32,21 @@ fn child_environment_retains_runtime_paths_but_excludes_secrets() {
             OsString::from("OCTOROUTE_API_KEY"),
             OsString::from("must-not-leak"),
         ),
+        (
+            OsString::from("OPENROUTER_API_KEY"),
+            OsString::from("must-not-leak"),
+        ),
+        (OsString::from("LC_SECRET"), OsString::from("must-not-leak")),
+        (OsString::from("RANDOM_VAR"), OsString::from("value")),
     ]);
+    assert_eq!(environment.get("PATH"), Some("/usr/bin:/bin"));
     assert_eq!(environment.get("HOME"), Some("/safe/home"));
     assert_eq!(environment.get("CODEX_HOME"), Some("/safe/home/.codex"));
     assert_eq!(environment.get("OPENAI_API_KEY"), None);
     assert_eq!(environment.get("OCTOROUTE_API_KEY"), None);
+    assert_eq!(environment.get("OPENROUTER_API_KEY"), None);
+    assert_eq!(environment.get("LC_SECRET"), None);
+    assert_eq!(environment.get("RANDOM_VAR"), None);
 }
 
 #[test]
@@ -51,9 +61,7 @@ fn diagnostic_accepts_only_chatgpt_managed_auth() {
     ));
 }
 
-/// Every tool integration is disabled on the command line, so an item saying
-/// one ran means the isolation failed. The reply payload here is valid and the
-/// run is complete, so the only thing that can reject it is the tool item.
+/// A tool item proves isolation failed even when the surrounding reply is valid.
 #[test]
 fn event_contract_rejects_internal_tool_activity() {
     for item in [
@@ -74,17 +82,12 @@ fn event_contract_rejects_internal_tool_activity() {
         );
     }
 
-    // The same stream without the tool item is accepted, so the rejection above
-    // is the item and not the surrounding events.
+    // Control: the complete reply is valid without the forbidden tool item.
     let clean = format!("{VALID_AGENT_MESSAGE}{{\"type\":\"turn.completed\"}}\n");
     assert!(parse_events(clean.as_bytes()).is_ok());
 }
 
-/// The same evidence one line later. Codex writes its items and its completion
-/// onto one stream, so a tool item can land after `turn.completed` - and the
-/// answer it accompanies was still produced with side effects the contract says
-/// never happened. Forward-compatible skipping of trailing events must not
-/// swallow the one trailing event that means the sandbox failed.
+/// Trailing tool activity still proves isolation failed; completion cannot hide it.
 #[test]
 fn a_tool_item_after_the_turn_completed_still_fails_closed() {
     for item in [
@@ -106,8 +109,7 @@ fn a_tool_item_after_the_turn_completed_still_fails_closed() {
     }
 }
 
-/// A future CLI release appending one more event after `turn.completed` must
-/// not fail an otherwise complete run.
+/// Future trailing events are allowed; failures and duplicate completions are not.
 #[test]
 fn trailing_events_after_completion_are_skipped_not_fatal() {
     let events = format!(
@@ -133,9 +135,7 @@ fn trailing_events_after_completion_are_skipped_not_fatal() {
     ));
 }
 
-/// A `turn.completed` before any agent message is the contract being violated.
-/// Skipping it as an unknown type both pollutes the unknown-type metric and
-/// lets a later completion rescue the run.
+/// A later valid completion cannot rescue an earlier out-of-order completion.
 #[test]
 fn a_completion_before_the_agent_message_is_a_contract_violation() {
     let events = format!(
@@ -147,13 +147,7 @@ fn a_completion_before_the_agent_message_is_a_contract_violation() {
     ));
 }
 
-/// The early completion is rejected where it appears, not left to be caught by
-/// the missing final message at the end of the stream.
-///
-/// Accepting it would latch the run as completed, and every later event would
-/// then be read through the post-completion arms - so a run that violated the
-/// contract at its second line would be reported as a failed turn instead,
-/// naming the wrong fault and hiding a CLI that emits its events out of order.
+/// Reject ordering violations immediately, before a later failure changes the diagnosis.
 #[test]
 fn an_early_completion_is_rejected_before_any_later_event_is_read() {
     let events = concat!(
@@ -188,47 +182,48 @@ fn empty_codex_usage_omits_the_key_rather_than_reporting_zeros() {
     assert!(usage.is_some());
 }
 
+/// The final CLI message becomes one response; usage must survive either format.
 #[test]
-fn final_codex_json_becomes_an_open_ai_stream() {
-    let events = concat!(
-        "{\"type\":\"thread.started\"}\n",
-        "{\"type\":\"turn.started\"}\n",
-        "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"content\\\":\\\"answer\\\",\\\"reasoning_content\\\":null,\\\"tool_calls\\\":[],\\\"finish_reason\\\":\\\"stop\\\"}\"}}\n",
-        "{\"type\":\"turn.completed\"}\n"
+fn codex_reply_and_usage_are_preserved_in_both_response_shapes() {
+    let events = format!(
+        "{{\"type\":\"thread.started\"}}\n{{\"type\":\"turn.started\"}}\n{VALID_AGENT_MESSAGE}{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":41,\"output_tokens\":7}}}}\n"
     );
-    let (reply, usage) = parse_events(events.as_bytes()).expect("Codex reply");
-    let rendered = render_open_ai_reply("gpt-test", true, reply, usage).expect("OpenAI stream");
-    let rendered = std::str::from_utf8(&rendered).expect("UTF-8");
-    assert!(rendered.contains("chat.completion.chunk"), "{rendered}");
-    assert!(rendered.contains("data: [DONE]"), "{rendered}");
-    // Codex answers in one final message, so a streaming request gets exactly
-    // one chunk plus the terminator. Octoroute does not claim token-by-token
-    // streaming, and this pins that it never fabricates extra chunks.
-    assert_eq!(
-        rendered.matches("data: ").count(),
-        2,
-        "one chunk plus [DONE]: {rendered}"
-    );
+    for (stream, object, message_key) in [
+        (false, "chat.completion", "message"),
+        (true, "chat.completion.chunk", "delta"),
+    ] {
+        let (reply, usage) = parse_events(events.as_bytes()).expect("Codex reply");
+        let rendered = render_open_ai_reply("gpt-test", stream, reply, usage).expect("response");
+        let rendered = std::str::from_utf8(&rendered).expect("UTF-8 response");
+        let json = if stream {
+            // Codex produces one final message, not token-by-token output.
+            assert_eq!(
+                rendered.matches("data: ").count(),
+                2,
+                "one chunk plus [DONE]"
+            );
+            rendered
+                .strip_prefix("data: ")
+                .and_then(|data| data.strip_suffix("\n\ndata: [DONE]\n\n"))
+                .expect("one SSE JSON chunk followed by [DONE]")
+        } else {
+            rendered
+        };
+        let response: Value = serde_json::from_str(json).expect("OpenAI JSON");
+        assert_eq!(response["object"], object);
+        assert_eq!(response["model"], "gpt-test");
+        assert_eq!(response["choices"][0][message_key]["content"], "answer");
+        assert_eq!(response["choices"][0]["finish_reason"], "stop");
+        assert_eq!(
+            response["usage"],
+            json!({
+                "prompt_tokens": 41, "completion_tokens": 7, "total_tokens": 48
+            })
+        );
+    }
 }
 
-/// `turn.completed` carries token accounting, and cost-tracking clients read it.
-#[test]
-fn codex_usage_is_reported_in_both_response_shapes() {
-    let events = concat!(
-        "{\"type\":\"thread.started\"}\n",
-        "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"content\\\":\\\"answer\\\",\\\"reasoning_content\\\":null,\\\"tool_calls\\\":[],\\\"finish_reason\\\":\\\"stop\\\"}\"}}\n",
-        "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":41,\"output_tokens\":7}}\n"
-    );
-    let (reply, usage) = parse_events(events.as_bytes()).expect("Codex reply");
-    let rendered = render_open_ai_reply("gpt-test", false, reply, usage).expect("response");
-    let rendered: Value = serde_json::from_slice(&rendered).expect("response JSON");
-    assert_eq!(rendered["usage"]["prompt_tokens"], 41);
-    assert_eq!(rendered["usage"]["completion_tokens"], 7);
-    assert_eq!(rendered["usage"]["total_tokens"], 48);
-}
-
-/// A Codex release adding an event or item type must not turn every request
-/// into a 502.
+/// Unknown event and item types remain forward-compatible.
 #[test]
 fn unknown_codex_event_and_item_types_are_skipped() {
     let events = concat!(
@@ -242,8 +237,7 @@ fn unknown_codex_event_and_item_types_are_skipped() {
     assert_eq!(reply.content.as_deref(), Some("answer"));
 }
 
-/// A truncated run is still rejected: skipping unknown events must not
-/// weaken the completion requirement.
+/// Forward compatibility does not relax the completion requirement.
 #[test]
 fn a_run_without_turn_completed_is_still_rejected() {
     let events = concat!(
@@ -275,10 +269,7 @@ fn nonstream_tool_calls_do_not_include_stream_only_indices() {
     assert_eq!(call["function"]["name"], "lookup");
 }
 
-/// `sensitive_name` is reachable, contrary to a plausible reading of the fixed
-/// allowlist. The `LC_` arm is an open-ended prefix, not a fixed entry, so it
-/// admits any `LC_*` name the environment happens to carry; the sensitive-name
-/// check is what stops `LC_AUTH` or `LC_SECRET` reaching the Codex child.
+/// The open-ended LC_ prefix must still exclude secret-bearing variable names.
 #[test]
 fn open_ended_locale_prefix_still_filters_sensitive_names() {
     for name in ["LC_ALL", "LC_TIME", "LC_MESSAGES"] {
@@ -302,10 +293,7 @@ fn open_ended_locale_prefix_still_filters_sensitive_names() {
     assert!(!allowed_name(OsStr::new("OCTOROUTE_API_KEY")));
 }
 
-/// The Codex hardening argv is the sandbox. Nothing else constrains the child:
-/// the fake-Codex fixture in the service tests branches on `$1 = doctor` and
-/// otherwise ignores argv, so deleting `--sandbox read-only`, `--ephemeral`, or
-/// any `--disable` flag passed every test before this one existed.
+/// Service fixtures ignore argv, so verify each sandbox flag and its value here.
 #[test]
 fn codex_invocation_argv_pins_every_hardening_flag() {
     let args = invocation_args(
@@ -321,7 +309,6 @@ fn codex_invocation_argv_pins_every_hardening_flag() {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
 
-    // Every integration Codex must not reach.
     for feature in [
         "shell_tool",
         "unified_exec",
@@ -341,7 +328,6 @@ fn codex_invocation_argv_pins_every_hardening_flag() {
         );
     }
 
-    // Execution boundary.
     let sandbox = rendered
         .iter()
         .position(|arg| arg == "--sandbox")
@@ -357,8 +343,6 @@ fn codex_invocation_argv_pins_every_hardening_flag() {
         assert!(rendered.iter().any(|arg| arg == flag), "{flag} is required");
     }
 
-    // Approvals off, and the config overrides that keep Codex off the network
-    // and out of the surrounding project.
     let approval = rendered
         .iter()
         .position(|arg| arg == "-a")
@@ -379,26 +363,4 @@ fn codex_invocation_argv_pins_every_hardening_flag() {
     // The prompt is passed on stdin, never as an argument.
     assert_eq!(rendered.last().map(String::as_str), Some("-"));
     assert!(rendered.iter().any(|arg| arg == "exec"));
-}
-
-/// `ChildEnvironment::apply` is what actually clears the environment. A no-op
-/// implementation would hand the Codex child the gateway's whole environment,
-/// credentials included.
-#[test]
-fn child_environment_applies_a_cleared_allowlist() {
-    let environment = ChildEnvironment::from_iter([
-        (OsString::from("HOME"), OsString::from("/home/octoroute")),
-        (OsString::from("PATH"), OsString::from("/usr/bin")),
-        (
-            OsString::from("OPENROUTER_API_KEY"),
-            OsString::from("secret"),
-        ),
-        (OsString::from("LC_SECRET"), OsString::from("secret")),
-        (OsString::from("RANDOM_VAR"), OsString::from("value")),
-    ]);
-    assert_eq!(environment.get("HOME"), Some("/home/octoroute"));
-    assert_eq!(environment.get("PATH"), Some("/usr/bin"));
-    assert_eq!(environment.get("OPENROUTER_API_KEY"), None);
-    assert_eq!(environment.get("LC_SECRET"), None);
-    assert_eq!(environment.get("RANDOM_VAR"), None);
 }

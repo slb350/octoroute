@@ -1,7 +1,7 @@
 //! Codex CLI event-stream parsing and OpenAI response rendering.
 
 use super::{CodexAdapterError, EVENT_LINE_MAX_BYTES};
-use crate::gateway::fabric::unknown_types;
+use crate::gateway::fabric::unknown_types::{self, Adapter, Counters};
 use bytes::Bytes;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -13,6 +13,13 @@ use uuid::Uuid;
 
 pub(super) fn parse_events(
     input: &[u8],
+) -> Result<(CodexReply, Option<CodexUsage>), CodexAdapterError> {
+    parse_events_with_counters(input, &unknown_types::GLOBAL)
+}
+
+pub(super) fn parse_events_with_counters(
+    input: &[u8],
+    counters: &Counters,
 ) -> Result<(CodexReply, Option<CodexUsage>), CodexAdapterError> {
     let mut final_message: Option<Cow<'_, str>> = None;
     let mut usage: Option<CodexUsage> = None;
@@ -49,7 +56,7 @@ pub(super) fn parse_events(
                 // same forward-compatibility reason unknown events are: a
                 // future CLI that appends one more event must not turn every
                 // request into a 502.
-                _ => ignore_unknown_event(),
+                _ => counters.record(Adapter::Codex),
             }
             continue;
         }
@@ -71,7 +78,7 @@ pub(super) fn parse_events(
                     // Item types Octoroute does not consume, including any the
                     // CLI adds later. Failing here would turn every request into
                     // a 502 on the next Codex release.
-                    _ => ignore_unknown_event(),
+                    _ => counters.record(Adapter::Codex),
                 }
             }
             "turn.completed" if final_message.is_some() => {
@@ -86,7 +93,7 @@ pub(super) fn parse_events(
             "error" | "turn.failed" => return Err(CodexAdapterError::Process),
             // As above: an unrecognized event type is skipped, not fatal. The
             // `turn.completed` requirement below still rejects a truncated run.
-            _ => ignore_unknown_event(),
+            _ => counters.record(Adapter::Codex),
         }
     }
     if !completed {
@@ -110,10 +117,6 @@ fn reports_disabled_integration(kind: Option<&str>) -> bool {
         kind,
         Some("command_execution" | "file_change" | "mcp_tool_call" | "web_search")
     )
-}
-
-fn ignore_unknown_event() {
-    unknown_types::record(unknown_types::Adapter::Codex);
 }
 
 /// Token accounting reported by `turn.completed`.

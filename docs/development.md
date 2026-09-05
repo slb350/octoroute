@@ -11,7 +11,7 @@ Run the same gates as CI:
 cargo fmt --all --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
-cargo test --locked --no-default-features
+cargo test --locked --doc --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --all-features --no-deps
 cargo audit --deny warnings
 ./scripts/mutants-run.sh
@@ -25,17 +25,26 @@ fall back to the complete sweep. Production-only revisions stop after the fast
 policy preflight. Manual dispatch and the monthly run on the fifth day always
 sweep the tree. A failed run retains only its bounded mutation repair evidence;
 the following day's shared `Monthly Mutation Repair` automation fixes
-survivors through a branch-protected PR and auto-merges only after all gates are
-green. `just mutants` remains the
-explicit local sweep and offloads to `homelab-1.local` when that host is
-reachable, falling back to a local run with a warning when it is not. That host
-is shared with self-hosted CI runners, so the sweep is capped at
-`CPUQuota=500%` of its 16 cores; raise it with
+survivors through a PR and auto-merges only after all gates are green.
+`just mutants` remains the explicit local sweep and offloads to
+`homelab-1.local` when that host is reachable, falling back to a local run with
+a warning when it is not. That host is shared with self-hosted CI runners, so
+the sweep is capped at `CPUQuota=500%` of its 16 cores; raise it with
 `OCTOROUTE_MUTANTS_CPUQUOTA` when you know the box is idle.
 
-`just check` runs clippy and the formatting check. `just test` runs the tests,
+`just check` runs clippy, formatting, and the mutation workflow tests. `just test` runs the tests,
 `just mutants` the mutation sweep, and `just validate` all of them. The focused
-public-contract tests are `cli_config_command` and `gateway_v3`.
+integration tests cover the gateway HTTP contract, executable lifecycle, and
+source hygiene. `just test-integration` discovers every integration-test target.
+The crate has no feature variants; doctests run separately from `--all-targets`.
+
+CI inspects the complete diff before installing mutation tooling. Branch pushes
+do not duplicate pull-request runs.
+
+The pre-commit gate refuses unstaged or untracked inputs and leaves formatting
+changes for you to review and stage. Remote mutation runs serialize source
+upload, testing, and result copying per checkout. Transfers retain a lock until
+they stop, including when their controlling SSH session is lost.
 
 ## Source layout
 
@@ -50,15 +59,15 @@ src/
     http_client.rs
     request.rs
     fabric/
-      config.rs
+      config/
       policy.rs
-      local_pool.rs
-      provider.rs
-      anthropic.rs
-      codex.rs
+      local_pool/
+      provider/
+      anthropic/
+      codex/
       metrics.rs
       transport.rs
-      service.rs
+      service/
       http.rs
       http_support.rs
 ```
@@ -94,7 +103,12 @@ Use WireMock for local/provider contract tests. Use a temporary fake executable
 for Codex lifecycle and environment assertions. Tests should assert exact
 request bodies and bounded headers, and should use zero-contact or
 environment-read assertions for privacy guarantees. The OpenCode-style
-Anthropic tool/SSE and Codex end-to-end cases live in `service_tests.rs`.
+Anthropic tool/SSE and Codex end-to-end cases live in `src/gateway/fabric/service_tests/`.
+
+Prefer one contract test with shared setup over overlapping scenarios. Preserve
+unique boundary, privacy, and process assertions when consolidating tests.
+Unknown-type metrics use the same counter implementation with isolated instances
+in tests; production adapters retain the shared process-wide counters.
 
 ## Adding an HTTP provider adapter
 

@@ -1,47 +1,20 @@
 #!/usr/bin/env bash
-#
-# Run cargo-mutants and decide the verdict from the results.
-#
-# Shared by the pre-commit hook (scoped to the staged diff) and by CI (full
-# sweep), so the two cannot disagree about what counts as a failure. Any
-# arguments given are passed through to cargo-mutants; the scope is the
-# caller's business, the verdict is this script's.
+# Run cargo-mutants; missed.txt governs the verdict even after a timeout.
 
 set -euo pipefail
 
-# --output pins the results directory because this script reads `missed.txt` out
-# of it to reach its verdict, so it has to know where it is rather than inherit
-# whatever the caller's cwd happened to be. The path itself is defined once, in
-# mutants-common.sh, because all three scripts in this trio need it. This is not
-# concurrency protection: two runs in the same checkout share this directory
-# exactly as they shared a cwd-relative `mutants.out`.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/mutants-common.sh
 . "$SCRIPT_DIR/mutants-common.sh"
 OUT_DIR="$MUTANTS_OUT_DIR"
 mkdir -p "$OUT_DIR"
 
-# Scratch copies go beside the checkout, not in the system temp dir.
-#
-# cargo-mutants copies the whole tree, target/ included, into `$TMPDIR` once per
-# job and deletes the copies only on a clean exit. A run that is cancelled or
-# hits the job timeout strands them, and Strix mounts `/tmp` as a tmpfs: in
-# another repository five such sweeps pinned 31 GiB of RAM with nothing else
-# running. The `github` runner service's PrivateTmp lands on that same tmpfs.
-# Here the copies sit on the NVMe and a stale one costs disk.
-#
-# A sibling of the checkout rather than a child, because cargo-mutants' copy
-# excludes only `mutants.out`: a scratch copy under `target/` would itself be
-# copied into every later copy. The root is taken from this script's location
-# rather than the cwd so every caller resolves the same directory.
+# Keep per-job tree copies beside the checkout, off system tmpfs and outside target/.
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export TMPDIR="${DREP_MUTANTS_TMPDIR:-${ROOT}.mutants-tmp}"
 mkdir -p "$TMPDIR"
 
-# Sweep what the last run left. cargo-mutants never sees a SIGKILL, and the
-# runner's cancellation ends in one, so the trap below is the common case and
-# this is the backstop. The caller's lock means nothing else is copying into
-# this directory right now.
+# Recoverably remove only immediate scratch directories; never follow descendants.
 cleanup_mutation_scratch() {
   local trash_command=()
   if command -v trash >/dev/null 2>&1; then
@@ -53,9 +26,6 @@ cleanup_mutation_scratch() {
     return 1
   fi
 
-  # Only matching directories directly below the dedicated scratch root are
-  # moved. Trashing the root entry carries all descendants without recursively
-  # deleting anything or following symlinks.
   while IFS= read -r -d '' scratch; do
     [[ -e "$scratch" ]] || continue
     "${trash_command[@]}" "$scratch"
@@ -65,18 +35,6 @@ cleanup_mutation_scratch() {
   )
 }
 
-# Reap what the sweep spawned and could not kill itself.
-#
-# Trashing directories is not enough cleanup. cargo-mutants kills its own
-# `cargo test` children, but the mutants that disable the process-group kill
-# path are exactly the ones that then time out, so the fixture those tests
-# spawned outlives the run. `endless-codex` is a `while :; do printf` loop:
-# one orphan burns a core until somebody notices, and two of them were found
-# holding 15 CPU-minutes on 2026-08-29.
-#
-# Matched on the scratch root, which appears in an orphan's argv because the
-# fixture is executed out of the tree copy. This script's own process tree is
-# excluded so a caller that happens to name TMPDIR cannot be killed by it.
 self_and_ancestors() {
   local pid=$$
   while [[ "$pid" -gt 1 ]]; do
@@ -86,21 +44,20 @@ self_and_ancestors() {
   done
 }
 
+# Timed-out kill-path mutants can orphan busy fixtures. Exclude our ancestors.
 reap_mutation_orphans() {
   command -v pgrep >/dev/null 2>&1 || return 0
   local protected pid
   protected=" $(self_and_ancestors) "
-  # pgrep exits non-zero when nothing matches, which is the normal case.
   for pid in $(pgrep -f "$TMPDIR" 2>/dev/null || true); do
     [[ "$protected" == *" $pid "* ]] && continue
     kill -9 "$pid" 2>/dev/null || true
   done
 }
 
+# Sweep interrupted runs on entry and preserve the verdict across EXIT cleanup.
 reap_mutation_orphans
 cleanup_mutation_scratch
-# Preserve the verdict across the trap: the trap runs on the way out, and its
-# own exit status would otherwise become the script's.
 # shellcheck disable=SC2329 # invoked by the EXIT trap below
 finish_mutation_run() {
   local mutants_exit_status=$?
@@ -114,36 +71,14 @@ finish_mutation_run() {
 }
 trap finish_mutation_run EXIT
 
-# --minimum-test-timeout: cargo-mutants derives the per-mutant timeout from the
-# unmutated baseline, which on a fast suite is a second or two. With -j running
-# several full suites at once on a loaded machine, a healthy mutant can exceed
-# that and be recorded as TIMEOUT. Give it real headroom so a timeout means what
-# it should.
-# MUTANTS_JOBS so the same script can be driven harder on a 32-thread box than
-# on the laptop the hook runs on; see scripts/mutants-remote.sh.
+# Concurrent suites need timeout headroom; jobs are measured rather than CPU-count derived.
+# The runner retains the remote lock; cargo and arbitrary test descendants must not.
 cargo mutants -j "${MUTANTS_JOBS:-4}" --no-shuffle --minimum-test-timeout 60 \
-  --output "$OUT_DIR" "$@" && status=0 || status=$?
+  --output "$OUT_DIR" "$@" 9<&- && status=0 || status=$?
 
 MISSED="$OUT_DIR/mutants.out/missed.txt"
 
-# The verdict comes from the results, not from the exit code alone.
-#
-# A timeout is NOT a failure: some mutations produce an infinite loop (`i += 1`
-# becoming `i *= 1` never advances), and a suite that hangs has detected the
-# mutant as surely as one that fails. But cargo-mutants reports exit 3
-# (Timeout) in preference to exit 2 (FoundProblems) - see `Outcome::exit_code`,
-# where `timeout > 0` is tested before `missed > 0` - so a run with one hanging
-# mutant AND a genuine survivor also exits 3. Mapping 3 to success on the exit
-# code alone would wave that survivor through.
-#
-# Both callers previously carried a comment asserting that cargo-mutants exits
-# 0 for timeouts. It does not, and neither had ever seen a timeout to find out:
-# the hook would have blocked on a hang that was really a detection, and CI
-# would have done the same.
-#
-# So: any missed mutant fails, whatever the exit code says. Otherwise a timeout
-# passes, and everything else (usage error, failing baseline, unparseable diff)
-# fails with the code cargo-mutants chose.
+# Exit 3 takes precedence over surviving mutants in cargo-mutants. Check survivors first.
 if [ -s "$MISSED" ]; then
   echo "mutants survived - a surviving mutant is a test that cannot tell" >&2
   echo "correct behaviour from incorrect. Fix the test, never the mutant list." >&2

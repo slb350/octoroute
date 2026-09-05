@@ -463,10 +463,7 @@ fn body_read_error_response(error: BodyReadError, request_id: &str) -> Response<
     error_response(status, message, "invalid_request_error", code, request_id)
 }
 
-/// Read a request body, refusing it as soon as it passes `limit` bytes.
-///
-/// `axum::body::to_bytes` collapses both failures into one opaque error, so the
-/// budget is applied here instead of inferred from it.
+/// Bound data before copying, retaining zero-copy reads for a single chunk.
 async fn read_bounded_body(body: Body, limit: usize) -> Result<Bytes, BodyReadError> {
     let mut stream = body.into_data_stream();
     let Some(first) = stream.next().await else {
@@ -504,69 +501,27 @@ mod body_boundary_tests {
     use super::*;
     use std::convert::Infallible;
 
-    async fn assert_accepted(body: Body, limit: usize) {
-        let bytes = match read_bounded_body(body, limit).await {
-            Ok(bytes) => bytes,
-            Err(_) => panic!("a body within the configured limit must be accepted"),
-        };
-        assert_eq!(bytes, Bytes::from_static(b"abcd"));
-    }
-
-    async fn assert_too_large(body: Body, limit: usize) {
-        assert!(matches!(
-            read_bounded_body(body, limit).await,
-            Err(BodyReadError::TooLarge)
-        ));
-    }
-
-    fn multi_chunk_body() -> Body {
-        Body::from_stream(futures::stream::iter([
-            Ok::<_, Infallible>(Bytes::from_static(b"ab")),
-            Ok::<_, Infallible>(Bytes::from_static(b"cd")),
-        ]))
-    }
-
-    /// Pin both directions of the first-chunk fast-path comparison: a body one
-    /// byte under and exactly at the limit is accepted, while one byte over is
-    /// refused.
     #[tokio::test]
-    async fn single_chunk_body_size_boundary_is_exact() {
-        assert_accepted(Body::from("abcd"), 5).await;
-        assert_accepted(Body::from("abcd"), 4).await;
-        assert_too_large(Body::from("abcd"), 3).await;
-    }
-
-    /// Pin the same three points after the second chunk forces coalescing, so
-    /// neither comparison can drift independently from the fast path.
-    #[tokio::test]
-    async fn multi_chunk_body_size_boundary_is_exact() {
-        assert_accepted(multi_chunk_body(), 5).await;
-        assert_accepted(multi_chunk_body(), 4).await;
-        assert_too_large(multi_chunk_body(), 3).await;
-    }
-
-    /// Three chunks, so the first two clear the coalescing check and the third
-    /// is measured by the accumulating loop instead.
-    ///
-    /// The two-chunk body above never reaches that loop: its total is decided by
-    /// the `initial_len` comparison. Without a third chunk the loop's own bound
-    /// is unreachable from the tests, and every mutation of it survives.
-    fn three_chunk_body() -> Body {
-        Body::from_stream(futures::stream::iter([
-            Ok::<_, Infallible>(Bytes::from_static(b"ab")),
-            Ok::<_, Infallible>(Bytes::from_static(b"c")),
-            Ok::<_, Infallible>(Bytes::from_static(b"d")),
-        ]))
-    }
-
-    /// Pin the accumulating loop's bound at the same three points. A limit of 4
-    /// is the exact fit the final chunk completes, and 3 is refused only by the
-    /// loop, the first three bytes having already passed every earlier check.
-    #[tokio::test]
-    async fn trailing_chunk_body_size_boundary_is_exact() {
-        assert_accepted(three_chunk_body(), 5).await;
-        assert_accepted(three_chunk_body(), 4).await;
-        assert_too_large(three_chunk_body(), 3).await;
+    async fn body_limit_is_independent_of_fragmentation() {
+        for chunks in [vec!["abcd"], vec!["ab", "cd"], vec!["ab", "c", "d"]] {
+            for limit in [3, 4, 5] {
+                let stream = futures::stream::iter(
+                    chunks
+                        .iter()
+                        .map(|chunk| Ok::<_, Infallible>(Bytes::from_static(chunk.as_bytes())))
+                        .collect::<Vec<_>>(),
+                );
+                let result = read_bounded_body(Body::from_stream(stream), limit).await;
+                match result {
+                    Ok(bytes) => {
+                        assert!(limit >= 4, "oversize body accepted");
+                        assert_eq!(bytes, "abcd");
+                    }
+                    Err(BodyReadError::TooLarge) => assert_eq!(limit, 3),
+                    Err(_) => panic!("unexpected body read failure"),
+                }
+            }
+        }
     }
 }
 

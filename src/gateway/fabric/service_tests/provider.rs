@@ -89,6 +89,19 @@ async fn open_ai_provider_rewrites_only_destination_and_supplies_bounded_headers
             .expect("UTF-8")
             .contains("[DONE]")
     );
+    let received = server.received_requests().await.expect("request recording");
+    let upstream = received.last().expect("OpenAI dispatch request");
+    let authorization: Vec<&str> = upstream
+        .headers
+        .get_all("authorization")
+        .iter()
+        .map(|value| value.to_str().expect("ASCII header value"))
+        .collect();
+    assert_eq!(
+        authorization,
+        vec!["Bearer zai-test-key"],
+        "the OpenAI provider must receive only its own credential"
+    );
 }
 
 /// A missing credential must surface rather than silently rerouting the traffic,
@@ -381,68 +394,79 @@ async fn provider_readiness_probes_auth_once_per_cache_window() {
 }
 
 #[tokio::test]
-async fn opencode_style_anthropic_tools_stream_as_open_ai_chunks() {
-    let server = MockServer::start().await;
-    let expected_request = json!({
-        "model": "k3",
-        "messages": [{
-            "role": "user",
-            "content": [{"type": "text", "text": "inspect the repository"}]
-        }],
-        "max_tokens": 200000,
-        "stream": true,
-        "thinking": {"type": "enabled", "budget_tokens": 16384},
-        "tools": [{
-            "name": "read_file",
-            "description": "Read one repository file",
-            "input_schema": {
-                "type": "object",
-                "properties": {"path": {"type": "string"}},
-                "required": ["path"]
-            }
-        }],
-        "tool_choice": {"type": "auto"}
-    });
-    let sse = concat!(
-        "event: message_start\n",
-        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-kimi\",\"model\":\"k3\"}}\n\n",
-        "event: content_block_start\n",
-        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call-1\",\"name\":\"read_file\",\"input\":{}}}\n\n",
-        "event: content_block_delta\n",
-        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"src/main.rs\\\"}\"}}\n\n",
-        "event: content_block_stop\n",
-        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
-        "event: message_delta\n",
-        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":12}}\n\n",
-        "event: message_stop\n",
-        "data: {\"type\":\"message_stop\"}\n\n"
-    );
-    Mock::given(method("POST"))
-        .and(path("/messages"))
-        .and(header("x-api-key", "kimi-test-key"))
-        .and(header("anthropic-version", "2023-06-01"))
-        .and(body_json(expected_request))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_raw(sse, "text/event-stream"),
-        )
-        .expect(1)
-        .mount(&server)
-        .await;
+async fn anthropic_tools_preserve_the_requested_response_format() {
+    for (requested_stream, stream) in [(None, false), (Some(false), false), (Some(true), true)] {
+        let server = MockServer::start().await;
+        let expected_request = json!({
+            "model": "k3",
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "inspect the repository"}]
+            }],
+            "max_tokens": 200000,
+            "stream": stream,
+            "thinking": {"type": "enabled", "budget_tokens": 16384},
+            "tools": [{
+                "name": "read_file",
+                "description": "Read one repository file",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"]
+                }
+            }],
+            "tool_choice": {"type": "auto"}
+        });
+        let sse = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-kimi\",\"model\":\"k3\"}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call-1\",\"name\":\"read_file\",\"input\":{}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"src/main.rs\\\"}\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":12}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+        let upstream_response = if stream {
+            ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream")
+        } else {
+            ResponseTemplate::new(200).set_body_json(json!({
+                "type": "message",
+                "id": "msg-kimi",
+                "model": "k3",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "call-1",
+                    "name": "read_file",
+                    "input": {"path": "src/main.rs"}
+                }],
+                "stop_reason": "tool_use"
+            }))
+        };
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .and(header("x-api-key", "kimi-test-key"))
+            .and(header("anthropic-version", "2023-06-01"))
+            .and(body_json(expected_request))
+            .respond_with(upstream_response)
+            .expect(1)
+            .mount(&server)
+            .await;
 
-    let service = FabricGatewayService::from_config(
-        single_provider_config(&server, "kimi"),
-        TestEnvironment::default()
-            .with("OCTOROUTE_API_KEY", "inbound-test-key")
-            .with("KIMI_API_KEY", "kimi-test-key"),
-    )
-    .expect("service");
-    let body = Bytes::from(
-        serde_json::to_vec(&json!({
+        let service = FabricGatewayService::from_config(
+            single_provider_config(&server, "kimi"),
+            TestEnvironment::default()
+                .with("OCTOROUTE_API_KEY", "inbound-test-key")
+                .with("KIMI_API_KEY", "kimi-test-key"),
+        )
+        .expect("service");
+        let mut request = json!({
             "model": "cloud-sota",
             "messages": [{"role": "user", "content": "inspect the repository"}],
-            "stream": true,
             "reasoning_effort": "high",
             "tools": [{
                 "type": "function",
@@ -457,27 +481,66 @@ async fn opencode_style_anthropic_tools_stream_as_open_ai_chunks() {
                 }
             }],
             "tool_choice": "auto"
-        }))
-        .expect("JSON"),
-    );
-
-    let response = service.handle_chat(&headers(), body).await;
-    assert_eq!(response.status(), 200);
-    assert_eq!(
-        response
-            .headers()
-            .get("x-octoroute-provider")
-            .and_then(|value| value.to_str().ok()),
-        Some("kimi")
-    );
-    let body = to_bytes(response.into_body(), 1024 * 1024)
-        .await
-        .expect("translated stream");
-    let body = std::str::from_utf8(&body).expect("UTF-8");
-    assert!(body.contains("chat.completion.chunk"), "{body}");
-    assert!(body.contains("tool_calls"), "{body}");
-    assert!(body.contains("src/main.rs"), "{body}");
-    assert!(body.contains("data: [DONE]"), "{body}");
+        });
+        if let Some(requested_stream) = requested_stream {
+            request["stream"] = json!(requested_stream);
+        }
+        let body = Bytes::from(serde_json::to_vec(&request).expect("JSON"));
+        let response = service.handle_chat(&headers(), body).await;
+        assert_eq!(response.status(), 200, "stream={requested_stream:?}");
+        assert_eq!(
+            response.headers()["content-type"],
+            if stream {
+                "text/event-stream"
+            } else {
+                "application/json"
+            },
+            "stream={requested_stream:?} must determine the response format"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-octoroute-provider")
+                .and_then(|value| value.to_str().ok()),
+            Some("kimi")
+        );
+        let body = to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("translated response");
+        let body = std::str::from_utf8(&body).expect("UTF-8");
+        if stream {
+            assert!(body.contains("chat.completion.chunk"), "{body}");
+            assert!(body.contains("tool_calls"), "{body}");
+            assert!(body.contains("src/main.rs"), "{body}");
+            assert!(body.contains("data: [DONE]"), "{body}");
+        } else {
+            let body: Value = serde_json::from_str(body).expect("buffered OpenAI JSON");
+            assert_eq!(body["object"], "chat.completion");
+            assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
+            assert_eq!(
+                body["choices"][0]["message"]["tool_calls"][0],
+                json!({
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{\"path\":\"src/main.rs\"}"}
+                })
+            );
+        }
+        let received = server.received_requests().await.expect("request recording");
+        let upstream = received.last().expect("Anthropic dispatch request");
+        assert_eq!(
+            upstream
+                .headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("kimi-test-key"),
+            "the Anthropic provider must receive its own credential"
+        );
+        assert!(
+            upstream.headers.get("authorization").is_none(),
+            "the inbound bearer must never travel to an Anthropic provider"
+        );
+    }
 }
 
 /// A 5xx from `/models` is an outage and must still report as one, so the 404

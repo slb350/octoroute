@@ -5,17 +5,18 @@
 # Tracked in .githooks/ so the checks are the same for every clone. Enable with:
 #   git config core.hooksPath .githooks
 
-set -e
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+# shellcheck source=scripts/mutants-common.sh
+. scripts/mutants-common.sh
+require_matching_index
 
 echo "Running pre-commit checks..."
 
-if ! cargo fmt --all --check &>/dev/null; then
-    echo "Code is not formatted. Running cargo fmt..."
-    cargo fmt --all
-    git diff --name-only --cached | grep '\.rs$' | xargs -r git add
-    echo "Code formatted and staged"
-else
-    echo "Code is properly formatted"
+if ! cargo fmt --all -- --check; then
+    echo "Code is not formatted. Format and stage the intended changes before committing." >&2
+    exit 1
 fi
 
 if ! cargo clippy --all-targets --all-features -- -D warnings; then

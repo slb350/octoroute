@@ -87,7 +87,17 @@ mod tests {
         assert!(template.contains("[[fabric.local_pools]]"));
         assert!(template.contains("[[fabric.providers]]"));
         assert!(template.contains("[[routing.routes]]"));
+        assert!(template.contains("api_key_env = \"OCTOROUTE_API_KEY\""));
+        assert!(template.contains("api_key_env = \"OPENROUTER_API_KEY\""));
+        assert!(!template.contains("sk-or-"));
+        assert_eq!(config.server.port, 8081);
         assert_eq!(config.default_model, "auto-route");
+        assert_eq!(config.local_pools["workers"].model, "coding-worker-model");
+        assert_eq!(
+            config.local_pools["workers"].model_revision,
+            "example-worker-revision"
+        );
         assert_eq!(config.local_pools["workers"].members.len(), 3);
+        assert_eq!(config.providers["openrouter"].model, "openrouter/auto");
     }
 }

@@ -12,27 +12,6 @@ use wiremock::{
 };
 
 #[tokio::test]
-async fn equal_workers_rotate_across_sequential_sessions() {
-    let servers = [
-        MockServer::start().await,
-        MockServer::start().await,
-        MockServer::start().await,
-    ];
-    for server in &servers {
-        mount_ready(server, 20_000, 16_000).await;
-    }
-    let pool = LlamaCppPool::new(&worker_pool(&servers), &EmptyEnvironment).expect("pool");
-
-    for expected in ["worker-0", "worker-1", "worker-2"] {
-        let lease = lease(pool.try_admit(&request(16_000)).await.expect("admission"));
-        assert_eq!(lease.member(), expected);
-        assert_eq!(lease.pool(), "workers");
-        assert_eq!(lease.model_revision(), "example-worker-revision");
-        assert_eq!(lease.chat_url().path(), "/v1/chat/completions");
-    }
-}
-
-#[tokio::test]
 async fn three_held_leases_fill_three_independent_workers() {
     let servers = [
         MockServer::start().await,

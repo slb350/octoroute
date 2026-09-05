@@ -146,8 +146,8 @@ pub struct ProviderRegistry {
 
 enum ProviderRuntime {
     Disabled { metrics: Arc<FabricMetrics> },
-    Http(Arc<HttpProvider>),
-    Codex(Arc<CodexProvider>),
+    Http(Box<HttpProvider>),
+    Codex(Box<CodexProvider>),
 }
 
 struct HttpProvider {
@@ -205,7 +205,7 @@ impl ProviderRegistry {
                         endpoint,
                         protocol,
                         credential,
-                    } => ProviderRuntime::Http(Arc::new(HttpProvider::new(
+                    } => ProviderRuntime::Http(Box::new(HttpProvider::new(
                         config,
                         endpoint,
                         *protocol,
@@ -215,7 +215,7 @@ impl ProviderRegistry {
                         Arc::clone(&metrics),
                     )?)),
                     ProviderRuntimeConfig::CodexCli { executable } => {
-                        ProviderRuntime::Codex(Arc::new(CodexProvider::new(
+                        ProviderRuntime::Codex(Box::new(CodexProvider::new(
                             config,
                             executable,
                             codex_environment.clone(),

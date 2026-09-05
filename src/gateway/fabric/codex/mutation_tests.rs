@@ -2,7 +2,7 @@
 
 use super::events::*;
 use super::*;
-use crate::gateway::fabric::unknown_types::{self, Adapter};
+use crate::gateway::fabric::unknown_types::{Adapter, Counters};
 use serde_json::{Value, json};
 
 fn parse_reply(reply: Value) -> Result<(CodexReply, Option<CodexUsage>), CodexAdapterError> {
@@ -182,23 +182,12 @@ fn event_line_limit_accepts_the_boundary_and_refuses_one_byte_more() {
 
 #[test]
 fn known_lifecycle_events_do_not_advance_the_unknown_type_counter() {
-    const ATTEMPTS: usize = 256;
     let events = format!(
         "{{\"type\":\"thread.started\"}}\n{{\"type\":\"turn.started\"}}\n{VALID_AGENT_MESSAGE}{{\"type\":\"turn.completed\"}}\n"
     );
-    let mut quiet_window = false;
-    for _ in 0..ATTEMPTS {
-        let before = unknown_types::count(Adapter::Codex);
-        parse_events(events.as_bytes()).expect("known lifecycle stream");
-        if unknown_types::count(Adapter::Codex) == before {
-            quiet_window = true;
-            break;
-        }
-    }
-    assert!(
-        quiet_window,
-        "known events advanced the unknown counter in every attempt"
-    );
+    let counters = Counters::default();
+    parse_events_with_counters(events.as_bytes(), &counters).expect("known lifecycle stream");
+    assert_eq!(counters.count(Adapter::Codex), 0);
 }
 
 #[test]
@@ -217,9 +206,10 @@ fn an_unknown_event_advances_the_codex_counter() {
     let events = format!(
         "{{\"type\":\"future.event\"}}\n{VALID_AGENT_MESSAGE}{{\"type\":\"turn.completed\"}}\n"
     );
-    let before = unknown_types::count(Adapter::Codex);
-    parse_events(events.as_bytes()).expect("unknown event is skipped");
-    assert!(unknown_types::count(Adapter::Codex) > before);
+    let counters = Counters::default();
+    parse_events_with_counters(events.as_bytes(), &counters).expect("unknown event is skipped");
+    assert_eq!(counters.count(Adapter::Codex), 1);
+    assert_eq!(counters.count(Adapter::Anthropic), 0);
 }
 
 #[test]
