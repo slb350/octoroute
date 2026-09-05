@@ -1,26 +1,16 @@
 //! Mutation discriminators for local-pool admission and lease safety.
 
 use super::*;
-use crate::gateway::fabric::FabricConfig;
+use crate::gateway::fabric::local_pool_tests::{
+    EmptyEnvironment, example as config, mount_available, mount_probes_ready, single_member_pool,
+    worker_pool,
+};
 use crate::gateway::request::GatewayRequest;
 use serde_json::{Value, json};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
 };
-
-#[derive(Debug, Clone, Copy)]
-struct EmptyEnvironment;
-
-impl Environment for EmptyEnvironment {
-    fn get(&self, _name: &str) -> Option<SecretString> {
-        None
-    }
-}
-
-fn config() -> FabricConfig {
-    FabricConfig::from_toml(include_str!("../../../../config.toml")).expect("repository config")
-}
 
 fn request(output_tokens: u32) -> GatewayRequest {
     GatewayRequest::parse(
@@ -42,30 +32,9 @@ async fn round_robin_cursor_wraps_before_rotation_continues() {
         MockServer::start().await,
     ];
     for server in &servers {
-        Mock::given(method("GET"))
-            .and(path("/health"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
-            .mount(server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/slots"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])),
-            )
-            .mount(server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions/input_tokens"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"input_tokens": 1})))
-            .mount(server)
-            .await;
+        mount_available(server, 1).await;
     }
-
-    let mut pool_config = config().local_pools["workers"].clone();
-    for (member, server) in pool_config.members.iter_mut().zip(&servers) {
-        member.base_url = Url::parse(&server.uri()).expect("mock URL");
-    }
-    let pool = LlamaCppPool::new(&pool_config, &EmptyEnvironment).expect("pool");
+    let pool = LlamaCppPool::new(&worker_pool(&servers), &EmptyEnvironment).expect("pool");
 
     for expected in ["worker-0", "worker-1", "worker-2", "worker-0"] {
         let outcome = pool.try_admit(&request(1_024)).await.expect("admission");
@@ -73,6 +42,9 @@ async fn round_robin_cursor_wraps_before_rotation_continues() {
             panic!("member {expected} must admit")
         };
         assert_eq!(lease.member(), expected);
+        assert_eq!(lease.pool(), "workers");
+        assert_eq!(lease.model_revision(), "example-worker-revision");
+        assert_eq!(lease.chat_url().path(), "/v1/chat/completions");
         drop(lease);
     }
 
@@ -117,21 +89,10 @@ async fn pool_lease_debug_names_safe_routing_fields_and_redacts_sensitive_fields
 #[tokio::test]
 async fn exact_total_context_use_is_admitted() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/health"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/slots"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])))
-        .mount(&server)
-        .await;
+    mount_probes_ready(&server).await;
 
     let output_tokens = 1_024;
-    let mut pool_config = config().local_pools["workers"].clone();
-    pool_config.members.truncate(1);
-    pool_config.members[0].base_url = Url::parse(&server.uri()).expect("mock URL");
+    let pool_config = single_member_pool(&server);
     let input_tokens =
         pool_config.context_window - pool_config.context_safety_tokens - output_tokens;
     Mock::given(method("POST"))
@@ -179,6 +140,6 @@ async fn fully_reserved_members_are_not_admission_candidates() {
     let candidates = pool.candidates();
 
     assert_eq!(candidates.len(), pool.inner.members.len() - 1);
-    assert!(candidates.iter().all(|(index, _)| *index != 0));
+    assert!(candidates.iter().all(|candidate| candidate.index != 0));
     drop(reserved);
 }

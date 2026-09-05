@@ -231,6 +231,27 @@ async fn inbound_concurrency_exhaustion_is_reported_separately_from_the_rate_lim
 }
 
 #[tokio::test]
+async fn a_broken_body_returns_an_incomplete_request_error() {
+    let service = preflight_service(preflight_config());
+    for prefix in [None, Some(Bytes::from_static(b"{"))] {
+        let chunks = prefix
+            .into_iter()
+            .map(Ok)
+            .chain(std::iter::once(Err(std::io::Error::other(
+                "body stream failed",
+            ))));
+        let response = service
+            .handle_http_chat(preflight_request(
+                Some("inbound-test-key"),
+                Body::from_stream(futures::stream::iter(chunks)),
+            ))
+            .await;
+        assert_eq!(response.status(), 400);
+        assert_eq!(error_code(response).await, "request_body_incomplete");
+    }
+}
+
+#[tokio::test]
 async fn a_stalled_authenticated_body_times_out_and_releases_its_permit() {
     let mut config = preflight_config();
     config.server.max_in_flight = 1;

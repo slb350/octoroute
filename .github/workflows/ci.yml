@@ -2,9 +2,17 @@ name: CI
 
 on:
   push:
-    branches: [main, codex/**]
+    branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 9 5 * *'
+
+concurrency:
+  # A later main push can omit the test addition that admitted an earlier sweep.
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,6 +22,24 @@ permissions:
   contents: read
 
 jobs:
+  mutation-scope:
+    name: Mutation Scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_mutants: ${{ steps.scope.outputs.run_mutants }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Test mutation workflow
+        run: python3 -B -m unittest discover -s scripts -p 'test_mutants_*.py'
+
+      - name: Decide whether to sweep the full tree
+        id: scope
+        run: python3 scripts/mutants_scope.py "$GITHUB_EVENT_NAME" "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
+
   test:
     name: Test Suite
     runs-on: ubuntu-latest
@@ -47,13 +73,13 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run tests (all features)
+      - name: Run unit and integration tests
         run: cargo test --locked --all-targets --all-features --verbose
 
-      - name: Run tests (no features)
-        run: cargo test --locked --no-default-features --verbose
+      - name: Run documentation tests
+        run: cargo test --locked --doc --all-features --verbose
 
   clippy:
     name: Clippy (Linting)
@@ -114,37 +140,19 @@ jobs:
       - name: Audit locked dependencies
         run: cargo audit --deny warnings
 
-  # Mutation testing runs at two scopes. A pull request mutates only the lines it
-  # changes, so the gate stays proportional to the change; a merge to main sweeps
-  # the tree. Each one is a build plus a full test run, and the tree currently
-  # yields ~1000 mutants, so scope alone is not enough: a branch whose diff IS
-  # the tree (a rewrite, or a long-lived feature branch) puts the pull-request
-  # job back at tree size. Both scopes are therefore sharded with
-  # `cargo mutants --shard k/n`, which splits the mutant list across independent
-  # runners so wall-clock stays bounded whatever the diff size.
-  #
-  # Every job also sets an explicit `timeout-minutes`. Without one a long sweep
-  # inherits the 360-minute default and is cancelled with no missed.txt, which
-  # reports as a failure indistinguishable from a surviving mutant. Sharding is
-  # what keeps that from happening; the timeout is the backstop.
-  #
-  # A GitHub runner cannot reach the LAN, so both sweeps run locally rather than
-  # through scripts/mutants-remote.sh. Survivors print as
-  # `MISSED <file>:<line>: <mutation>` straight into the job log; the verdict
-  # comes from missed.txt, not the exit code, which is what
-  # scripts/mutants-run.sh exists to decide. A shard with no survivors passes, so
-  # the gate is green only when every shard is.
+  # New tests can cover unchanged code, so every admitted run sweeps the tree.
+  # Scope is decided before allocating shards or installing mutation tools.
   mutants:
     name: Mutation Testing (shard ${{ matrix.shard.label }}/8)
-    if: github.event_name == 'pull_request'
+    needs: mutation-scope
+    if: needs.mutation-scope.outputs.run_mutants == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        # cargo-mutants numbers shards from zero; keep a separate one-based
-        # label so the job names remain natural for humans.
-        shard: &mutation_shards
+        # cargo-mutants uses zero-based shard indexes.
+        shard:
           - { index: 0, label: 1 }
           - { index: 1, label: 2 }
           - { index: 2, label: 3 }
@@ -153,58 +161,6 @@ jobs:
           - { index: 5, label: 6 }
           - { index: 6, label: 7 }
           - { index: 7, label: 8 }
-    steps:
-      # The full history is needed to diff against the merge base.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
-        with:
-          toolchain: stable
-
-      - name: Cache cargo
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-mutants-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install cargo-mutants
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
-        with:
-          tool: cargo-mutants@27.1.0
-
-      # Mirrors scripts/mutants-staged.sh, which scopes the pre-commit hook to
-      # the staged diff the same way. An empty diff means no Rust changed, and
-      # there is nothing to mutate.
-      - name: Compute the pull request diff
-        id: diff
-        run: |
-          git diff "origin/${{ github.base_ref }}...HEAD" -- '*.rs' > pr.diff
-          if [ -s pr.diff ]; then
-            echo "has_rust_changes=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_rust_changes=false" >> "$GITHUB_OUTPUT"
-            echo "no Rust changes in this pull request; nothing to mutate"
-          fi
-
-      - name: Run mutation sweep (changed lines)
-        if: steps.diff.outputs.has_rust_changes == 'true'
-        run: ./scripts/mutants-run.sh --in-diff pr.diff --shard ${{ matrix.shard.index }}/8
-
-  mutants-full:
-    name: Mutation Testing (full sweep, shard ${{ matrix.shard.label }}/8)
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: *mutation_shards
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

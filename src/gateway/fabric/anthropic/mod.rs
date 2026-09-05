@@ -13,13 +13,7 @@ mod tests;
 pub(super) use request::build_request;
 pub(super) use response::{AnthropicSseTranslator, open_ai_error_body, translate_message_response};
 
-use crate::gateway::fabric::unknown_types;
 use thiserror::Error;
-
-/// Skip one unrecognized Anthropic type, recording it for `/metrics`.
-fn ignore_unknown_type() {
-    unknown_types::record(unknown_types::Adapter::Anthropic);
-}
 
 #[derive(Debug, Error)]
 pub(crate) enum AnthropicAdapterError {

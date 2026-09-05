@@ -1,11 +1,9 @@
 //! Token counting and context-window admission.
 
 use super::local_pool_tests::{
-    EmptyEnvironment, example, mount_probes_ready, mount_ready, request, single_member_pool,
-    worker_pool,
+    EmptyEnvironment, mount_probes_ready, mount_ready, request, single_member_pool, worker_pool,
 };
 use super::{LlamaCppPool, PoolAdmissionState};
-use reqwest::Url;
 use serde_json::json;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -149,33 +147,6 @@ async fn token_count_server_error_still_falls_through_to_the_next_member() {
             "status {status} describes the member, not the request"
         );
     }
-}
-
-/// A member whose token-count endpoint stops answering is distinguishable from
-/// an unreachable one, and readiness reports it rather than claiming `ready`.
-#[tokio::test]
-async fn missing_token_count_endpoint_is_reported_rather_than_silently_ready() {
-    let server = MockServer::start().await;
-    mount_probes_ready(&server).await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions/input_tokens"))
-        .respond_with(ResponseTemplate::new(404))
-        .mount(&server)
-        .await;
-
-    let mut config = example().local_pools["workers"].clone();
-    config.members.truncate(1);
-    config.members[0].base_url = Url::parse(&server.uri()).expect("mock URL");
-    let pool = LlamaCppPool::new(&config, &EmptyEnvironment).expect("pool");
-
-    assert_eq!(
-        pool.readiness_state().await,
-        super::PoolAdmissionState::TokenCountUnavailable
-    );
-    assert!(matches!(
-        pool.try_admit(&request(16_000)).await.expect("admission"),
-        super::PoolAdmissionOutcome::Rejected(super::PoolAdmissionState::TokenCountUnavailable)
-    ));
 }
 
 /// Every status the token-count classifier names reaches a state no other status

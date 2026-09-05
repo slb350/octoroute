@@ -130,50 +130,6 @@ fn single_enabled_provider_config(server: &MockServer, provider: &str) -> Fabric
     config
 }
 
-async fn mount_ready_local(server: &MockServer) {
-    let request_body = json!({
-        "model": "coding-worker-model",
-        "messages": [{"role": "user", "content": "implement the bounded task"}],
-        "stream": true,
-        "max_completion_tokens": 1024,
-        "reasoning_effort": "medium"
-    });
-    Mock::given(method("GET"))
-        .and(path("/health"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
-        .expect(1)
-        .mount(server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/slots"))
-        .and(query_param("fail_on_no_slot", "1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])))
-        .expect(1)
-        .mount(server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions/input_tokens"))
-        .and(body_json(request_body.clone()))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"input_tokens": 128})))
-        .expect(1)
-        .mount(server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .and(body_json(request_body))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_raw(
-                    "data: {\"id\":\"local\"}\n\ndata: [DONE]\n\n",
-                    "text/event-stream",
-                ),
-        )
-        .expect(1)
-        .mount(server)
-        .await;
-}
-
 /// Mount the probes one local admission runs against a member that admits:
 /// healthy, one free slot, and a bounded token count.
 ///
@@ -212,7 +168,6 @@ fn local_request(model: &str) -> Bytes {
 mod codex;
 mod commit_boundary;
 mod credential;
-mod credential_isolation;
 mod local;
 mod preflight;
 mod provider;

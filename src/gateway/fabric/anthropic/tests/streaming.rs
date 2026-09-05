@@ -1,10 +1,7 @@
 //! Anthropic SSE reassembly and stream translation.
 
 use super::{AnthropicSseTranslator, STREAM, chunk_json, rendered};
-use crate::gateway::fabric::{
-    anthropic::ignore_unknown_type,
-    unknown_types::{self, Adapter},
-};
+use crate::gateway::fabric::unknown_types::{Adapter, Counters};
 use serde_json::json;
 
 #[test]
@@ -25,45 +22,34 @@ fn sse_event_buffer_accepts_the_exact_limit_and_rejects_one_more_byte() {
 
 #[test]
 fn recognized_no_output_events_are_not_counted_as_unknown() {
-    const REPETITIONS: u64 = 512;
-
-    let before = unknown_types::count(Adapter::Anthropic);
-    for _ in 0..REPETITIONS {
-        ignore_unknown_type();
-    }
-    let after_unknown = unknown_types::count(Adapter::Anthropic);
-    assert!(
-        after_unknown.wrapping_sub(before) >= REPETITIONS,
-        "an unknown Anthropic type must advance its metric"
-    );
-
+    let counters = Counters::default();
     let mut translator = AnthropicSseTranslator::new("k3");
-    let before_known = unknown_types::count(Adapter::Anthropic);
-    for _ in 0..REPETITIONS {
-        for event in [
-            json!({"type": "ping"}),
-            json!({"type": "content_block_stop", "index": 0}),
-            json!({
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "signature_delta", "signature": "opaque"}
-            }),
-        ] {
-            let frame = format!("data: {event}\n\n");
-            assert!(
-                translator
-                    .push(frame.as_bytes())
-                    .expect("known event")
-                    .is_empty(),
-                "a recognized no-output event must emit no chunk"
-            );
-        }
+    for event in [
+        json!({"type": "ping"}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "signature_delta", "signature": "opaque"}
+        }),
+    ] {
+        let frame = format!("data: {event}\n\n");
+        assert!(
+            translator
+                .push_with_counters(frame.as_bytes(), &counters)
+                .expect("known event")
+                .is_empty()
+        );
     }
-    let after_known = unknown_types::count(Adapter::Anthropic);
+    assert_eq!(counters.count(Adapter::Anthropic), 0);
     assert!(
-        after_known.wrapping_sub(before_known) < REPETITIONS,
-        "recognized no-output events must not be classified as unknown"
+        translator
+            .push_with_counters(b"data: {\"type\":\"future.event\"}\n\n", &counters)
+            .expect("unknown event")
+            .is_empty()
     );
+    assert_eq!(counters.count(Adapter::Anthropic), 1);
+    assert_eq!(counters.count(Adapter::Codex), 0);
 }
 
 #[test]

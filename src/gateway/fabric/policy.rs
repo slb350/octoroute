@@ -94,11 +94,6 @@ impl FabricConfig {
 
 impl RoutePlan {
     /// Whether a step failing with `trigger` may fall forward to the next step.
-    ///
-    /// The fall-forward rule stated once. It was previously restated at seven
-    /// branches of the route executor, in three different spellings, which made
-    /// "are these the same rule?" a question a reader had to answer by
-    /// inspection.
     pub fn may_fall_forward(&self, has_more: bool, trigger: FallbackTrigger) -> bool {
         has_more && self.fallback_on.contains(&trigger)
     }
@@ -108,9 +103,7 @@ impl RoutePlan {
 #[derive(Debug, Clone)]
 pub struct RoutePlan {
     pub model: String,
-    /// Targets in route order, already filtered for the effective privacy
-    /// boundary. A `local-only` plan contains no provider step, so the executor
-    /// has no branch that could forget to check one.
+    /// Targets in route order, filtered for the effective privacy boundary.
     pub steps: Vec<RouteTarget>,
     pub default_reasoning_effort: ReasoningEffort,
     pub fallback_on: BTreeSet<FallbackTrigger>,

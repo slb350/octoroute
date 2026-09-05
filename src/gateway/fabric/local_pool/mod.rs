@@ -79,14 +79,8 @@ pub enum PoolAdmissionState {
     /// keeps that case distinguishable from an unreachable one.
     TokenCountUnavailable,
     /// A member, or a proxy in front of it, rejected the configured credential.
-    ///
-    /// The provider side has carried this distinction from the start. Without
-    /// it here, an operator who rotates a member key on the llama.cpp side and
-    /// not in Octoroute's environment gets members that still answer the
-    /// unauthenticated `/health` and `/slots`, a 401 on every token count, and
-    /// a pool that reads as merely unhealthy - a trigger the default fallback
-    /// set contains, so every request is billed to a paid provider with nothing
-    /// surfaced.
+    /// Excluded from default fallback so an expired key cannot silently spill
+    /// requests and spend to a provider.
     Unauthenticated,
 }
 
@@ -180,8 +174,14 @@ pub struct LlamaCppPool {
 
 struct PoolInner {
     config: LocalPoolConfig,
-    members: Vec<Arc<Member>>,
+    members: Vec<Member>,
     cursor: AtomicUsize,
+}
+
+struct RankedMember<'a> {
+    index: usize,
+    member: &'a Member,
+    rank: (usize, u16, usize),
 }
 
 impl LlamaCppPool {
@@ -229,7 +229,7 @@ impl LlamaCppPool {
                 }
                 None => None,
             };
-            members.push(Arc::new(Member {
+            members.push(Member {
                 name: member.name.clone(),
                 priority: member.priority,
                 api_key,
@@ -242,7 +242,7 @@ impl LlamaCppPool {
                 max_in_flight: member.max_in_flight,
                 cached_health: Mutex::new(None),
                 token_count_timeout: Duration::from_millis(config.token_count_timeout_ms),
-            }));
+            });
         }
         if members.is_empty() {
             return Err(LlamaCppPoolBuildError::NoEnabledMembers {
@@ -300,7 +300,7 @@ impl LlamaCppPool {
         }
 
         let mut degraded = Degradations::default();
-        for (index, member) in candidates {
+        for RankedMember { index, member, .. } in candidates {
             let permit = match Arc::clone(&member.permits).try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(_) => {
@@ -393,7 +393,7 @@ impl LlamaCppPool {
         }
         let probe_body = self.token_count_probe_body();
         let mut degraded = Degradations::default();
-        for (_, member) in self.candidates_with_busy() {
+        for RankedMember { member, .. } in self.candidates_with_busy() {
             if member.permits.available_permits() == 0 {
                 degraded.busy = true;
                 continue;
@@ -454,23 +454,17 @@ impl LlamaCppPool {
         )
     }
 
-    fn candidates(&self) -> Vec<(usize, Arc<Member>)> {
-        self.candidates_with_busy()
-            .into_iter()
-            .filter(|(_, member)| member.permits.available_permits() > 0)
-            .collect()
+    fn candidates(&self) -> Vec<RankedMember<'_>> {
+        let mut candidates = self.candidates_with_busy();
+        candidates.retain(|candidate| candidate.member.permits.available_permits() > 0);
+        candidates
     }
 
-    /// Order members by load first, then `priority`, then rotation, then name.
-    ///
-    /// `priority` is a tiebreaker among equally loaded members, not a
-    /// preference that outranks load: a `priority = 10` member already serving
-    /// a request loses to an idle `priority = 100` one. It cannot pin traffic
-    /// to a member, and it never revives a member that is unhealthy or out of
-    /// permits, both of which are decided after this ordering.
-    fn candidates_with_busy(&self) -> Vec<(usize, Arc<Member>)> {
-        let cursor = self.inner.cursor.load(Ordering::Relaxed) % self.inner.members.len();
+    /// Snapshot load before sorting; priority breaks load ties, then rotation
+    /// determines a unique position for each member.
+    fn candidates_with_busy(&self) -> Vec<RankedMember<'_>> {
         let count = self.inner.members.len();
+        let cursor = self.inner.cursor.load(Ordering::Relaxed) % count;
         let mut candidates = self
             .inner
             .members
@@ -479,26 +473,15 @@ impl LlamaCppPool {
             .map(|(index, member)| {
                 let in_flight = member.max_in_flight - member.permits.available_permits();
                 let rotation = (index + count - cursor) % count;
-                (
-                    in_flight,
-                    member.priority,
-                    rotation,
+                RankedMember {
                     index,
-                    Arc::clone(member),
-                )
+                    member,
+                    rank: (in_flight, member.priority, rotation),
+                }
             })
             .collect::<Vec<_>>();
-        candidates.sort_by(|left, right| {
-            left.0
-                .cmp(&right.0)
-                .then(left.1.cmp(&right.1))
-                .then(left.2.cmp(&right.2))
-                .then_with(|| left.4.name.cmp(&right.4.name))
-        });
+        candidates.sort_unstable_by_key(|candidate| candidate.rank);
         candidates
-            .into_iter()
-            .map(|(_, _, _, index, member)| (index, member))
-            .collect()
     }
 }
 

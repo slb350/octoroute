@@ -1,8 +1,4 @@
-//! Source-level invariants that keep the mutation sweep honest.
-//!
-//! Both rules below were already documented in CLAUDE.md and both were already
-//! violated: the compound test gate was fixed once in `process_group.rs` and
-//! survived in three other files, because nothing but review enforced it.
+//! Source conventions required for cargo-mutants to distinguish test scaffolding.
 
 use std::{fs, path::Path};
 
@@ -33,41 +29,19 @@ fn source_files() -> Vec<(String, String)> {
     files
 }
 
-/// cargo-mutants recognizes only the literal `#[cfg(test)]` as test
-/// scaffolding. Under a compound gate it mutates the helpers and reports them
-/// as surviving production mutants, so the extra condition belongs inside the
-/// module as an inner attribute.
 #[test]
-fn test_modules_use_the_bare_cfg_test_gate() {
-    let mut violations = Vec::new();
-    for (path, contents) in source_files() {
-        for (index, line) in contents.lines().enumerate() {
-            if line.trim_start().starts_with("#[cfg(all(test") {
-                violations.push(format!("{path}:{}: {}", index + 1, line.trim()));
-            }
-        }
-    }
-    assert!(
-        violations.is_empty(),
-        "a compound test gate hides test helpers from cargo-mutants as production \
-         survivors. Use `#[cfg(test)]` and move the extra condition inside: an inner \
-         `#![cfg(..)]` for a file module, per-item attributes for an inline one, which \
-         clippy's mixed_attributes_style requires:\n{}",
-        violations.join("\n")
-    );
-}
-
-/// The mirror of the rule above. A module the sweep host never compiles is one
-/// no mutant inside it can be observed in, so every one reports missed with no
-/// test at fault. Platform differences belong in cfg'd blocks inside shared,
-/// always-compiled items, as `process_group.rs` and `main.rs` do.
-#[test]
-fn platform_fallbacks_are_blocks_rather_than_modules() {
+fn source_layout_keeps_mutation_targets_observable() {
     let mut violations = Vec::new();
     for (path, contents) in source_files() {
         let lines: Vec<&str> = contents.lines().collect();
         for (index, line) in lines.iter().enumerate() {
             let trimmed = line.trim_start();
+            if trimmed.starts_with("#[cfg(all(test") {
+                violations.push(format!(
+                    "{path}:{}: use a bare #[cfg(test)] gate with extra conditions inside",
+                    index + 1
+                ));
+            }
             if !(trimmed.starts_with("#[cfg(not(unix))]") || trimmed.starts_with("#[cfg(windows)]"))
             {
                 continue;
@@ -81,14 +55,16 @@ fn platform_fallbacks_are_blocks_rather_than_modules() {
                     && !candidate.starts_with("//")
             });
             if gated.is_some_and(|gated| gated.trim_start().starts_with("mod ")) {
-                violations.push(format!("{path}:{}: {}", index + 1, trimmed));
+                violations.push(format!(
+                    "{path}:{}: put platform differences inside shared items, not modules",
+                    index + 1
+                ));
             }
         }
     }
     assert!(
         violations.is_empty(),
-        "a platform module the sweep host never compiles reports every mutant inside \
-         it as missed; express the difference as a cfg'd block inside a shared item:\n{}",
+        "source layout hides scaffolding or production code from cargo-mutants:\n{}",
         violations.join("\n")
     );
 }

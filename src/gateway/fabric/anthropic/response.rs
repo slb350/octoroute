@@ -3,7 +3,8 @@
 mod usage;
 
 use self::usage::{AnthropicUsage, read_usage};
-use super::{AnthropicAdapterError, ignore_unknown_type};
+use super::AnthropicAdapterError;
+use crate::gateway::fabric::unknown_types::{self, Adapter, Counters};
 use bytes::Bytes;
 use serde_json::{Map, Value, json};
 use std::{
@@ -70,7 +71,7 @@ pub(crate) fn translate_message_response(
             // `redacted_thinking` and any block type added after this release
             // carry no OpenAI equivalent; skipping them keeps the response
             // usable instead of failing a completed generation.
-            _ => ignore_unknown_type(),
+            _ => unknown_types::GLOBAL.record(Adapter::Anthropic),
         }
     }
     let mut assistant = Map::from_iter([
@@ -198,6 +199,14 @@ impl AnthropicSseTranslator {
     }
 
     pub(crate) fn push(&mut self, bytes: &[u8]) -> Result<Vec<Bytes>, AnthropicAdapterError> {
+        self.push_with_counters(bytes, &unknown_types::GLOBAL)
+    }
+
+    pub(in crate::gateway::fabric::anthropic) fn push_with_counters(
+        &mut self,
+        bytes: &[u8],
+        counters: &Counters,
+    ) -> Result<Vec<Bytes>, AnthropicAdapterError> {
         if self.buffer.len().saturating_add(bytes.len()) > MAX_SSE_EVENT_BYTES {
             return Err(AnthropicAdapterError::Response);
         }
@@ -213,7 +222,7 @@ impl AnthropicSseTranslator {
             if self.done {
                 continue;
             }
-            if let Some(translated) = self.translate_event(&event)? {
+            if let Some(translated) = self.translate_event(&event, counters)? {
                 output.push(translated);
             }
         }
@@ -227,7 +236,11 @@ impl AnthropicSseTranslator {
         Ok(Vec::new())
     }
 
-    fn translate_event(&mut self, event: &[u8]) -> Result<Option<Bytes>, AnthropicAdapterError> {
+    fn translate_event(
+        &mut self,
+        event: &[u8],
+        counters: &Counters,
+    ) -> Result<Option<Bytes>, AnthropicAdapterError> {
         let event = parse_sse_event(event)?;
         if event.data.is_empty() {
             return Ok(None);
@@ -261,8 +274,8 @@ impl AnthropicSseTranslator {
                     None,
                 )?))
             }
-            "content_block_start" => self.content_block_start(&value),
-            "content_block_delta" => self.content_block_delta(&value),
+            "content_block_start" => self.content_block_start(&value, counters),
+            "content_block_delta" => self.content_block_delta(&value, counters),
             "message_delta" => {
                 let stop_reason = value
                     .get("delta")
@@ -286,7 +299,7 @@ impl AnthropicSseTranslator {
             }
             "error" => Err(AnthropicAdapterError::Response),
             _ => {
-                ignore_unknown_type();
+                counters.record(Adapter::Anthropic);
                 Ok(None)
             }
         }
@@ -295,6 +308,7 @@ impl AnthropicSseTranslator {
     fn content_block_start(
         &mut self,
         value: &Value,
+        counters: &Counters,
     ) -> Result<Option<Bytes>, AnthropicAdapterError> {
         let index = value
             .get("index")
@@ -352,7 +366,7 @@ impl AnthropicSseTranslator {
                 // Remember the index: this block's deltas are about to arrive and
                 // are just as unrepresentable as the block itself.
                 self.skipped_indices.insert(index);
-                ignore_unknown_type();
+                counters.record(Adapter::Anthropic);
                 Ok(None)
             }
         }
@@ -361,6 +375,7 @@ impl AnthropicSseTranslator {
     fn content_block_delta(
         &mut self,
         value: &Value,
+        counters: &Counters,
     ) -> Result<Option<Bytes>, AnthropicAdapterError> {
         let index = value
             .get("index")
@@ -398,7 +413,7 @@ impl AnthropicSseTranslator {
                 // content on their own terms, so dropping them would lose real
                 // output rather than protect the stream.
                 if self.skipped_indices.contains(&index) {
-                    ignore_unknown_type();
+                    counters.record(Adapter::Anthropic);
                     return Ok(None);
                 }
                 let tool_index = self
@@ -423,7 +438,7 @@ impl AnthropicSseTranslator {
             }
             Some("signature_delta") => Ok(None),
             _ => {
-                ignore_unknown_type();
+                counters.record(Adapter::Anthropic);
                 Ok(None)
             }
         }

@@ -268,7 +268,7 @@ impl FabricMetrics {
             &counters.probes,
         );
         render_routing_histogram(&mut output, &counters);
-        render_unknown_types(&mut output);
+        render_unknown_types(&mut output, &unknown_types::GLOBAL);
         output
     }
 
@@ -340,7 +340,7 @@ fn render_family(
 }
 
 /// Render the per-adapter skipped-unknown-variant counter.
-fn render_unknown_types(output: &mut String) {
+fn render_unknown_types(output: &mut String, counters: &unknown_types::Counters) {
     const METRIC: &str = "octoroute_fabric_unknown_upstream_types_total";
     output.push_str(&format!(
         "# HELP {METRIC} Upstream content blocks, events, and deltas skipped as unrecognized.\n\
@@ -350,7 +350,7 @@ fn render_unknown_types(output: &mut String) {
         output.push_str(&format!(
             "{METRIC}{{adapter=\"{}\"}} {}\n",
             adapter.as_str(),
-            unknown_types::count(adapter)
+            counters.count(adapter)
         ));
     }
 }
@@ -468,54 +468,18 @@ mod tests {
     /// the exposition iterates `Adapter::ALL` rather than only what has fired.
     #[test]
     fn unknown_upstream_types_emits_a_series_per_adapter() {
+        let counters = unknown_types::Counters::default();
+        counters.record(unknown_types::Adapter::Codex);
         let mut output = String::new();
-        render_unknown_types(&mut output);
+        render_unknown_types(&mut output, &counters);
         assert!(output.contains("# TYPE octoroute_fabric_unknown_upstream_types_total counter"));
-        for adapter in unknown_types::Adapter::ALL {
+        for (adapter, count) in [("anthropic", 0), ("codex", 1)] {
             assert!(
                 output.contains(&format!(
-                    "octoroute_fabric_unknown_upstream_types_total{{adapter=\"{}\"}}",
-                    adapter.as_str()
+                    "octoroute_fabric_unknown_upstream_types_total{{adapter=\"{adapter}\"}} {count}\n"
                 )),
-                "missing series for {}",
-                adapter.as_str()
+                "missing count for {adapter}"
             );
         }
-    }
-
-    /// The counter is per adapter, not shared.
-    ///
-    /// Both counters are process-global statics, and the adapter tests in this
-    /// same binary record into them from parallel harness threads, so any
-    /// assertion on an absolute value is a coin flip. Two race-proof claims
-    /// replace it. Recording an adapter must advance that adapter's counter:
-    /// concurrent recorders only ever add, so a strict increase cannot be
-    /// fooled. And there must exist a window in which our own Anthropic record
-    /// left the Codex counter untouched: concurrent recording is finite, so a
-    /// quiet window arrives, while a shared counter can never produce one -
-    /// this test's own record moves it every single time.
-    #[test]
-    fn each_adapter_counts_separately() {
-        const ATTEMPTS: usize = 256;
-
-        let mut isolated = false;
-        for _ in 0..ATTEMPTS {
-            let codex_before = unknown_types::count(unknown_types::Adapter::Codex);
-            let anthropic_before = unknown_types::count(unknown_types::Adapter::Anthropic);
-            unknown_types::record(unknown_types::Adapter::Anthropic);
-            assert!(
-                unknown_types::count(unknown_types::Adapter::Anthropic) > anthropic_before,
-                "recording anthropic must advance the anthropic counter"
-            );
-            if unknown_types::count(unknown_types::Adapter::Codex) == codex_before {
-                isolated = true;
-                break;
-            }
-        }
-        assert!(
-            isolated,
-            "recording anthropic moved the codex counter in every one of {ATTEMPTS} windows: \
-             the adapters are sharing a counter"
-        );
     }
 }

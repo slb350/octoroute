@@ -90,6 +90,7 @@ fn chat_request(model: &str, stream: bool) -> Request<Body> {
                 "model": model,
                 "messages": [{"role": "user", "content": "hello"}],
                 "stream": stream,
+                "max_completion_tokens": 1024,
                 "future_field": {"preserved": true}
             }))
             .expect("serialize request"),
@@ -100,6 +101,14 @@ fn chat_request(model: &str, stream: bool) -> Request<Body> {
 #[tokio::test]
 async fn local_pool_sse_is_forwarded_opaquely_with_unknown_request_fields() {
     let server = MockServer::start().await;
+    let expected_request = json!({
+        "model": "coding-worker-model",
+        "messages": [{"role": "user", "content": "hello"}],
+        "stream": true,
+        "max_completion_tokens": 1024,
+        "reasoning_effort": "medium",
+        "future_field": {"preserved": true}
+    });
     mount_admission(
         &server,
         ResponseTemplate::new(200).set_body_json(json!([{"is_processing": false}])),
@@ -107,6 +116,7 @@ async fn local_pool_sse_is_forwarded_opaquely_with_unknown_request_fields() {
     .await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions/input_tokens"))
+        .and(body_json(expected_request.clone()))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"input_tokens": 12})))
         .expect(1)
         .mount(&server)
@@ -114,13 +124,7 @@ async fn local_pool_sse_is_forwarded_opaquely_with_unknown_request_fields() {
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .and(header("content-type", "application/json"))
-        .and(body_json(json!({
-            "model": "coding-worker-model",
-            "messages": [{"role": "user", "content": "hello"}],
-            "stream": true,
-            "reasoning_effort": "medium",
-            "future_field": {"preserved": true}
-        })))
+        .and(body_json(expected_request))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
@@ -132,6 +136,7 @@ async fn local_pool_sse_is_forwarded_opaquely_with_unknown_request_fields() {
         .mount(&server)
         .await;
     let environment = TestEnvironment::gateway();
+    let environment_audit = environment.clone();
     let app = fabric_gateway_app(
         FabricGatewayService::from_config(config(&server), environment).expect("service"),
     );
@@ -146,11 +151,38 @@ async fn local_pool_sse_is_forwarded_opaquely_with_unknown_request_fields() {
     assert_eq!(response.headers()["x-octoroute-reason"], "local_pool");
     assert_eq!(response.headers()["x-octoroute-route"], "worker");
     assert_eq!(response.headers()["x-octoroute-target"], "pool:workers");
+    assert_eq!(response.headers()["x-octoroute-pool"], "workers");
+    assert_eq!(response.headers()["x-octoroute-member"], "worker-0");
+    assert_eq!(
+        response.headers()["x-request-id"],
+        response.headers()["x-octoroute-request-id"]
+    );
     assert_eq!(
         to_bytes(response.into_body(), 4096)
             .await
             .expect("SSE body"),
         ": keepalive\n\ndata: {\"model\":\"coding-worker-model\"}\n\ndata: [DONE]\n\n"
+    );
+    assert_eq!(environment_audit.reads(), vec!["OCTOROUTE_API_KEY"]);
+    let received = server.received_requests().await.expect("request recording");
+    for request in &received {
+        assert!(
+            request.headers.get("authorization").is_none(),
+            "local probe or inference request {} must carry no Authorization",
+            request.url
+        );
+    }
+    let token_count = received
+        .iter()
+        .find(|request| request.url.path() == "/v1/chat/completions/input_tokens")
+        .expect("token-count request");
+    let inference = received
+        .iter()
+        .find(|request| request.url.path() == "/v1/chat/completions")
+        .expect("inference request");
+    assert_eq!(
+        token_count.body, inference.body,
+        "token counting and inference must receive identical serialized bytes"
     );
 }
 

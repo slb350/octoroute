@@ -9,6 +9,7 @@ default:
 test:
     @echo "Running all tests..."
     cargo test --locked --all-targets --all-features
+    cargo test --locked --doc --all-features
 
 # Run only unit tests (lib tests)
 test-unit:
@@ -18,7 +19,7 @@ test-unit:
 # Run only integration tests
 test-integration:
     @echo "Running integration tests..."
-    cargo test --locked --test cli_config_command --test gateway_v3
+    cargo test --locked --test '*' --all-features
 
 # Run tests with nextest (if installed)
 test-nextest:
@@ -37,6 +38,7 @@ run-config CONFIG:
 
 # Run clippy and format check (zero warnings policy)
 check:
+    python3 -B -m unittest discover -s scripts -p 'test_mutants_*.py'
     @echo "Running clippy..."
     cargo clippy --locked --all-targets --all-features -- -D warnings
     @echo "Checking formatting..."

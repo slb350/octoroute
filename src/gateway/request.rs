@@ -178,10 +178,6 @@ impl GatewayRequest {
     }
 
     /// Whether the caller asked for a streamed response.
-    ///
-    /// Reads the validated body in place. The alternative - cloning the whole
-    /// body through `body_value_for_model` to look at one boolean - costs a deep
-    /// clone of an arbitrarily large prompt per admission.
     pub(crate) fn is_stream(&self) -> bool {
         self.body
             .get("stream")
