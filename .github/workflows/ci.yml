@@ -5,12 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:
   schedule:
-    - cron: '0 9 5 * *'
+    - cron: '17 9 5 * *'
+  workflow_dispatch:
 
 concurrency:
-  # A later main push can omit the test addition that admitted an earlier sweep.
+  # Preserve admitted main sweeps when a later push has no test changes.
   group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -22,26 +22,9 @@ permissions:
   contents: read
 
 jobs:
-  mutation-scope:
-    name: Mutation Scope
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      run_mutants: ${{ steps.scope.outputs.run_mutants }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Test mutation workflow
-        run: python3 -B -m unittest discover -s scripts -p 'test_mutants_*.py'
-
-      - name: Decide whether to sweep the full tree
-        id: scope
-        run: python3 scripts/mutants_scope.py "$GITHUB_EVENT_NAME" "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
-
   test:
     name: Test Suite
+    if: &regular_ci github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -83,6 +66,7 @@ jobs:
 
   clippy:
     name: Clippy (Linting)
+    if: *regular_ci
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -108,6 +92,7 @@ jobs:
 
   fmt:
     name: Format Check
+    if: *regular_ci
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -124,6 +109,7 @@ jobs:
 
   security:
     name: RustSec Audit
+    if: *regular_ci
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -140,12 +126,34 @@ jobs:
       - name: Audit locked dependencies
         run: cargo audit --deny warnings
 
-  # New tests can cover unchanged code, so every admitted run sweeps the tree.
-  # Scope is decided before allocating shards or installing mutation tools.
+  # Ordinary CI admits mutation work only for added, modified, deleted, or renamed
+  # tests. Inline tests scope to every mutant in their owning source file; ambiguous
+  # integration tests and fixtures conservatively expand to the full sweep. Monthly
+  # and manual runs are always full. Production-only revisions start no shards.
+  mutation-policy:
+    name: Mutation policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.test-policy.outputs.run }}
+      arguments: ${{ steps.test-policy.outputs.arguments }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Test mutation workflow
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        run: python3 -B -m unittest discover -s scripts -p 'test_mutants_*.py'
+
+      - name: Classify mutation scope from test changes
+        id: test-policy
+        run: python3 scripts/mutants_scope.py "$GITHUB_EVENT_NAME" "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
+
   mutants:
     name: Mutation Testing (shard ${{ matrix.shard.label }}/8)
-    needs: mutation-scope
-    if: needs.mutation-scope.outputs.run_mutants == 'true'
+    needs: mutation-policy
+    if: needs.mutation-policy.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -184,10 +192,49 @@ jobs:
           tool: cargo-mutants@27.1.0
 
       - name: Run mutation sweep
-        run: ./scripts/mutants-run.sh --shard ${{ matrix.shard.index }}/8
+        shell: bash
+        env:
+          MUTATION_ARGUMENTS: ${{ needs.mutation-policy.outputs.arguments }}
+          MUTATION_SHARD: ${{ matrix.shard.index }}/8
+        run: |
+          set -euo pipefail
+          set +e
+          python3 - <<'PYTHON'
+          import json
+          import os
+          script = "./scripts/mutants-run.sh"
+          os.execv(script, [script, *json.loads(os.environ["MUTATION_ARGUMENTS"]),
+                           "--shard", os.environ["MUTATION_SHARD"]])
+          PYTHON
+          status=$?
+          set -e
+          missed=target/mutants/mutants.out/missed.txt
+          if [[ "$status" -eq 2 && -s "$missed" ]]; then
+            report_dir="$RUNNER_TEMP/mutation-repair"
+            mkdir -p "$report_dir"
+            for report in missed.txt timeout.txt outcomes.json; do
+              source_report="target/mutants/mutants.out/$report"
+              [[ -f "$source_report" && ! -L "$source_report" ]] || continue
+              cp -- "$source_report" "$report_dir/$report"
+            done
+          fi
+          exit "$status"
+
+      - name: Retain mutation repair evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutation-repair-shard-${{ matrix.shard.label }}
+          path: |
+            ${{ runner.temp }}/mutation-repair/missed.txt
+            ${{ runner.temp }}/mutation-repair/timeout.txt
+            ${{ runner.temp }}/mutation-repair/outcomes.json
+          if-no-files-found: ignore
+          retention-days: 30
 
   docs:
     name: Documentation Build
+    if: *regular_ci
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

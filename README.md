@@ -180,11 +180,20 @@ See [configuration](docs/configuration.md), [API reference](docs/api-reference.m
 cargo fmt --all --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
-cargo test --locked --no-default-features
+cargo test --locked --doc --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --all-features --no-deps
 cargo audit --deny warnings
 ./scripts/mutants-run.sh
 ```
+
+Ordinary CI starts mutation work only when tests are added, modified, deleted,
+or renamed. Inline tests rerun every mutant in their owning source files;
+integration tests, fixtures, snapshots, and ambiguous mappings conservatively
+fall back to the full sweep. Production-only revisions skip mutation. Manual
+dispatch and the monthly run on the fifth day always sweep the complete tree.
+On the following day, the shared `Monthly Mutation Repair` automation repairs
+survivors on a branch and enables auto-merge only after every required check is
+green. The command above remains the explicit local equivalent.
 
 The implementation and merge contract are tracked in
 [the v3 design](docs/plans/octoroute-v3-tiered-inference-fabric.md).

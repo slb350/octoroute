@@ -18,11 +18,19 @@ cargo audit --deny warnings
 ```
 
 The repository has no `benches/` directory and no `[[bench]]` target, so there
-is no benchmark step. The mutation sweep is the slowest gate; `just mutants`
-offloads it to `homelab-1.local` when that host is reachable, and falls back to
-a local run with a warning when it is not. That host is shared with self-hosted
-CI runners, so the sweep is capped at `CPUQuota=500%` of its 16 cores; raise it
-with `OCTOROUTE_MUTANTS_CPUQUOTA` when you know the box is idle.
+is no benchmark step. Ordinary CI starts mutation work only for added, modified,
+deleted, or renamed tests. Inline tests rerun every mutant in their owning
+source files; integration tests, fixtures, snapshots, and ambiguous mappings
+fall back to the complete sweep. Production-only revisions stop after the fast
+policy preflight. Manual dispatch and the monthly run on the fifth day always
+sweep the tree. A failed run retains only its bounded mutation repair evidence;
+the following day's shared `Monthly Mutation Repair` automation fixes
+survivors through a PR and auto-merges only after all gates are green.
+`just mutants` remains the explicit local sweep and offloads to
+`homelab-1.local` when that host is reachable, falling back to a local run with
+a warning when it is not. That host is shared with self-hosted CI runners, so
+the sweep is capped at `CPUQuota=500%` of its 16 cores; raise it with
+`OCTOROUTE_MUTANTS_CPUQUOTA` when you know the box is idle.
 
 `just check` runs clippy, formatting, and the mutation workflow tests. `just test` runs the tests,
 `just mutants` the mutation sweep, and `just validate` all of them. The focused
@@ -30,10 +38,8 @@ integration tests cover the gateway HTTP contract, executable lifecycle, and
 source hygiene. `just test-integration` discovers every integration-test target.
 The crate has no feature variants; doctests run separately from `--all-targets`.
 
-CI inspects the complete diff before installing mutation tooling. Pull requests
-and pushes to `main` run a full sweep when they add a Rust test declaration;
-manual dispatch and the monthly run on the fifth always sweep the tree. Branch
-pushes do not duplicate pull-request runs.
+CI inspects the complete diff before installing mutation tooling. Branch pushes
+do not duplicate pull-request runs.
 
 The pre-commit gate refuses unstaged or untracked inputs and leaves formatting
 changes for you to review and stage. Remote mutation runs serialize source

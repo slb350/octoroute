@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Stop running `cargo-mutants` for every ordinary CI revision. Added, modified, deleted, and
+  renamed inline tests now run the owning source files' mutants; integration tests, fixtures,
+  snapshots, and ambiguous mappings fall back to the full sweep. Production-only revisions
+  skip mutation, while manual dispatch and the fifth-day monthly schedule always sweep the tree.
+  Failed runs retain a bounded repair report for the following day's autonomous repair PR.
+
 ### Fixed
 
 - Correct the README fallback contract: `unauthenticated` is a seventh, opt-in fallback trigger, and a missing or rejected upstream credential falls forward when a route configures it instead of always returning to the client.
