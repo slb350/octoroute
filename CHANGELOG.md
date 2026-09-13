@@ -9,8 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-09-13
+
+### Security
+
+- Update rustls from 0.23.43 to 0.23.44, bringing correct server-certificate
+  name verification after ECH rejection and owner-only permissions for newly
+  created key-log files into Octoroute's shared outbound TLS stack.
+
 ### Changed
 
+- Refresh five Rust 1.90-compatible lockfile packages and advance the immutable
+  Rust toolchain and mutation-installer action pins to their reviewed current
+  revisions.
 - Stop running `cargo-mutants` for every ordinary CI revision. Added, modified, deleted, and
   renamed inline tests now run the owning source files' mutants; integration tests, fixtures,
   snapshots, and ambiguous mappings fall back to the full sweep. Production-only revisions
@@ -547,7 +558,8 @@ gaps, and 45 smaller findings. The suite grew from 126 tests to 212.
 
 ---
 
-[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.2...HEAD
+[3.0.2]: https://github.com/slb350/octoroute/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/slb350/octoroute/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/slb350/octoroute/compare/v2.2.2...v3.0.0
 [2.2.2]: https://github.com/slb350/octoroute/compare/v2.2.1...v2.2.2
