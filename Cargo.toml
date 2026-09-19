@@ -1,6 +1,6 @@
 [package]
 name = "octoroute"
-version = "3.0.2"
+version = "3.0.3"
 edition = "2024"
 rust-version = "1.90"
 authors = ["Steve Brandon"]
@@ -30,6 +30,8 @@ zerovec = "0.11.8"
 zerovec-derive = "0.11.6"
 # Keep downstream resolution above RUSTSEC-2026-0258's vulnerable h2 range.
 h2 = "0.4.16"
+# Keep downstream resolution above RUSTSEC-2026-0285's vulnerable rustls range.
+rustls = { version = "0.23.45", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"] }

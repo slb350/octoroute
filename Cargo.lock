@@ -874,7 +874,7 @@ dependencies = [
 
 [[package]]
 name = "octoroute"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "async-trait",
  "axum",
@@ -885,6 +885,7 @@ dependencies = [
  "h2",
  "libc",
  "reqwest",
+ "rustls",
  "secrecy",
  "serde",
  "serde_json",

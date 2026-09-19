@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.3] - 2026-09-19
+
+### Security
+
+- Update rustls from 0.23.44 to 0.23.45 and add a direct manifest floor so
+  downstream resolution cannot select versions affected by RUSTSEC-2026-0285,
+  which accepted TLS 1.3 handshake messages across encryption-level boundaries.
+
 ## [3.0.2] - 2026-09-13
 
 ### Security
@@ -558,7 +566,8 @@ gaps, and 45 smaller findings. The suite grew from 126 tests to 212.
 
 ---
 
-[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.2...HEAD
+[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.3...HEAD
+[3.0.3]: https://github.com/slb350/octoroute/compare/v3.0.2...v3.0.3
 [3.0.2]: https://github.com/slb350/octoroute/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/slb350/octoroute/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/slb350/octoroute/compare/v2.2.2...v3.0.0
