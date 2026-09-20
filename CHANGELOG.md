@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Refresh 18 Rust 1.90-compatible lockfile packages and advance the immutable
+  mutation-installer action pin to v2.87.17.
+
 ## [3.0.3] - 2026-09-19
 
 ### Security
