@@ -89,14 +89,15 @@ async fn output_beyond_the_capture_bound_is_refused() {
 /// for, and the post-exit check cannot reach it: with only that check, this
 /// fixture writes for the whole timeout window and is then reported as a
 /// timeout rather than refused. The fixture writes from a shell builtin loop
-/// with no exit, so nothing but the in-flight check can stop it.
+/// that ends only when its reader goes away, so while it is being read nothing
+/// but the in-flight check can stop it, and it cannot outlive a killed test.
 #[tokio::test]
 async fn a_child_that_streams_without_exiting_is_cut_at_the_capture_bound() {
     let directory = tempfile::tempdir().expect("fixture directory");
     let executable = fake_codex(
         directory.path(),
         "endless-codex",
-        "#!/bin/sh\nwhile :; do printf '%s' 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; done\n",
+        "#!/bin/sh\nwhile printf '%s' 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; do :; done\n",
     );
 
     let started = std::time::Instant::now();
