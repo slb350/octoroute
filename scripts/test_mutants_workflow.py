@@ -1,7 +1,6 @@
 """Check the mutation scripts without contacting a remote host.
 
-The scripts are drep's (`~/dev/drep/scripts/`), copied with this repository's
-ai-1 role and Octoroute's index gate.
+The scripts are drep's (`~/dev/drep/scripts/`), copied with this repository's ai-1 role and Octoroute's index gate.
 """
 
 import itertools
@@ -35,9 +34,7 @@ def executable(path, text):
     path.chmod(0o755)
 
 
-# perl that exits 0 when the lock file named by its argument could be taken now
-# and 1 while another process holds it: the same kernel flock the mutation
-# scripts take through perl, since macOS has no flock(1).
+# perl that exits 0 when the lock file named by its argument could be taken now and 1 while another process holds it: the same kernel flock the mutation scripts take through perl, since macOS has no flock(1).
 LOCK_PROBE = (
     "open(my $f, '>>', $ARGV[0]) or exit 2; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)"
 )
@@ -112,8 +109,7 @@ class ScriptContractTests(unittest.TestCase):
 
     def test_remote_session_owns_sync_run_and_fresh_result_mirroring(self):
         script = without_comments("scripts/mutants-remote.sh")
-        # The offloaded run takes the role's host lock, the one hosted sweeps
-        # take, and hands it to the run on descriptor 9.
+        # The offloaded run takes the role's host lock, the one hosted sweeps take, and hands it to the run on descriptor 9.
         self.assertIn('exec 9>>"${DREP_MUTANTS_HOST_LOCK:?', script)
         self.assertIn('flock -E 75 -w "$wait_seconds" 9', script)
         self.assertNotIn("unset DREP_MUTANTS_HOST_LOCK", script)
@@ -141,6 +137,13 @@ class ScriptContractTests(unittest.TestCase):
         self.assertLess(
             script.index("REMOTE_SESSION_PID=$!"), script.index("rsync -a --delete")
         )
+
+    def test_remote_builds_the_source_it_is_given(self):
+        # The staged run hands the wrapper a snapshot of the index: the sync ships that tree and a local fallback builds it.
+        script = without_comments("scripts/mutants-remote.sh")
+        self.assertIn('SOURCE="${MUTANTS_SOURCE_DIR:-.}"', script)
+        self.assertIn('"$SOURCE/" "$REMOTE/"', script)
+        self.assertIn('exec ./scripts/mutants-run.sh --dir "$SOURCE" "$@"', script)
 
     def test_remote_takes_the_checkout_lock_before_probing_the_host(self):
         script = without_comments("scripts/mutants-remote.sh")
@@ -229,9 +232,10 @@ class ScriptContractTests(unittest.TestCase):
 
     def test_scratch_copies_stay_off_the_tmpfs(self):
         script = without_comments("scripts/mutants-run.sh")
+        self.assertIn('RUN_SCRATCH="$MUTANTS_SCRATCH_ROOT/run"', script)
         self.assertIn(
-            'RUN_SCRATCH="${DREP_MUTANTS_TMPDIR:-${MUTANTS_ROOT}.mutants-tmp}/run"',
-            script,
+            'MUTANTS_SCRATCH_ROOT="${DREP_MUTANTS_TMPDIR:-${MUTANTS_ROOT}.mutants-tmp}"',
+            without_comments("scripts/mutants-common.sh"),
         )
         self.assertIn('export TMPDIR="$RUN_SCRATCH"', script)
         self.assertFalse(
@@ -299,8 +303,7 @@ class RunScriptTests(unittest.TestCase):
         )
 
     def run_script(self, prelude="", **environment):
-        """Runs mutants-run.sh from a shell that runs prelude first, so the
-        prelude can hand the script an open descriptor."""
+        """Runs mutants-run.sh from a shell that runs prelude first, so the prelude can hand the script an open descriptor."""
         return run(
             [
                 "bash",
@@ -418,8 +421,7 @@ class StagedGateTests(unittest.TestCase):
         for name in ["mutants-common.sh", "mutants-staged.sh"]:
             shutil.copy2(ROOT / "scripts" / name, self.root / "scripts" / name)
         shutil.copy2(ROOT / ".githooks/pre-commit", self.root / ".githooks/pre-commit")
-        # Records whether another process is refused the checkout lock, and
-        # whether this process, started by the lock's holder, gets it at once.
+        # Records whether another process is refused the checkout lock, whether this process, started by the lock's holder, gets it at once, and the source it was handed. With FAKE_RESTAGE set it stages a further change, as an editor could while the run waits.
         executable(
             self.root / "scripts/mutants-remote.sh",
             "#!/usr/bin/env bash\n"
@@ -427,7 +429,9 @@ class StagedGateTests(unittest.TestCase):
             ". scripts/mutants-common.sh\n"
             "MUTANTS_HOST_LOCK_WAIT_SECONDS=0\n"
             "acquire_checkout_lock fake-remote; inherited=$?\n"
-            'printf "remote:%s extra:%s inherited:%s refused:%s\\n" "$*" "$MUTANTS_EXTRA_FILES" "$inherited" "$refused" >> events\n',
+            'source=$(cat "$MUTANTS_SOURCE_DIR/source.rs"); untracked=$(ls "$MUTANTS_SOURCE_DIR/untracked.rs" 2>/dev/null)\n'
+            'printf "remote:%s extra:%s inherited:%s refused:%s source:%s untracked:%s\\n" "$*" "$MUTANTS_EXTRA_FILES" "$inherited" "$refused" "$source" "$untracked" >> events\n'
+            "if [ -n \"${FAKE_RESTAGE:-}\" ]; then echo 'fn three() {}' > source.rs && git add source.rs; fi\n",
         )
         executable(
             self.root / "bin/cargo",
@@ -438,7 +442,7 @@ class StagedGateTests(unittest.TestCase):
             {
                 key: value
                 for key, value in os.environ.items()
-                if not key.startswith("DREP_MUTANTS_")
+                if not key.startswith(("DREP_MUTANTS_", "GIT_"))
             },
         )
         self.environment.update(
@@ -456,8 +460,8 @@ class StagedGateTests(unittest.TestCase):
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.root, text=True)
 
-    def run_script(self, path):
-        return run(["bash", path], self.environment, cwd=self.root)
+    def run_script(self, path, **environment):
+        return run(["bash", path], {**self.environment, **environment}, cwd=self.root)
 
     def events(self):
         path = self.root / "events"
@@ -475,7 +479,8 @@ class StagedGateTests(unittest.TestCase):
         self.assertIn("no staged Rust changes", result.stdout)
         self.assertEqual(self.events(), [])
 
-    def test_refuses_unstaged_or_untracked_inputs_without_touching_them(self):
+    def test_hook_refuses_unstaged_or_untracked_inputs_before_any_check(self):
+        # fmt and clippy read the working tree, so the hook refuses one that differs from the index.
         source = self.root / "source.rs"
         source.write_text("fn staged() {}\n")
         self.git("add", "--", "source.rs")
@@ -483,7 +488,7 @@ class StagedGateTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 path = source if kind == "unstaged" else self.root / "new_test.rs"
                 path.write_text("#[test]\nfn unstaged_test() {}\n")
-                result = self.run_script("scripts/mutants-staged.sh")
+                result = self.run_script(".githooks/pre-commit")
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("index", result.stderr)
                 self.assertEqual(path.read_text(), "#[test]\nfn unstaged_test() {}\n")
@@ -494,18 +499,36 @@ class StagedGateTests(unittest.TestCase):
                 else:
                     path.unlink()
 
-    def test_dispatches_a_matching_index_to_the_remote_run(self):
-        (self.root / "source.rs").write_text("fn staged() {}\n")
+    def test_staged_run_tests_the_index_under_the_checkout_lock(self):
+        source = self.root / "source.rs"
+        source.write_text("fn staged() {}\n")
         self.git("add", "--", "source.rs")
+        source.write_text("fn unstaged() {}\n")
+        (self.root / "untracked.rs").write_text("fn untracked() {}\n")
+
         result = self.run_script("scripts/mutants-staged.sh")
+
         self.assertEqual(result.returncode, 0, result.stderr)
         diff = "target/mutants/staged.diff"
         self.assertIn("+fn staged() {}", (self.root / diff).read_text())
         self.assertEqual(
             self.events(),
-            [f"remote:--in-diff {diff} extra:{diff} inherited:0 refused:1"],
+            [
+                f"remote:--in-diff {diff} extra:{diff} inherited:0 refused:1 source:fn staged() {{}} untracked:"
+            ],
         )
         self.assertTrue(lock_is_free(self.root / "target/mutants.lock"))
+        self.assertFalse(Path(str(self.root) + ".mutants-tmp", "index").exists())
+
+    def test_a_change_staged_during_the_run_is_refused(self):
+        # git commit reads the index again after the hook, so a change staged while the run worked would be committed untested.
+        (self.root / "source.rs").write_text("fn staged() {}\n")
+        self.git("add", "--", "source.rs")
+
+        result = self.run_script("scripts/mutants-staged.sh", FAKE_RESTAGE="1")
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("the index changed during the run", result.stderr)
 
     def test_hook_refuses_formatting_failure_without_rewriting_or_staging(self):
         before = self.git("write-tree")

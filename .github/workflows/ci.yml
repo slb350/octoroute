@@ -157,8 +157,7 @@ jobs:
     needs: mutation-policy
     if: needs.mutation-policy.outputs.run == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, linux, x64, homelab-ai-1, octoroute-mutants]
-    # A full 1,184-mutant sweep took 46 minutes on this runner at MUTANTS_JOBS=3 beside one other
-    # repository's sweep, and 85 beside three (2026-09-24); the eight GitHub-hosted shards took 20-33 each.
+    # A full 1,184-mutant sweep took 46 minutes on this runner at MUTANTS_JOBS=3 beside one other repository's sweep, and 85 beside three (2026-09-24).
     timeout-minutes: 180
     steps:
       # cargo-mutants builds every mutant in its own scratch copy of the tree, which excludes
