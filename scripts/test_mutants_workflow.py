@@ -152,8 +152,11 @@ class ScriptContractTests(unittest.TestCase):
     def test_checkouts_with_one_name_get_their_own_remote_directories(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
+        other_machine = Path(directory.name) / "bin"
+        other_machine.mkdir()
+        executable(other_machine / "hostname", "#!/bin/sh\necho other-machine\n")
 
-        def remote_dir(parent, name):
+        def remote_dir(parent, name, environment=os.environ):
             scripts = Path(directory.name) / parent / name / "scripts"
             scripts.mkdir(parents=True, exist_ok=True)
             shutil.copy2(
@@ -167,7 +170,7 @@ class ScriptContractTests(unittest.TestCase):
                     "remote-dir-test",
                     str(scripts),
                 ],
-                os.environ,
+                environment,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             return result.stdout
@@ -184,6 +187,13 @@ class ScriptContractTests(unittest.TestCase):
         self.assertTrue(odd.startswith(cache + "myrepox-"))
         self.assertNotEqual(first, second)
         self.assertEqual(first, remote_dir("one", "octoroute"))
+        # The same path on another machine must not share a directory.
+        self.assertNotEqual(
+            first,
+            remote_dir(
+                "one", "octoroute", with_fake_bin(Path(directory.name), os.environ)
+            ),
+        )
 
     def test_runner_holds_the_host_lock_and_keeps_it_from_cargo(self):
         script = without_comments("scripts/mutants-run.sh")
