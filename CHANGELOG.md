@@ -11,8 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Mutation testing moved to homelab-ai-1, where every mutation workload now runs. The eight GitHub-hosted shards became one sweep on this repository's `octoroute-mutants` runner there, which keeps its build cache between runs behind a workspace hygiene check and never runs for pull requests from forks. `just mutants` and the hook offload to the same role instead of homelab-1.
-- The mutation scripts are now drep's five, copied with this repository's role, host lock and workspace, plus Octoroute's orphan reaping, a closed lock descriptor for cargo, and the index gate. Their tests are drep's contract tests plus behavioural tests of cleanup, the verdict, orphan reaping, the staged gate and the hook.
+- Mutation testing moved to homelab-ai-1, where every mutation workload now runs. The eight GitHub-hosted shards became one sweep on this repository's `octoroute-mutants` runner there, which starts from a clean checkout and never runs for pull requests from forks. `just mutants` and the hook offload to the same role instead of homelab-1.
+- The mutation scripts are now drep's five, copied with this repository's role plus Octoroute's index gate. Hosted and local runs share the role's host lock, a second run in one checkout waits for the first instead of deleting its results and scratch, and each checkout mirrors into its own directory on ai-1. A commit with no staged Rust changes skips the lock. Their tests are drep's contract and lock tests plus behavioural tests of cleanup, the verdict, the staged gate and the hook.
+- The `endless-codex` test fixture stops by itself after thirty seconds instead of writing until killed, so a copy left behind by a mutant that breaks the process-group kill no longer spins. That was the reason for the orphan reaper in `scripts/mutants-run.sh`, which is gone.
 - Refresh 18 Rust 1.90-compatible lockfile packages and advance the immutable
   mutation-installer action pin to v2.87.17.
 
