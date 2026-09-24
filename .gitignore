@@ -60,3 +60,4 @@ perf.data.old
 # Added by cargo
 
 /target
+__pycache__/

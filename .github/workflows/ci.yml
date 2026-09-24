@@ -129,7 +129,7 @@ jobs:
   # Ordinary CI admits mutation work only for added, modified, deleted, or renamed
   # tests. Inline tests scope to every mutant in their owning source file; ambiguous
   # integration tests and fixtures conservatively expand to the full sweep. Monthly
-  # and manual runs are always full. Production-only revisions start no shards.
+  # and manual runs are always full. Production-only revisions start no sweep.
   mutation-policy:
     name: Mutation policy
     runs-on: ubuntu-latest
@@ -150,41 +150,27 @@ jobs:
         id: test-policy
         run: python3 scripts/mutants_scope.py "$GITHUB_EVENT_NAME" "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
 
+  # Every mutation workload runs on homelab-ai-1, under this repository's sandboxed role there.
+  # This repository is public, so pull requests from forks never reach that runner.
   mutants:
-    name: Mutation Testing (shard ${{ matrix.shard.label }}/8)
+    name: Mutation Testing
     needs: mutation-policy
-    if: needs.mutation-policy.outputs.run == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        # cargo-mutants uses zero-based shard indexes.
-        shard:
-          - { index: 0, label: 1 }
-          - { index: 1, label: 2 }
-          - { index: 2, label: 3 }
-          - { index: 3, label: 4 }
-          - { index: 4, label: 5 }
-          - { index: 5, label: 6 }
-          - { index: 6, label: 7 }
-          - { index: 7, label: 8 }
+    if: needs.mutation-policy.outputs.run == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, linux, x64, homelab-ai-1, octoroute-mutants]
+    # A full 1,184-mutant sweep took 46 minutes on this runner at MUTANTS_JOBS=3 while another
+    # repository's sweep shared the fleet (2026-09-24); the eight GitHub-hosted shards took 20-33 each.
+    timeout-minutes: 120
     steps:
+      # cargo-mutants builds every mutant in its own scratch copy of the tree, which excludes
+      # target/, so an ordinary clean checkout loses nothing.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-09-12
         with:
           toolchain: stable
-
-      - name: Cache cargo
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-mutants-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install cargo-mutants
         uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
@@ -195,7 +181,6 @@ jobs:
         shell: bash
         env:
           MUTATION_ARGUMENTS: ${{ needs.mutation-policy.outputs.arguments }}
-          MUTATION_SHARD: ${{ matrix.shard.index }}/8
         run: |
           set -euo pipefail
           set +e
@@ -203,8 +188,7 @@ jobs:
           import json
           import os
           script = "./scripts/mutants-run.sh"
-          os.execv(script, [script, *json.loads(os.environ["MUTATION_ARGUMENTS"]),
-                           "--shard", os.environ["MUTATION_SHARD"]])
+          os.execv(script, [script, *json.loads(os.environ["MUTATION_ARGUMENTS"])])
           PYTHON
           status=$?
           set -e
@@ -224,7 +208,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: mutation-repair-shard-${{ matrix.shard.label }}
+          name: mutation-repair
           path: |
             ${{ runner.temp }}/mutation-repair/missed.txt
             ${{ runner.temp }}/mutation-repair/timeout.txt

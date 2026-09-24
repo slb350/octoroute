@@ -26,11 +26,7 @@ policy preflight. Manual dispatch and the monthly run on the fifth day always
 sweep the tree. A failed run retains only its bounded mutation repair evidence;
 the following day's shared `Monthly Mutation Repair` automation fixes
 survivors through a PR and auto-merges only after all gates are green.
-`just mutants` remains the explicit local sweep and offloads to
-`homelab-1.local` when that host is reachable, falling back to a local run with
-a warning when it is not. That host is shared with self-hosted CI runners, so
-the sweep is capped at `CPUQuota=500%` of its 16 cores; raise it with
-`OCTOROUTE_MUTANTS_CPUQUOTA` when you know the box is idle.
+`just mutants` remains the explicit full sweep. Like the hook, it runs on homelab-ai-1 as the `octoroute-mutants` role and falls back to a local run with a warning when ai-1 is unreachable. CI sweeps run on that role's runner and never for pull requests from forks.
 
 `just check` runs clippy, formatting, and the mutation workflow tests. `just test` runs the tests,
 `just mutants` the mutation sweep, and `just validate` all of them. The focused
@@ -42,9 +38,7 @@ CI inspects the complete diff before installing mutation tooling. Branch pushes
 do not duplicate pull-request runs.
 
 The pre-commit gate refuses unstaged or untracked inputs and leaves formatting
-changes for you to review and stage. Remote mutation runs serialize source
-upload, testing, and result copying per checkout. Transfers retain a lock until
-they stop, including when their controlling SSH session is lost.
+changes for you to review and stage. A remote run holds ai-1's host lock, shared with CI sweeps, from source upload through result copying, and mirrors results back only after proving they came from that run.
 
 ## Source layout
 
