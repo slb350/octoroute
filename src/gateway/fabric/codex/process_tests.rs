@@ -85,19 +85,17 @@ async fn output_beyond_the_capture_bound_is_refused() {
 
 /// The bound has to hold while the child is still running.
 ///
-/// A `codex exec` that streams and never finishes is the case the bound exists
-/// for, and the post-exit check cannot reach it: with only that check, this
-/// fixture writes for the whole timeout window and is then reported as a
-/// timeout rather than refused. The fixture writes from a shell builtin loop
-/// that ends only when its reader goes away, so while it is being read nothing
-/// but the in-flight check can stop it, and it cannot outlive a killed test.
+/// A `codex exec` that streams and never finishes is the case the bound exists for, and the post-exit check cannot reach it: with only that check, this fixture writes for the whole timeout window and is then reported as a timeout rather than refused. The fixture writes past the bound at once and keeps writing for thirty seconds, three times the deadline, so inside the window nothing but the in-flight check can stop it. It writes to a file, not a pipe, so no reader going away would end it: it ends by itself, and a copy a killed test leaves behind stops within thirty seconds instead of spinning.
 #[tokio::test]
 async fn a_child_that_streams_without_exiting_is_cut_at_the_capture_bound() {
     let directory = tempfile::tempdir().expect("fixture directory");
     let executable = fake_codex(
         directory.path(),
         "endless-codex",
-        "#!/bin/sh\nwhile printf '%s' 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; do :; done\n",
+        &format!(
+            "#!/bin/sh\ni=0\nwhile [ $i -lt 30 ]; do printf '%s' '{}'; sleep 1; i=$((i + 1)); done\n",
+            "x".repeat(2048)
+        ),
     );
 
     let started = std::time::Instant::now();
