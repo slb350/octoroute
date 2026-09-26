@@ -93,11 +93,14 @@ class ScriptContractTests(unittest.TestCase):
     def test_remote_defaults_to_this_repositorys_ai1_role(self):
         script = without_comments("scripts/mutants-remote.sh")
         for expected in [
-            "\nHOST=steve@192.168.68.88\n",
             f"AI1_CI_ROLE={ROLE}",
             'REMOTE_DIR="$(remote_checkout_dir "$AI1_CI_ROLE")"',
         ]:
             self.assertIn(expected, script)
+        self.assertIn(
+            "AI1_HOST=steve@192.168.68.88",
+            without_comments("scripts/mutants-ai1-transport.sh"),
+        )
         for retired in ["strix", "homelab-1.", "homelab-2", "legion"]:
             self.assertNotIn(retired, script.lower())
 
@@ -136,21 +139,21 @@ class ScriptContractTests(unittest.TestCase):
         ]:
             self.assertIn(cleanup, script)
         self.assertLess(
-            script.index("REMOTE_SESSION_PID=$!"), script.index("rsync -a --delete")
+            script.index("REMOTE_SESSION_PID=$!"), script.index("ai1_push -a --delete")
         )
 
     def test_remote_builds_the_source_it_is_given(self):
         # The staged run hands the wrapper a snapshot of the index: the sync ships that tree and a local fallback builds it.
         script = without_comments("scripts/mutants-remote.sh")
         self.assertIn('SOURCE="${MUTANTS_SOURCE_DIR:-.}"', script)
-        self.assertIn('"$SOURCE/" "$REMOTE/"', script)
+        self.assertIn('"$SOURCE/" "$REMOTE_DIR/"', script)
         self.assertIn('exec ./scripts/mutants-run.sh --dir "$SOURCE" "$@"', script)
 
     def test_remote_takes_the_checkout_lock_before_probing_the_host(self):
         script = without_comments("scripts/mutants-remote.sh")
         self.assertLess(
             script.index("acquire_checkout_lock mutants-remote"),
-            script.index("ssh -o BatchMode=yes -o ConnectTimeout=5"),
+            script.index("ai1_ssh -o BatchMode=yes -o ConnectTimeout=5"),
         )
 
     def test_checkouts_with_one_name_get_their_own_remote_directories(self):
