@@ -93,7 +93,7 @@ class ScriptContractTests(unittest.TestCase):
     def test_remote_defaults_to_this_repositorys_ai1_role(self):
         script = without_comments("scripts/mutants-remote.sh")
         for expected in [
-            'HOST="${DREP_MUTANTS_HOST:-steve@192.168.68.88}"',
+            "\nHOST=steve@192.168.68.88\n",
             f"AI1_CI_ROLE={ROLE}",
             'REMOTE_DIR="$(remote_checkout_dir "$AI1_CI_ROLE")"',
         ]:
