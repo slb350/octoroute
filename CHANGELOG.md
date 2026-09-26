@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Close the lock-holder fixture's captured stdout after reaping it, removing
+  Python `ResourceWarning` noise from mutation-workflow tests.
+- Teach actionlint the verified custom labels of the self-hosted mutation
+  runner so the repository-wide workflow lint passes.
+
 ### Changed
 
 - Mutation testing moved to homelab-ai-1, where every mutation workload now runs. The eight GitHub-hosted shards became one sweep on this repository's `octoroute-mutants` runner there, which starts from a clean checkout and never runs for pull requests from forks. `just mutants` and the hook offload to the same role instead of homelab-1.

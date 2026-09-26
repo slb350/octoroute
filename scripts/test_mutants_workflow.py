@@ -65,6 +65,7 @@ def hold_lock(test, path, seconds="30"):
         stdout=subprocess.PIPE,
         text=True,
     )
+    test.addCleanup(holder.stdout.close)
     test.addCleanup(holder.wait)
     test.addCleanup(holder.kill)
     test.assertEqual(holder.stdout.readline(), "locked\n")
@@ -279,6 +280,19 @@ class WorkflowTests(unittest.TestCase):
 
 
 class RunScriptTests(unittest.TestCase):
+    def test_lock_holder_cleanup_closes_its_output_pipe(self):
+        probe = unittest.TestCase()
+        with tempfile.TemporaryDirectory() as directory:
+            try:
+                holder = hold_lock(probe, Path(directory) / "held.lock")
+            finally:
+                probe.doCleanups()
+            try:
+                self.assertIsNotNone(holder.poll())
+                self.assertTrue(holder.stdout.closed)
+            finally:
+                holder.stdout.close()
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory(prefix="octoroute mutants ")
         self.addCleanup(directory.cleanup)
