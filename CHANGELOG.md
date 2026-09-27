@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `endless-codex` test fixture stops by itself after thirty seconds instead of writing until killed, so a copy left behind by a mutant that breaks the process-group kill no longer spins. That was the reason for the orphan reaper in `scripts/mutants-run.sh`, which is gone.
 - Refresh 18 Rust 1.90-compatible lockfile packages and advance the immutable
   mutation-installer action pin to v2.87.17.
+- Refresh 15 further Rust 1.90-compatible lockfile packages, including
+  hyper-rustls 0.27.10, hyper-util 0.1.21, smallvec 1.16.2, and thiserror
+  2.0.21. Advance the immutable mutation-installer action pin to v2.87.21.
 
 ## [3.0.3] - 2026-09-19
 
