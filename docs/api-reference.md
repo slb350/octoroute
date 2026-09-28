@@ -52,9 +52,11 @@ member generates another. When none is present, the selected pool's
 enabled local pool whose capabilities cover the request therefore rejects a
 negative `n_predict` with `400` (`invalid_token_budget`), and the route ends
 there instead of falling forward to a later provider step. A route that
-reaches no such pool forwards `n_predict` to its provider unchanged.
-`n_predict: 0`, which llama.cpp documents as evaluating the prompt without
-generating, is a real zero-token budget.
+reaches no such pool never budgets `n_predict`. An OpenAI-compatible provider
+receives it unchanged, as it does any unknown field. The Anthropic adapter has
+no mapping for it and refuses the request as `incompatible`. `n_predict: 0`,
+which llama.cpp documents as evaluating the prompt without generating, is a
+real zero-token budget.
 
 ### Success response headers
 
