@@ -167,8 +167,8 @@ stdin/stderr, a five-second deadline, and a 4 KiB output bound.
 
 A command runs when a provider is selected for a request and when its readiness
 is refreshed, not on selection alone. Resolved credentials are cached for five
-minutes and discarded when the provider answers 401 or 403, so a rotated key is
-picked up without a restart and a command is not spawned per request.
+minutes and discarded when the provider answers 401, 403, or 407, so a rotated
+key is picked up without a restart and a command is not spawned per request.
 
 Optional request defaults are `reasoning_effort`, `temperature`, and
 `max_tokens`. Client-supplied non-null values win. `profile =

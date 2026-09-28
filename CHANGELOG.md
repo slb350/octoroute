@@ -15,6 +15,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Python `ResourceWarning` noise from mutation-workflow tests.
 - Teach actionlint the verified custom labels of the self-hosted mutation
   runner so the repository-wide workflow lint passes.
+- Correct the API reference against the shipped runtime. It now documents
+  `n_predict` taking precedence over `max_completion_tokens` and `max_tokens`
+  for the local output budget, and the `400` a negative `n_predict` receives.
+  For readiness it documents the `ready`/`degraded`/`not_ready` aggregate, the
+  per-target breakdown that only an authenticated caller receives, the
+  five-second snapshot cache, and the `token_count_unavailable` and
+  `unauthenticated` pool values. The provider probe mapping is now accurate:
+  `400` reports `unavailable`, `401`/`403`/`407` report `unauthenticated`, and
+  a `404` is checked against the inference URL. The status list now includes
+  `408` and the credential-rejection `502`, and the reference explains how the
+  governing rejection is chosen. It also names every rendered metric family;
+  it had listed only the four provider counters. A unit test now fails when a
+  rendered family is missing from the API reference or the observability guide.
+- Correct AGENTS.md, which still allowed the `.local` member hostnames that
+  validation refuses; members must be IP literals. AGENTS.md and the
+  configuration guide now also say that a `407` discards a cached provider
+  credential, just as `401` and `403` do.
 
 ### Changed
 

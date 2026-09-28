@@ -463,6 +463,61 @@ mod tests {
         }
     }
 
+    /// Whether `text` names `identifier` whole, not only as part of a longer
+    /// name such as a histogram's `_bucket` series.
+    fn names_identifier(text: &str, identifier: &str) -> bool {
+        let bytes = text.as_bytes();
+        let is_identifier_byte = |byte: &u8| byte.is_ascii_alphanumeric() || *byte == b'_';
+        text.match_indices(identifier).any(|(start, _)| {
+            let before = start.checked_sub(1).map(|index| &bytes[index]);
+            let after = bytes.get(start + identifier.len());
+            !before.is_some_and(is_identifier_byte) && !after.is_some_and(is_identifier_byte)
+        })
+    }
+
+    #[test]
+    fn names_identifier_requires_a_whole_name() {
+        assert!(names_identifier("`family_total` counts", "family_total"));
+        assert!(names_identifier("family_total", "family_total"));
+        assert!(!names_identifier("family_total_bucket", "family_total"));
+        assert!(!names_identifier("pre_family_total", "family_total"));
+        assert!(!names_identifier("unrelated", "family_total"));
+    }
+
+    /// Both operator references name every family the registry renders.
+    ///
+    /// The API reference once listed only the four provider counters while the
+    /// runtime also rendered pool admissions, pool fallbacks, the routing
+    /// histogram, and the unknown-type counter, so an operator building
+    /// dashboards from it never learned that the spill-to-cloud signal existed.
+    /// Families are read from the rendered `# TYPE` lines, so a new family fails
+    /// here until it is documented.
+    #[test]
+    fn operator_references_name_every_rendered_metric_family() {
+        let config = config();
+        let rendered = FabricMetrics::new(&config).render(&config);
+        let families: Vec<&str> = rendered
+            .lines()
+            .filter_map(|line| line.strip_prefix("# TYPE "))
+            .filter_map(|line| line.split_whitespace().next())
+            .collect();
+        assert!(
+            families.contains(&"octoroute_fabric_routing_duration_seconds"),
+            "family parsing missed the histogram in:\n{rendered}"
+        );
+
+        for document in ["docs/api-reference.md", "docs/observability.md"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(document);
+            let text = std::fs::read_to_string(&path).expect("readable operator reference");
+            let missing: Vec<&str> = families
+                .iter()
+                .copied()
+                .filter(|family| !names_identifier(&text, family))
+                .collect();
+            assert!(missing.is_empty(), "{document} does not name {missing:?}");
+        }
+    }
+
     /// Every adapter emits a series even at zero. An omitted series is
     /// indistinguishable on a dashboard from a condition that never occurs, so
     /// the exposition iterates `Adapter::ALL` rather than only what has fired.

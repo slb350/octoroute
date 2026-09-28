@@ -42,8 +42,16 @@ output, image/audio/video input, and reasoning controls. Unknown or malformed
 message/content shapes fail closed as locally incompatible and can proceed only
 to a provider when both the route privacy and fallback policy allow it.
 
-`max_completion_tokens` takes precedence over `max_tokens`; when neither is
-present, the selected pool's configured default reserves output context.
+The local output reservation reads `n_predict` first, then
+`max_completion_tokens`, then `max_tokens`. The body reaches llama.cpp
+unchanged, and llama.cpp lets an explicit `n_predict` override the value derived
+from `max_tokens`, so budgeting any other way would reserve one number while the
+member generates another. When none is present, the selected pool's
+`default_max_output_tokens` reserves output context. llama.cpp documents
+`n_predict: -1` as unlimited, which no context reservation can cover, so any
+negative `n_predict` is rejected with `400`. `n_predict: 0`, which llama.cpp
+documents as evaluating the prompt without generating, is a real zero-token
+budget.
 
 ### Success response headers
 
@@ -86,17 +94,38 @@ Errors use the OpenAI-compatible envelope:
 
 Representative statuses:
 
-- `400` for invalid JSON, envelope, privacy, route, capability, or token budget;
+- `400` for invalid JSON, envelope, privacy, route, or token budget, and when
+  the governing rejection is a local pool that cannot serve the request
+  (`local_incompatible`) or whose context window it exceeds
+  (`local_context_overflow`);
 - `401` for missing or invalid bearer authentication;
+- `408` when the request body does not arrive within
+  `server.request_body_timeout_ms`;
 - `413` for request bodies above the configured limit;
 - `429` for inbound rate or concurrency limits;
 - `431` for headers above the configured limit;
 - `502` for a selected upstream failure before commitment when fallback is not
-  allowed or no later step exists;
-- `503` when no eligible target is available, disabled, busy, unhealthy, or
-  adapter-incompatible.
+  allowed or no later step exists, and when a local member or provider rejects
+  Octoroute's own credential (`local_credential_rejected`,
+  `provider_credential_rejected`), so a client never mistakes an upstream `401`
+  for its own bearer failing;
+- `503` when no eligible target is available: disabled, busy, unhealthy, unable
+  to count input tokens, missing or refused its credential
+  (`local_unauthenticated`, `provider_unauthenticated`), or a provider without a
+  compatible adapter (`provider_incompatible`).
 
-Errors never include request bodies, credentials, or raw provider responses.
+When a route runs out of steps, the status and code come from the most
+significant admission rejection the route collected, not from the last step
+tried: a missing or refused operator credential outranks a request the caller
+must fix, which outranks capacity or health. Within one tier the first
+rejection wins.
+
+Other upstream statuses are committed responses and reach the client as the
+upstream sent them. OpenAI-compatible and local error bodies pass through
+unchanged; Anthropic error bodies are rebuilt into this envelope, keeping the
+upstream `error.message` (truncated to 2 KiB) and its `error.type` as
+`upstream_type`. Gateway-generated errors never include request bodies,
+credentials, or raw provider responses.
 
 ## `GET /v1/models`
 
@@ -121,36 +150,108 @@ Unauthenticated process liveness:
 
 ## `GET /health/ready` and `GET /health`
 
-Unauthenticated bounded admission snapshot. Local pools are actively probed.
-Enabled HTTP providers resolve their credential and issue a credential-bearing
-`GET` to the provider's derived `models` URL; Codex providers run bounded
-`codex doctor --json` and require ChatGPT-managed authentication. Results are
-cached per provider for `readiness_ttl_ms`, concurrent refreshes coalesce, and
-each refresh is bounded by `readiness_timeout_ms`. A full provider permit pool
-reports `busy` without probing.
+Unauthenticated aggregate readiness. Every caller receives the status code and
+an aggregate `status`:
 
-Provider values are `ready`, `disabled`, `busy`, or `unavailable` (with
-`incompatible` retained as a closed state). HTTP `2xx`, `400`, `404`, `405`,
-and `429` establish reachability; authentication failures, timeouts, transport
-failures, and server errors report `unavailable`. Readiness sends no prompt or
-request body, but it can resolve provider credentials and execute the Codex
-diagnostic, so operators should restrict network access to this endpoint.
+```json
+{"status":"ready","config_version":3}
+```
 
-The status is `200` when at least one pool or provider runtime reports ready,
-otherwise `503`.
+The per-target breakdown names every configured pool and provider, so it is
+added only when the request carries the gateway bearer:
+
+```json
+{
+  "status": "degraded",
+  "config_version": 3,
+  "pools": {"workers": "unavailable"},
+  "providers": {"openrouter": "ready"},
+  "provider_runtime": "complete"
+}
+```
+
+The HTTP status is `200` when at least one pool or provider reports `ready`,
+otherwise `503`. The aggregate `status` is:
+
+- `ready`: at least one target is `ready` and every other is `ready`, `busy`,
+  or `disabled`;
+- `degraded`: at least one target is `ready` while another reports a value
+  other than `ready`, `busy`, or `disabled` - for example a dead local fleet
+  covered by billed cloud capacity;
+- `not_ready`: no target is ready, which includes a fleet where every target
+  is `busy`.
+
+Only targets that some route can reach are reported. The whole snapshot is
+cached for five seconds, so an anonymous caller cannot turn readiness requests
+into probes, credential commands, or Codex diagnostics at request rate.
+
+Pool values are `ready`, `disabled`, `busy`, `unavailable`,
+`token_count_unavailable`, or `unauthenticated`. A pool is checked member by
+member in selection order: cached health, a free `/slots` entry, and a small
+token-count request. It is `ready` as soon as one member passes all three.
+Otherwise it reports, in this order of precedence, `unauthenticated` if any
+member rejected Octoroute's credential, `busy` if any member was busy,
+`token_count_unavailable` if any member could not count tokens, and
+`unavailable` otherwise.
+
+Provider values are `ready`, `disabled`, `busy`, `unavailable`, or
+`unauthenticated` (with `incompatible` retained as a closed state). A provider
+with no free permit reports `busy` without probing. Enabled HTTP providers
+resolve their credential and issue a credential-bearing `GET` to the provider's
+derived `models` URL:
+
+- `2xx`, `405`, and `429` report `ready`: the endpoint answered;
+- `401`, `403`, and `407` report `unauthenticated` and discard the cached
+  credential; a credential that cannot be resolved at all also reports
+  `unauthenticated`;
+- `404` is ambiguous - a provider without a models listing, or a wrong base
+  path - so Octoroute sends one more `GET`, to the provider's inference URL
+  (`chat/completions`, or `messages` for the Anthropic protocol). A `401`,
+  `403`, or `407` there reports `unauthenticated`; another `404`, a `5xx`, or no
+  answer reports `unavailable`; any other status reports `ready`, meaning
+  reachable rather than authenticated;
+- every other status, including `400` and `5xx`, and a timeout or transport
+  failure report `unavailable`.
+
+Codex providers run bounded `codex doctor --json`. A CLI that is not logged in
+through ChatGPT, or whose diagnostic output does not match the contract, reports
+`unauthenticated`; a missing executable, a timeout, a non-zero exit, or another
+process failure reports `unavailable`.
+
+Provider results are cached per provider for `readiness_ttl_ms`, concurrent
+refreshes coalesce, and each refresh is bounded by `readiness_timeout_ms`. A
+dispatch that fails before commitment, or answers with a `5xx` or a credential
+rejection, discards that provider's cached result so the next pass probes
+again.
+
+Readiness sends no prompt or request body, but it can resolve provider
+credentials and execute the Codex diagnostic, so operators should restrict
+network access to this endpoint.
 
 ## `GET /metrics`
 
-Authenticated Prometheus text exposition for configured pool/provider
-enablement, runtime identity, and these fixed-label provider counter families:
+Authenticated Prometheus text exposition
+(`text/plain; version=0.0.4; charset=utf-8`) with these families:
 
+- `octoroute_fabric_runtime_info{config_version,provider_runtime}` gauge;
+- `octoroute_fabric_pool_enabled{pool}` and
+  `octoroute_fabric_provider_enabled{provider}` gauges;
+- `octoroute_fabric_pool_admissions_total{pool,state}`;
+- `octoroute_fabric_pool_fallbacks_total{pool,trigger}`, the signal that local
+  capacity is spilling to the next route step;
 - `octoroute_fabric_provider_admissions_total{provider,state}`;
 - `octoroute_fabric_provider_responses_total{provider,outcome}`;
 - `octoroute_fabric_provider_fallbacks_total{provider,trigger}`;
-- `octoroute_fabric_provider_probes_total{provider,state}`.
+- `octoroute_fabric_provider_probes_total{provider,state}`;
+- `octoroute_fabric_routing_duration_seconds` histogram: admission work for one
+  route step, excluding its upstream call, observed for rejected steps too;
+- `octoroute_fabric_unknown_upstream_types_total{adapter}`: upstream content
+  blocks, events, and deltas skipped as unrecognized.
 
-Every provider/state combination is rendered, including zero values. Label
-values come only from validated configuration and closed enums.
+Every configured pool or provider is rendered with every value of its closed
+label, including zero values. Label values come only from validated
+configuration and closed enums. [Observability](observability.md) explains how
+to read each family.
 
 ## Security headers
 
