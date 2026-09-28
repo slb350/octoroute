@@ -92,7 +92,8 @@ Fallback triggers are a closed set: `busy`, `unhealthy`, `context_overflow`,
 `incompatible`, `rate_limited`, `precommit_failure`, `unauthenticated`.
 `unauthenticated` is **outside** the default set: an expired or missing
 credential must surface rather than silently reroute traffic and spend. It is
-honoured symmetrically at credential resolution and at a dispatch-time 401/403;
+honoured symmetrically at credential resolution and at a dispatch-time 401,
+403, or 407;
 an upstream 401 is never returned in a form a client reads as its own
 credential failing.
 
@@ -196,10 +197,13 @@ exported-but-empty variable does not shadow a `.env` value.
 
 - Provider endpoints must use HTTPS. URLs cannot contain embedded credentials,
   queries, or fragments.
-- Local pool members must be on a loopback, private-range, or `.local` address,
-  so a public member cannot satisfy `local-only`.
+- Local pool members must be explicit loopback, private-range, or link-local
+  IP literals, so a public member cannot satisfy `local-only`. Hostnames,
+  `.local` and `localhost` included, are refused: DNS can resolve a
+  private-looking name to a public address after validation.
 - HTTP providers require exactly one of `api_key_env` or `api_key_command`.
-  Resolved credentials are cached for five minutes and discarded on 401/403.
+  Resolved credentials are cached for five minutes and discarded on 401, 403,
+  or 407.
   Commands run under an allowlisted environment including `HOME` and `TMPDIR`.
 - Optional `first_byte_timeout_ms` (pools and providers) bounds how long a hung
   upstream holds permits before the route falls forward. Set it only from
