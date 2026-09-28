@@ -329,7 +329,7 @@ runner arguments once; Git fixture checks run with workflow tests rather than in
 every Cargo mutation test invocation. Manual dispatch and the monthly schedule
 on the fifth at 09:17 UTC always run the full sweep. Scheduled and
 manual runs omit ordinary CI jobs. Failures retain only the three bounded repair
-reports for the shared Monthly Mutation Repair automation.
+reports for Jobsy's `octoroute-mutation-repair` job, which repairs the survivors through a draft pull request on the sixth.
 
 - The verdict is `missed.txt`, not the exit code: cargo-mutants returns exit 3
   (Timeout) in preference to exit 2 (FoundProblems). `scripts/mutants-run.sh`

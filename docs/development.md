@@ -24,8 +24,8 @@ source files; integration tests, fixtures, snapshots, and ambiguous mappings
 fall back to the complete sweep. Production-only revisions stop after the fast
 policy preflight. Manual dispatch and the monthly run on the fifth day always
 sweep the tree. A failed run retains only its bounded mutation repair evidence;
-the following day's shared `Monthly Mutation Repair` automation fixes
-survivors through a PR and auto-merges only after all gates are green.
+the following day's Jobsy `octoroute-mutation-repair` job fixes
+survivors through a draft pull request, which Jobsy's daily review job merges only after every check passes.
 `just mutants` remains the explicit full sweep. Like the hook, it runs on homelab-ai-1 as the `octoroute-mutants` role and falls back to a local run with a warning when ai-1 is unreachable. CI sweeps run on that role's runner and never for pull requests from forks.
 
 `just check` runs clippy, formatting, and the mutation workflow tests. `just test` runs the tests,
