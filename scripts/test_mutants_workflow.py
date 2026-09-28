@@ -12,6 +12,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from mutants_fixture import fixture_env, git
+
 ROOT = Path(__file__).resolve().parents[1]
 ROLE = "octoroute-mutants"
 FAKE_CARGO = """#!/usr/bin/env bash
@@ -458,8 +460,8 @@ class StagedGateTests(unittest.TestCase):
             self.root,
             {
                 key: value
-                for key, value in os.environ.items()
-                if not key.startswith(("DREP_MUTANTS_", "GIT_"))
+                for key, value in fixture_env().items()
+                if not key.startswith("DREP_MUTANTS_")
             },
         )
         self.environment.update(
@@ -475,7 +477,7 @@ class StagedGateTests(unittest.TestCase):
         self.git("commit", "-qm", "fixture")
 
     def git(self, *args):
-        return subprocess.check_output(["git", *args], cwd=self.root, text=True)
+        return git(self.root, *args)
 
     def run_script(self, path, **environment):
         return run(["bash", path], {**self.environment, **environment}, cwd=self.root)

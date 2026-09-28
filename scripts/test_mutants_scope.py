@@ -1,11 +1,14 @@
 """Exercise mutation admission against real, isolated Git histories."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from mutants_fixture import fixture_env, git, run_git
 
 SCRIPT = Path(__file__).with_name("mutants_scope.py")
 ZERO = "0" * 40
@@ -23,9 +26,7 @@ class MutationScopeTests(unittest.TestCase):
         self.base = self.commit("README.md", "initial\n")
 
     def git(self, *args):
-        return subprocess.check_output(
-            ["git", *args], cwd=self.root, text=True, stderr=subprocess.PIPE
-        ).strip()
+        return git(self.root, *args).strip()
 
     def commit(self, path, contents):
         target = self.root / path
@@ -36,12 +37,7 @@ class MutationScopeTests(unittest.TestCase):
         return self.git("rev-parse", "HEAD")
 
     def stage(self, path):
-        ignored = subprocess.run(
-            ["git", "check-ignore", "--", path],
-            cwd=self.root,
-            capture_output=True,
-            check=False,
-        )
+        ignored = run_git(self.root, "check-ignore", "--", path)
         self.assertEqual(ignored.returncode, 1, f"fixture path is ignored: {path}")
         self.git("add", "--", path)
 
@@ -51,6 +47,7 @@ class MutationScopeTests(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(SCRIPT), event, str(event_file)],
             cwd=self.root,
+            env=fixture_env(),
             capture_output=True,
             text=True,
             check=False,
@@ -250,6 +247,40 @@ class MutationScopeTests(unittest.TestCase):
         for event in ["workflow_dispatch", "schedule"]:
             with self.subTest(event=event):
                 self.assertEqual(self.scope(event, {}), ("full", []))
+
+    def test_fixtures_leave_the_repository_a_hook_runs_them_in_alone(self):
+        """A hook runs these tests with what git exports to it: the committing repository's GIT_DIR and GIT_INDEX_FILE, and any -c configuration. The fixtures must still act only on their own repositories."""
+        git_dir = self.root / ".git"
+        config, index = (
+            (git_dir / "config").read_bytes(),
+            (git_dir / "index").read_bytes(),
+        )
+
+        child = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-m",
+                "unittest",
+                "test_mutants_scope.MutationScopeTests.test_complete_push_and_initial_push_inspect_more_than_the_tip_commit",
+            ],
+            cwd=SCRIPT.parent,
+            env={
+                **os.environ,
+                "GIT_DIR": str(git_dir),
+                "GIT_INDEX_FILE": str(git_dir / "index"),
+                # Signing through `false` fails every commit that inherits it.
+                "GIT_CONFIG_PARAMETERS": "'commit.gpgsign'='true' 'gpg.program'='false'",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.base)
+        self.assertEqual((git_dir / "config").read_bytes(), config)
+        self.assertEqual((git_dir / "index").read_bytes(), index)
 
 
 if __name__ == "__main__":
