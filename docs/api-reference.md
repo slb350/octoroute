@@ -48,10 +48,13 @@ unchanged, and llama.cpp lets an explicit `n_predict` override the value derived
 from `max_tokens`, so budgeting any other way would reserve one number while the
 member generates another. When none is present, the selected pool's
 `default_max_output_tokens` reserves output context. llama.cpp documents
-`n_predict: -1` as unlimited, which no context reservation can cover, so any
-negative `n_predict` is rejected with `400`. `n_predict: 0`, which llama.cpp
-documents as evaluating the prompt without generating, is a real zero-token
-budget.
+`n_predict: -1` as unlimited, which no context reservation can cover. An
+enabled local pool whose capabilities cover the request therefore rejects a
+negative `n_predict` with `400` (`invalid_token_budget`), and the route ends
+there instead of falling forward to a later provider step. A route that
+reaches no such pool forwards `n_predict` to its provider unchanged.
+`n_predict: 0`, which llama.cpp documents as evaluating the prompt without
+generating, is a real zero-token budget.
 
 ### Success response headers
 
@@ -114,11 +117,12 @@ Representative statuses:
   (`local_unauthenticated`, `provider_unauthenticated`), or a provider without a
   compatible adapter (`provider_incompatible`).
 
-When a route runs out of steps, the status and code come from the most
-significant admission rejection the route collected, not from the last step
-tried: a missing or refused operator credential outranks a request the caller
-must fix, which outranks capacity or health. Within one tier the first
-rejection wins.
+When a route ends on an admission rejection, either because it ran out of
+steps or because a step refused for a trigger outside the route's
+`fallback_on`, the status and code come from the most significant admission
+rejection the route collected, not from the last step tried: a missing or
+refused operator credential outranks a request the caller must fix, which
+outranks capacity or health. Within one tier the first rejection wins.
 
 Other upstream statuses are committed responses and reach the client as the
 upstream sent them. OpenAI-compatible and local error bodies pass through

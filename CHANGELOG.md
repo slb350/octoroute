@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runner so the repository-wide workflow lint passes.
 - Correct the API reference against the shipped runtime. It now documents
   `n_predict` taking precedence over `max_completion_tokens` and `max_tokens`
-  for the local output budget, and the `400` a negative `n_predict` receives.
+  for the local output budget, and the `400` a local pool step returns for a
+  negative `n_predict`.
   For readiness it documents the `ready`/`degraded`/`not_ready` aggregate, the
   per-target breakdown that only an authenticated caller receives, the
   five-second snapshot cache, and the `token_count_unavailable` and
