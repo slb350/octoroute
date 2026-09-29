@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The crates.io publish job runs in a `release` environment that deploys only from `main` and `v*` tags, as crates.io recommends for trusted publishing, so a copy of the workflow on another branch cannot obtain a publishing token.
 - Close the lock-holder fixture's captured stdout after reaping it, removing
   Python `ResourceWarning` noise from mutation-workflow tests.
 - Teach actionlint the verified custom labels of the self-hosted mutation
