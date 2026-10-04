@@ -46,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refresh 15 further Rust 1.90-compatible lockfile packages, including
   hyper-rustls 0.27.10, hyper-util 0.1.21, smallvec 1.16.2, and thiserror
   2.0.21. Advance the immutable mutation-installer action pin to v2.87.21.
+- Refresh 10 further Rust 1.90-compatible lockfile packages, including
+  yoke-derive 0.8.4, which replaces the yanked 0.8.3, tokio 1.53.2,
+  uuid 1.27.0, quinn-proto 0.11.19, and quinn-udp 0.5.16.
 
 ## [3.0.3] - 2026-09-19
 
