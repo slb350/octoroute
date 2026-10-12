@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.4] - 2026-10-12
+
 ### Fixed
 
 - The crates.io publish job runs in a `release` environment that deploys only from `v*` tags, which only repository admins can create, as crates.io recommends for trusted publishing, so a copy of the workflow anywhere else cannot obtain a publishing token.
@@ -52,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refresh 13 further Rust 1.90-compatible lockfile packages, including
   cc 1.8.0, h2 0.4.20, hyper 1.12.0, serde_json 1.0.154, syn 3.0.7,
   tokio-util 0.7.20, uuid 1.28.0, and zeroize 1.9.1.
+- Advance the immutable action pins: `dtolnay/rust-toolchain` (retries rustup checksum failures and passes its inputs through environment variables), `taiki-e/install-action` v2.87.26, and `actions/download-artifact` v8.0.2. The `rust-toolchain` pin comments now carry the pinned commit's date.
 
 ## [3.0.3] - 2026-09-19
 
