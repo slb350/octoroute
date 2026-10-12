@@ -49,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refresh 10 further Rust 1.90-compatible lockfile packages, including
   yoke-derive 0.8.4, which replaces the yanked 0.8.3, tokio 1.53.2,
   uuid 1.27.0, quinn-proto 0.11.19, and quinn-udp 0.5.16.
+- Refresh 13 further Rust 1.90-compatible lockfile packages, including
+  cc 1.8.0, h2 0.4.20, hyper 1.12.0, serde_json 1.0.154, syn 3.0.7,
+  tokio-util 0.7.20, uuid 1.28.0, and zeroize 1.9.1.
 
 ## [3.0.3] - 2026-09-19
 
