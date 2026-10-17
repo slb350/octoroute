@@ -38,7 +38,7 @@ CI inspects the complete diff before installing mutation tooling. Branch pushes
 do not duplicate pull-request runs.
 
 The pre-commit gate refuses unstaged or untracked inputs and leaves formatting
-changes for you to review and stage. A remote run holds ai-1's host lock, shared with CI sweeps, from source upload through result copying, and mirrors results back only after proving they came from that run.
+changes for you to review and stage. A remote run holds homelab-1's host lock, shared with CI sweeps, from source upload through result copying, and mirrors results back only after proving they came from that run.
 
 ## Source layout
 
