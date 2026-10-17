@@ -73,7 +73,7 @@ clean:
 ci: check test
     @echo "CI checks passed!"
 
-# Mutation-test the whole tree (on homelab-ai-1, or locally when it is unreachable)
+# Mutation-test the whole tree (on homelab-1, or locally when it is unreachable)
 mutants:
     @echo "Running full mutation sweep..."
     ./scripts/mutants-remote.sh
