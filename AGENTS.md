@@ -1,5 +1,10 @@
 # Octoroute - Tiered Local/Cloud Inference Fabric
 
+October 16 CI placement: Steve selected homelab-1 for all existing ai-1 self-hosted Linux CI roles
+and their mutation offloads. The homelab repository's `docs/37-homelab-1-ci-return.md` owns cutover
+status and recovery. The transport's historical `AI1_*` names and
+`mutants-ai1-transport.sh` filename remain compatibility interfaces.
+
 This AGENTS.md is the tracked, authoritative instruction file for agents working in this repository. A local `CLAUDE.md` stays gitignored; it imports this file with `@AGENTS.md` and may add private notes.
 
 ## Project overview
@@ -342,7 +347,7 @@ reports for Jobsy's `octoroute-mutation-repair` job, which repairs the survivors
   time out, so the fixture they spawned outlives the run and spins on a core.
 - Fix a survivor by making a test discriminate, never by excluding the mutant.
   A mutation that genuinely cannot be observed marks dead code to delete.
-- Every mutation workload runs on homelab-ai-1 as the `octoroute-mutants` role. CI sweeps run on that role's runner (`runs-on: [self-hosted, linux, x64, homelab-ai-1, octoroute-mutants]`) and never for pull requests from forks. `scripts/mutants-remote.sh` offloads hook and `just mutants` runs there through `scripts/mutants-ai1-transport.sh`, which sends every command through ai-1's sandboxed `offload.py`, and falls back to a local run with a warning when ai-1 is unreachable. Hosted and laptop runs serialize on `/srv/ci/fleet/octoroute-mutants/home/host.lock`, and ai-1's CI slice bounds their CPU and memory. The five scripts are drep's (`~/dev/drep/scripts/`): keep them in step with it, changing only the role, lock and workspace defaults plus Octoroute's three additions, which are orphan reaping, closing the lock descriptor for cargo, and the index gate.
+- Every mutation workload runs on homelab-1 as the `octoroute-mutants` role. CI sweeps run on that role's runner (`runs-on: [self-hosted, linux, x64, homelab-1, octoroute-mutants]`) and never for pull requests from forks. `scripts/mutants-remote.sh` offloads hook and `just mutants` runs there through `scripts/mutants-ai1-transport.sh`, which sends every command through homelab-1's sandboxed `offload.py`, and falls back to a local run with a warning when homelab-1 is unreachable. Hosted and laptop runs serialize on `/srv/ci/fleet/octoroute-mutants/home/host.lock`, and homelab-1's CI slice bounds their CPU and memory. The five scripts are drep's (`~/dev/drep/scripts/`): keep them in step with it, changing only the role, lock and workspace defaults plus Octoroute's three additions, which are orphan reaping, closing the lock descriptor for cargo, and the index gate.
 - Entrypoint mutation qualification, 2026-08-28: unit tests in `src/main.rs`
   pin exact artifact writes, the `AlreadyExists` remap and non-remapped I/O
   errors, and parseable config generation without overwrite. Process tests in

@@ -150,14 +150,14 @@ jobs:
         id: test-policy
         run: python3 scripts/mutants_scope.py "$GITHUB_EVENT_NAME" "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
 
-  # Every mutation workload runs on homelab-ai-1, under this repository's sandboxed role there.
+  # Every mutation workload runs on homelab-1, under this repository's sandboxed role there.
   # This repository is public, so pull requests from forks never reach that runner.
   mutants:
     name: Mutation Testing
     needs: mutation-policy
     if: needs.mutation-policy.outputs.run == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, linux, x64, homelab-ai-1, octoroute-mutants]
-    # A full 1,184-mutant sweep took 46 minutes on this runner at MUTANTS_JOBS=3 beside one other repository's sweep, and 85 beside three (2026-09-24).
+    runs-on: [self-hosted, linux, x64, homelab-1, octoroute-mutants]
+    # A full 1,184-mutant sweep took 46 minutes on the former ai-1 runner at MUTANTS_JOBS=3 beside one other repository's sweep, and 85 beside three (2026-09-24).
     timeout-minutes: 180
     steps:
       # cargo-mutants builds every mutant in its own scratch copy of the tree, which excludes

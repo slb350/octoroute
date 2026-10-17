@@ -100,7 +100,7 @@ class ScriptContractTests(unittest.TestCase):
         ]:
             self.assertIn(expected, script)
         self.assertIn(
-            "AI1_HOST=steve@192.168.68.88",
+            "AI1_HOST=steve@192.168.68.73",
             without_comments("scripts/mutants-ai1-transport.sh"),
         )
         for retired in ["strix", "homelab-1.", "homelab-2", "legion"]:
@@ -270,7 +270,7 @@ class WorkflowTests(unittest.TestCase):
         jobs = self.jobs()
         mutants = jobs.pop("mutants")
         for expected in [
-            "    runs-on: [self-hosted, linux, x64, homelab-ai-1, octoroute-mutants]",
+            "    runs-on: [self-hosted, linux, x64, homelab-1, octoroute-mutants]",
             "    if: needs.mutation-policy.outputs.run == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)",
             "          persist-credentials: false",
             "          name: mutation-repair\n",
