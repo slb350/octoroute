@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Correct the development guide, which still named ai-1 as the host whose lock a
+  remote mutation run holds. Mutation offloads run on homelab-1.
+
 ## [3.0.4] - 2026-10-12
 
 ### Fixed
