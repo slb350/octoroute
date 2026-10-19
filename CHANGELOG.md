@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Refresh 5 Rust 1.90-compatible lockfile packages: equivalent 1.0.3,
+  libc 0.2.191, syn 3.0.9, tokio 1.53.3, and unicode-ident 1.0.27.
+
 ### Fixed
 
 - Correct the development guide, which still named ai-1 as the host whose lock a
