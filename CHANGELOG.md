@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.5] - 2026-10-19
+
+### Security
+
+- Update rustls from 0.23.45 to 0.23.46 and raise the direct manifest floor so
+  downstream resolution cannot select versions affected by RUSTSEC-2026-0346,
+  RUSTSEC-2026-0347, RUSTSEC-2026-0348, or RUSTSEC-2026-0349: TLS session
+  secrets exposed through `Debug` impls, an unauthenticated downgrade to
+  classical key exchange, unauthenticated Brotli certificate decompression
+  allocating up to 1 GiB, and application data sent to the outer server after
+  ECH rejection.
+
 ### Changed
 
 - Refresh 5 Rust 1.90-compatible lockfile packages: equivalent 1.0.3,
@@ -623,7 +635,9 @@ gaps, and 45 smaller findings. The suite grew from 126 tests to 212.
 
 ---
 
-[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.3...HEAD
+[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.5...HEAD
+[3.0.5]: https://github.com/slb350/octoroute/compare/v3.0.4...v3.0.5
+[3.0.4]: https://github.com/slb350/octoroute/compare/v3.0.3...v3.0.4
 [3.0.3]: https://github.com/slb350/octoroute/compare/v3.0.2...v3.0.3
 [3.0.2]: https://github.com/slb350/octoroute/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/slb350/octoroute/compare/v3.0.0...v3.0.1
