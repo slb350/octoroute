@@ -229,6 +229,7 @@ src/
   main.rs                     # startup, telemetry, bounded graceful shutdown
   cli.rs                      # CLI and v3 config template
   telemetry.rs
+  lib.rs                      # library target the integration tests import
   gateway/
     auth.rs                   # bearer validation
     env.rs                    # process + optional dotenv, SecretString
@@ -249,15 +250,21 @@ src/
       http_support.rs         # limits, rate limiting, response guards
       metrics.rs              # bounded Prometheus registry
       policy.rs               # privacy directive and route planning
+      process_group.rs        # process-group isolation and termination for children
       test_support.rs         # Unix executable fixtures shared by tests
       transport.rs            # credential-isolated HTTP/SSE proxy
+      unknown_types.rs        # process-global skipped-unknown-upstream-type counter
 tests/
   gateway_v3.rs
   main_process.rs             # executable exit, startup, and SIGTERM contracts
+  source_hygiene.rs           # cfg-gate and source-layout conventions
 ```
 
 Keep every Rust source and test file below 600 lines and never above 800. Split
-by responsibility before adding a second concern.
+by responsibility before adding a second concern. The first level under `src/`,
+`gateway/`, `fabric/`, and `tests/` names every file except `mod.rs` and the
+`*_tests.rs` test modules; deeper entries are prose summaries.
+`tests/source_hygiene.rs` keeps that statement true for `AGENTS.md` itself.
 
 ## Development workflow
 
