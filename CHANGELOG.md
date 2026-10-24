@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Correct the authoritative source layout in AGENTS.md. It was missing
+  `src/lib.rs`, the fabric's `process_group.rs` and `unknown_types.rs`, and
+  `tests/source_hygiene.rs`: the layout predates the hygiene test and never
+  named it, while the two production modules and the library target were
+  omitted when it was first written. The layout now states its naming
+  convention, and a source-hygiene test keeps it two-way accurate, so a
+  renamed, deleted, or newly added first-level file fails the build until the
+  authoritative instructions name it.
+
 ## [3.0.5] - 2026-10-19
 
 ### Security
