@@ -1,4 +1,5 @@
-//! Source conventions required for cargo-mutants to distinguish test scaffolding.
+//! Source conventions: cfg gates that cargo-mutants recognizes as test
+//! scaffolding, and an `AGENTS.md` source layout that matches the tree.
 
 use std::{
     fs,
