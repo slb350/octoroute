@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Update rustls-webpki from 0.103.15 to 0.103.16 and webpki-roots from 1.0.9 to
+  1.0.11, and add direct manifest floors so downstream resolution cannot select
+  a version affected by RUSTSEC-2026-0382 or RUSTSEC-2026-0381 (CVE-2026-111943).
+  Affected certificate verification accepted paths containing the distrusted
+  emSign intermediate public keys, whose private keys are now well known, and the
+  bundled root store shipped the `emSign ECC Root CA - G3` root that permits such
+  a path. rustls requires `rustls-webpki ^0.103.14` and reqwest and hyper-rustls
+  require `webpki-roots ^1`, so neither parent range excludes the affected
+  version and the floor has to be ours.
+
+### Changed
+
+- Refresh 18 Rust 1.90-compatible lockfile packages: cc 1.10.0,
+  find-msvc-tools 0.1.15, the icu4x 2.4.0 set (icu_collections,
+  icu_locale_core, icu_normalizer, icu_normalizer_data, icu_properties,
+  icu_properties_data, icu_provider), smallvec 1.16.4, tinystr 0.8.5,
+  tokio 1.54.1, uuid 1.29.0, yoke 0.8.4, zerovec 0.11.9, zerovec-derive 0.11.7,
+  and the two packages above.
+
 ## [3.0.5] - 2026-10-19
 
 ### Security
