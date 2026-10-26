@@ -33,6 +33,12 @@ h2 = "0.4.16"
 # Keep downstream resolution above RUSTSEC-2026-0285 and the -0346..-0349
 # rustls advisories' vulnerable range.
 rustls = { version = "0.23.46", default-features = false }
+# Keep the TLS verifier above RUSTSEC-2026-0382's vulnerable range: rustls only
+# requires ^0.103.14, which still selects the affected 0.103.15.
+rustls-webpki = { version = "0.103.16", default-features = false }
+# Keep the bundled root store above RUSTSEC-2026-0381's vulnerable range:
+# reqwest and hyper-rustls only require ^1, which still selects 1.0.9.
+webpki-roots = { version = "1.0.10", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"] }
