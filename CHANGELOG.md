@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.6] - 2026-10-27
+
 ### Security
 
 - Update rustls-webpki from 0.103.15 to 0.103.16 and webpki-roots from 1.0.9 to
@@ -667,7 +669,8 @@ gaps, and 45 smaller findings. The suite grew from 126 tests to 212.
 
 ---
 
-[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.5...HEAD
+[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.6...HEAD
+[3.0.6]: https://github.com/slb350/octoroute/compare/v3.0.5...v3.0.6
 [3.0.5]: https://github.com/slb350/octoroute/compare/v3.0.4...v3.0.5
 [3.0.4]: https://github.com/slb350/octoroute/compare/v3.0.3...v3.0.4
 [3.0.3]: https://github.com/slb350/octoroute/compare/v3.0.2...v3.0.3
