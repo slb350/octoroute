@@ -68,8 +68,12 @@ Each provider has a separate concurrency semaphore, request timeout, probe
 timeout, and cached readiness state. Unsupported request features fail as
 `incompatible` before credential resolution or external prompt disclosure.
 
-The OpenRouter profile removes client-controlled `allowed_models` from the
-Octoroute-owned Auto Router plugin and writes the configured policy value.
+The OpenRouter profile owns the Auto Router plugin. It removes the
+client-controlled steering fields - `allowed_models`, `excluded_models`,
+`cost_tier`, and the deprecated `cost_quality_tradeoff`, which OpenRouter
+lets a request `cost_tier` override - and writes the server policy value
+(`cost_tier = "max"`) instead, so a client cannot steer the operator's
+routing policy or its cost band.
 
 ## Request and response safety
 

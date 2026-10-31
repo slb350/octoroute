@@ -7,7 +7,25 @@ use bytes::Bytes;
 use serde_json::{Map, Number, Value};
 
 const OPENROUTER_AUTO_PLUGIN: &str = "auto-router";
-const OPENROUTER_COST_QUALITY_TRADEOFF: u64 = 9;
+/// The cost band Octoroute's Auto policy asks for, on the current parameter.
+///
+/// OpenRouter deprecated `cost_quality_tradeoff` (a 0-9 scale whose top was 9,
+/// this profile's value since v2) in favour of the `cost_tier` band set
+/// `low | medium | high | xhigh | max`, where `max` "favors the most capable
+/// models regardless of price". A request with no cost setting routes as
+/// roughly the `low` band, so writing nothing would quietly trade the
+/// operator's policy for the cheapest models; `max` is the top-of-scale
+/// translation of the 9 this profile has always asked for.
+const OPENROUTER_COST_TIER: &str = "max";
+/// Client-controlled Auto Router steering fields removed from the plugin.
+///
+/// The Auto policy is server-owned, which is why the plugin object is rebuilt
+/// from Octoroute's keys alone. `allowed_models` and `excluded_models` both
+/// restrict which models the router may select, and OpenRouter documents that
+/// a request `cost_tier` overrides the deprecated `cost_quality_tradeoff`, so
+/// leaving any of the three in place hands the client the operator's policy.
+const OPENROUTER_CLIENT_STEERING_FIELDS: [&str; 3] =
+    ["allowed_models", "excluded_models", "cost_quality_tradeoff"];
 
 pub(super) fn build_open_ai_body(
     config: &ProviderConfig,
@@ -100,10 +118,12 @@ fn apply_openrouter_auto_profile(
         Value::String(OPENROUTER_AUTO_PLUGIN.to_string()),
     );
     plugin.insert(
-        "cost_quality_tradeoff".to_string(),
-        Value::Number(Number::from(OPENROUTER_COST_QUALITY_TRADEOFF)),
+        "cost_tier".to_string(),
+        Value::String(OPENROUTER_COST_TIER.to_string()),
     );
-    plugin.remove("allowed_models");
+    for field in OPENROUTER_CLIENT_STEERING_FIELDS {
+        plugin.remove(field);
+    }
     Ok(())
 }
 

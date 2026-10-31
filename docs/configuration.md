@@ -172,8 +172,11 @@ key is picked up without a restart and a command is not spawned per request.
 
 Optional request defaults are `reasoning_effort`, `temperature`, and
 `max_tokens`. Client-supplied non-null values win. `profile =
-"open_router_auto"` installs Octoroute's `auto-router` plugin policy and removes
-client-supplied `allowed_models` from that plugin.
+"open_router_auto"` installs Octoroute's `auto-router` plugin policy: it
+writes the server-owned `cost_tier = "max"` (the current OpenRouter cost
+parameter; `cost_quality_tradeoff` is deprecated upstream) and removes the
+client-controlled steering fields `allowed_models`, `excluded_models`,
+`cost_tier`, and `cost_quality_tradeoff` from that plugin.
 
 ### Anthropic-compatible HTTP
 
