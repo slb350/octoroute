@@ -93,6 +93,84 @@ fn provider_reasoning_default_applies_only_without_a_caller_control() {
     assert!(with_nested_control.get("reasoning_effort").is_none());
 }
 
+#[test]
+fn openrouter_auto_policy_writes_the_current_cost_tier_and_owns_every_steering_field() {
+    let provider = config().providers["openrouter"].clone();
+
+    let body = built_body(
+        &provider,
+        json!({
+            "model": "cloud-sota",
+            "messages": [{"role": "user", "content": "steer the router"}],
+            "plugins": [
+                {"id": "preserved-plugin", "setting": true},
+                {
+                    "id": "auto-router",
+                    "cost_tier": "low",
+                    "cost_quality_tradeoff": 0,
+                    "allowed_models": ["openai/*"],
+                    "excluded_models": ["anthropic/*"],
+                    "enabled": false,
+                    "pin_model": true,
+                    "future_setting": 1
+                }
+            ]
+        }),
+    );
+
+    // Every client steering field is removed and the server-owned cost band
+    // written. A client `cost_tier` would otherwise override the policy
+    // (OpenRouter gives `cost_tier` precedence over the deprecated
+    // `cost_quality_tradeoff`); `excluded_models` narrows the model set the
+    // way `allowed_models` does; `enabled: false` switches the policy off;
+    // and `pin_model` reuses a model named by client-supplied history. A
+    // field with no known steering meaning is preserved like any other.
+    assert_eq!(
+        body["plugins"],
+        json!([
+            {"id": "preserved-plugin", "setting": true},
+            {"id": "auto-router", "cost_tier": "low", "future_setting": 1}
+        ])
+    );
+}
+
+#[test]
+fn openrouter_auto_policy_installs_the_current_parameter_when_no_plugin_was_sent() {
+    let provider = config().providers["openrouter"].clone();
+
+    let body = built_body(
+        &provider,
+        json!({
+            "model": "cloud-sota",
+            "messages": [{"role": "user", "content": "install the policy"}]
+        }),
+    );
+
+    assert_eq!(
+        body["plugins"],
+        json!([{"id": "auto-router", "cost_tier": "low"}])
+    );
+}
+
+#[test]
+fn duplicate_auto_router_plugins_still_fail_closed() {
+    let provider = config().providers["openrouter"].clone();
+
+    let result = build_open_ai_body(
+        &provider,
+        &request(json!({
+            "model": "cloud-sota",
+            "messages": [{"role": "user", "content": "ambiguous policy"}],
+            "plugins": [{"id": "auto-router"}, {"id": "auto-router"}]
+        })),
+    );
+
+    assert!(matches!(
+        result,
+        Err(ProviderRequestError::InvalidOpenRouterPlugins)
+    ));
+}
+
 fn registry(config: &FabricConfig) -> ProviderRegistry {
     let metrics = Arc::new(FabricMetrics::new(config));
     ProviderRegistry::new(

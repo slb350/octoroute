@@ -166,7 +166,7 @@ async fn unauthenticated_fallback_is_available_when_explicitly_configured() {
         "temperature": 0.2,
         "plugins": [
             {"id": "preserved-plugin", "setting": true},
-            {"id": "auto-router", "cost_quality_tradeoff": 9}
+            {"id": "auto-router", "cost_tier": "low"}
         ]
     });
     Mock::given(method("POST"))
