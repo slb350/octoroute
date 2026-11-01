@@ -9,23 +9,28 @@ use serde_json::{Map, Number, Value};
 const OPENROUTER_AUTO_PLUGIN: &str = "auto-router";
 /// The cost band Octoroute's Auto policy asks for, on the current parameter.
 ///
-/// OpenRouter deprecated `cost_quality_tradeoff` (a 0-9 scale whose top was 9,
-/// this profile's value since v2) in favour of the `cost_tier` band set
-/// `low | medium | high | xhigh | max`, where `max` "favors the most capable
-/// models regardless of price". A request with no cost setting routes as
-/// roughly the `low` band, so writing nothing would quietly trade the
-/// operator's policy for the cheapest models; `max` is the top-of-scale
-/// translation of the 9 this profile has always asked for.
-const OPENROUTER_COST_TIER: &str = "max";
+/// OpenRouter's API reference deprecates `cost_quality_tradeoff`, a 0-10
+/// ceiling on which higher values favor cheaper models and whose default is
+/// the 9 this profile has always written. It keeps models up to roughly the
+/// 20th cost percentile. Its replacement `cost_tier` selects percentile bands,
+/// and `low` is `[0, 20)`, so `low` carries the same policy onto the current
+/// parameter. `max` is `[80, 100]`, the most expensive models.
+const OPENROUTER_COST_TIER: &str = "low";
 /// Client-controlled Auto Router steering fields removed from the plugin.
 ///
-/// The Auto policy is server-owned, which is why the plugin object is rebuilt
-/// from Octoroute's keys alone. `allowed_models` and `excluded_models` both
-/// restrict which models the router may select, and OpenRouter documents that
-/// a request `cost_tier` overrides the deprecated `cost_quality_tradeoff`, so
-/// leaving any of the three in place hands the client the operator's policy.
-const OPENROUTER_CLIENT_STEERING_FIELDS: [&str; 3] =
-    ["allowed_models", "excluded_models", "cost_quality_tradeoff"];
+/// The Auto policy is server-owned. `allowed_models` and `excluded_models`
+/// narrow the models the router may select, `cost_quality_tradeoff` is the
+/// deprecated cost knob, `enabled: false` switches the plugin off, and
+/// `pin_model` reuses the model named by client-supplied conversation history.
+/// The client `cost_tier` is overwritten with the server value. Any other
+/// plugin field is preserved like every other unknown request field.
+const OPENROUTER_CLIENT_STEERING_FIELDS: [&str; 5] = [
+    "allowed_models",
+    "excluded_models",
+    "cost_quality_tradeoff",
+    "enabled",
+    "pin_model",
+];
 
 pub(super) fn build_open_ai_body(
     config: &ProviderConfig,

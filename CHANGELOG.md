@@ -13,14 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Track OpenRouter's current Auto Router contract in the `open_router_auto`
   profile. OpenRouter deprecated `cost_quality_tradeoff` in favour of the
-  `cost_tier` band set and documents that a request `cost_tier` overrides the
-  deprecated knob, so the profile now writes its server-owned policy as
-  `cost_tier = "max"` (the top-of-band translation of the old scale's 9) and
-  removes the client-controlled steering fields `allowed_models`,
-  `excluded_models`, `cost_tier`, and `cost_quality_tradeoff` from the
-  `auto-router` plugin. Previously a client could override the operator's cost
-  policy with its own `cost_tier` and steer the router's model set with
-  `excluded_models`, contradicting the documented server-owned Auto policy.
+  `cost_tier` band set and gives a request `cost_tier` precedence over the
+  deprecated knob. The profile now writes its server-owned policy as
+  `cost_tier = "low"`, the `[0, 20)` cost-percentile band that matches the
+  cost ceiling of the `cost_quality_tradeoff = 9` it wrote before, so the
+  routing policy is unchanged. It also removes the client-controlled steering
+  fields `allowed_models`, `excluded_models`, `cost_quality_tradeoff`,
+  `enabled`, and `pin_model` from the `auto-router` plugin and overwrites a
+  client `cost_tier`. Previously a client could override the operator's cost
+  policy with its own `cost_tier`, narrow the router's model set with
+  `excluded_models`, switch the policy off with `enabled: false`, or pin a
+  model named in its own conversation history with `pin_model`.
 
 ## [3.0.6] - 2026-10-27
 

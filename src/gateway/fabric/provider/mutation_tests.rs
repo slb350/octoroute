@@ -109,22 +109,27 @@ fn openrouter_auto_policy_writes_the_current_cost_tier_and_owns_every_steering_f
                     "cost_tier": "low",
                     "cost_quality_tradeoff": 0,
                     "allowed_models": ["openai/*"],
-                    "excluded_models": ["anthropic/*"]
+                    "excluded_models": ["anthropic/*"],
+                    "enabled": false,
+                    "pin_model": true,
+                    "future_setting": 1
                 }
             ]
         }),
     );
 
-    // The plugin object is rebuilt from exactly the server-owned keys. A
-    // client `cost_tier` would otherwise override the policy (OpenRouter
-    // documents `cost_tier` as taking precedence over the deprecated
-    // `cost_quality_tradeoff`), and `excluded_models` steers the router's
-    // model set the same way `allowed_models` does.
+    // Every client steering field is removed and the server-owned cost band
+    // written. A client `cost_tier` would otherwise override the policy
+    // (OpenRouter gives `cost_tier` precedence over the deprecated
+    // `cost_quality_tradeoff`); `excluded_models` narrows the model set the
+    // way `allowed_models` does; `enabled: false` switches the policy off;
+    // and `pin_model` reuses a model named by client-supplied history. A
+    // field with no known steering meaning is preserved like any other.
     assert_eq!(
         body["plugins"],
         json!([
             {"id": "preserved-plugin", "setting": true},
-            {"id": "auto-router", "cost_tier": "max"}
+            {"id": "auto-router", "cost_tier": "low", "future_setting": 1}
         ])
     );
 }
@@ -143,7 +148,7 @@ fn openrouter_auto_policy_installs_the_current_parameter_when_no_plugin_was_sent
 
     assert_eq!(
         body["plugins"],
-        json!([{"id": "auto-router", "cost_tier": "max"}])
+        json!([{"id": "auto-router", "cost_tier": "low"}])
     );
 }
 

@@ -68,12 +68,12 @@ Each provider has a separate concurrency semaphore, request timeout, probe
 timeout, and cached readiness state. Unsupported request features fail as
 `incompatible` before credential resolution or external prompt disclosure.
 
-The OpenRouter profile owns the Auto Router plugin. It removes the
-client-controlled steering fields - `allowed_models`, `excluded_models`,
-`cost_tier`, and the deprecated `cost_quality_tradeoff`, which OpenRouter
-lets a request `cost_tier` override - and writes the server policy value
-(`cost_tier = "max"`) instead, so a client cannot steer the operator's
-routing policy or its cost band.
+The OpenRouter profile owns the Auto Router plugin's policy. It removes the
+client-controlled steering fields `allowed_models`, `excluded_models`, the
+deprecated `cost_quality_tradeoff`, `enabled`, and `pin_model`, and it
+overwrites `cost_tier` with the server policy value (`cost_tier = "low"`).
+A client therefore cannot narrow the model set, switch the policy off, pin a
+model named in its own conversation history, or change the cost band.
 
 ## Request and response safety
 
