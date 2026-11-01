@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Refresh 11 Rust 1.90-compatible lockfile packages: log 0.4.35, rustix 1.1.6,
+  utf8_iter 1.1.0 with its new utf_types 1.0.0 dependency, and the wasm32-only
+  wasm-bindgen set (wasm-bindgen 0.2.130, wasm-bindgen-futures 0.4.80,
+  wasm-bindgen-macro, wasm-bindgen-macro-support and wasm-bindgen-shared
+  0.2.130, js-sys 0.3.107, web-sys 0.3.107). The first three paths are linked
+  into the binary through tracing and reqwest, tempfile, and url/idna; the
+  wasm-bindgen set is locked for reqwest's wasm32 targets and never compiled
+  for a supported target. No advisory applied: cargo-audit and osv-scanner were
+  clean before and after, so the crate version is unchanged.
+
 ### Fixed
 
 - Track OpenRouter's current Auto Router contract in the `open_router_auto`
