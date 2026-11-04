@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.7] - 2026-11-03
+
 ### Changed
 
 - Refresh 11 Rust 1.90-compatible lockfile packages: log 0.4.35, rustix 1.1.6,
@@ -697,7 +699,8 @@ gaps, and 45 smaller findings. The suite grew from 126 tests to 212.
 
 ---
 
-[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.6...HEAD
+[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.7...HEAD
+[3.0.7]: https://github.com/slb350/octoroute/compare/v3.0.6...v3.0.7
 [3.0.6]: https://github.com/slb350/octoroute/compare/v3.0.5...v3.0.6
 [3.0.5]: https://github.com/slb350/octoroute/compare/v3.0.4...v3.0.5
 [3.0.4]: https://github.com/slb350/octoroute/compare/v3.0.3...v3.0.4
