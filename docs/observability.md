@@ -22,8 +22,10 @@ provider errors are not log fields.
 ## Correlation headers
 
 `X-Octoroute-Request-Id` is generated for every request and is the primary log
-join key. `X-Request-Id` preserves an allowlisted upstream request ID when one
-exists; otherwise it receives the gateway ID.
+join key. `X-Request-Id` carries the same gateway ID: the transport's response
+header allowlist drops an upstream `x-request-id`, so an upstream cannot claim
+the gateway's correlation ID. Upstream identifiers remain available through the
+allowlisted `x-generation-id` and `openai-request-id` headers.
 
 Successful routed responses also identify the configured route and selected
 target. These values are bounded by configuration validation.
