@@ -74,7 +74,11 @@ Every routed response includes bounded route identity:
 | `X-Octoroute-Model-Revision` | Local model revision, when local |
 | `X-Octoroute-Provider` | Provider name, when cloud |
 | `X-Octoroute-Request-Id` | Gateway-generated UUID |
-| `X-Request-Id` | Safe upstream ID when supplied, otherwise gateway UUID |
+| `X-Request-Id` | The same gateway UUID as `X-Octoroute-Request-Id`; an upstream `x-request-id` is never forwarded |
+
+Upstream identifiers still reach the client through the allowlisted
+`x-generation-id` and `openai-request-id` response headers when the upstream
+sends them.
 
 Local and OpenAI-compatible HTTP response bytes are forwarded opaquely after
 the first upstream body chunk is buffered. Anthropic Messages responses and
