@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Correct the `X-Request-Id` description in `docs/api-reference.md` and
+  `docs/observability.md`. Both claimed an allowlisted upstream request ID was
+  preserved, but the transport's response header allowlist drops an upstream
+  `x-request-id`, so the header always carries the gateway UUID. The docs now
+  point to `x-generation-id` and `openai-request-id` for upstream identifiers.
+
 ## [3.0.7] - 2026-11-03
 
 ### Changed
