@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Refresh 7 Rust 1.90-compatible lockfile packages: cc 1.11.1, mime 0.3.18,
+  serde_spanned 1.1.3, smallvec 1.16.5, toml_writer 1.2.0+spec-1.1.0,
+  uuid 1.29.1 and winnow 1.0.5. cc is only a build dependency of ring, so it
+  shapes how the binary is compiled and is not linked in; mime arrives through
+  axum and axum-core, serde_spanned, toml_writer and winnow (via toml_parser)
+  through toml, smallvec through hyper, idna, url and tracing-subscriber, and
+  uuid is the direct dependency behind the gateway request ID and the
+  generated `chatcmpl-` response IDs. No advisory
+  applied: cargo-audit and osv-scanner were clean before and after, so no
+  manifest floor changed and the crate version is unchanged.
+
 ### Documentation
 
 - Correct the `X-Request-Id` description in `docs/api-reference.md` and
