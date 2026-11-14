@@ -327,3 +327,59 @@ pub(super) fn decorate_provider(
     );
     response
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gateway::fabric::http_support::{OCTOROUTE_REQUEST_ID_HEADER, REQUEST_ID_HEADER};
+    use std::collections::BTreeSet;
+
+    /// The `Gateway response headers` contract in AGENTS.md names exactly the
+    /// identity headers `decorate_local` and `decorate_provider` emit, so an
+    /// agent reading the authoritative instructions cannot miss one or invent
+    /// one the runtime does not send.
+    #[test]
+    fn agents_md_names_every_gateway_response_header() {
+        let emitted = [
+            DESTINATION_HEADER,
+            REASON_HEADER,
+            ROUTE_HEADER,
+            TARGET_HEADER,
+            UPSTREAM_HEADER,
+            POOL_HEADER,
+            MEMBER_HEADER,
+            MODEL_REVISION_HEADER,
+            PROVIDER_HEADER,
+            OCTOROUTE_REQUEST_ID_HEADER,
+            REQUEST_ID_HEADER,
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+
+        let agents_md = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("AGENTS.md"),
+        )
+        .expect("readable AGENTS.md");
+        let start = agents_md
+            .find("Gateway response headers:")
+            .expect("AGENTS.md keeps a gateway response header contract");
+        let paragraph = agents_md[start..]
+            .lines()
+            .take_while(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let documented = paragraph
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|token| token.starts_with("X-"))
+            .map(str::to_lowercase)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            documented, emitted,
+            "AGENTS.md must name every gateway response header the service emits"
+        );
+    }
+}

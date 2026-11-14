@@ -398,7 +398,10 @@ Use only bounded enum-derived metric labels. Never use prompts, arbitrary client
 models, credentials, or raw errors as labels.
 
 Gateway response headers: `X-Octoroute-Destination`, `X-Octoroute-Reason`,
-`X-Octoroute-Upstream`, `X-Octoroute-Request-Id`, `X-Request-Id`.
+`X-Octoroute-Route`, `X-Octoroute-Target`, `X-Octoroute-Upstream`,
+`X-Octoroute-Pool`, `X-Octoroute-Member`, and `X-Octoroute-Model-Revision`
+(local responses), `X-Octoroute-Provider` (cloud responses),
+`X-Octoroute-Request-Id`, and `X-Request-Id`.
 
 Metric families:
 
