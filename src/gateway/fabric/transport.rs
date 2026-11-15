@@ -469,6 +469,15 @@ impl PreparedUpstreamResponse {
     }
 }
 
+/// An empty 200 response, holding a permit of its own, for decoration tests.
+#[cfg(test)]
+pub(super) fn prepared_response_for_test() -> PreparedUpstreamResponse {
+    let permit = std::sync::Arc::new(tokio::sync::Semaphore::new(1))
+        .try_acquire_owned()
+        .expect("a fresh semaphore has a permit");
+    PreparedUpstreamResponse::from_bytes(StatusCode::OK, "application/json", Bytes::new(), permit)
+}
+
 struct HeldBodyStream {
     first: Option<Bytes>,
     remaining: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,

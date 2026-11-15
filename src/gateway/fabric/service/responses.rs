@@ -327,3 +327,81 @@ pub(super) fn decorate_provider(
     );
     response
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gateway::fabric::ReasoningEffort;
+    use crate::gateway::fabric::transport::prepared_response_for_test;
+    use std::collections::BTreeSet;
+
+    fn gateway_header_names(response: &Response<Body>) -> BTreeSet<String> {
+        response
+            .headers()
+            .keys()
+            .map(|name| name.as_str())
+            .filter(|name| name.starts_with("x-"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The `Gateway response headers` contract in AGENTS.md names exactly the
+    /// headers `decorate_local` and `decorate_provider` actually emit, so an
+    /// agent reading the authoritative instructions cannot miss one or invent
+    /// one the runtime does not send. The emitted set is read from decorated
+    /// responses rather than listed by hand, so a header added to either
+    /// function without updating AGENTS.md fails here.
+    #[test]
+    fn agents_md_names_every_gateway_response_header() {
+        let plan = RoutePlan {
+            model: "auto-route".to_string(),
+            steps: Vec::new(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            fallback_on: Default::default(),
+        };
+        let local = decorate_local(
+            prepared_response_for_test(),
+            &plan,
+            "workers",
+            "member-a",
+            "rev-1",
+            "request-1",
+        );
+        let cloud = decorate_provider(
+            prepared_response_for_test(),
+            &plan,
+            "openrouter",
+            "openrouter/auto",
+            "request-2",
+        );
+        let emitted = gateway_header_names(&local)
+            .union(&gateway_header_names(&cloud))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+
+        let agents_md = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("AGENTS.md"),
+        )
+        .expect("readable AGENTS.md");
+        let start = agents_md
+            .find("Gateway response headers:")
+            .expect("AGENTS.md keeps a gateway response header contract");
+        let paragraph = agents_md[start..]
+            .lines()
+            .take_while(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let documented = paragraph
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|token| token.starts_with("X-"))
+            .map(str::to_lowercase)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            documented, emitted,
+            "AGENTS.md must name every gateway response header the service emits"
+        );
+    }
+}

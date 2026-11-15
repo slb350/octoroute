@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Complete the gateway response header inventory in `AGENTS.md`. The
+  authoritative list named only `X-Octoroute-Destination`,
+  `X-Octoroute-Reason`, `X-Octoroute-Upstream`, `X-Octoroute-Request-Id`, and
+  `X-Request-Id`, but the service has emitted six more since the v3 routing
+  work: `X-Octoroute-Route`, `X-Octoroute-Target`, `X-Octoroute-Pool`,
+  `X-Octoroute-Member`, `X-Octoroute-Model-Revision` (local responses), and
+  `X-Octoroute-Provider` (cloud responses). A new service test pins the
+  `AGENTS.md` contract to the emitted header set so the instructions cannot
+  drift from the runtime again.
 - Correct the `X-Request-Id` description in `docs/api-reference.md` and
   `docs/observability.md`. Both claimed an allowlisted upstream request ID was
   preserved, but the transport's response header allowlist drops an upstream
