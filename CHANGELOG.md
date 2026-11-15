@@ -11,6 +11,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Refresh 11 Rust 1.90-compatible lockfile packages: bumpalo 3.20.4, cc 1.11.2,
+  errno 0.3.15, itoa 1.0.19, mio 1.2.5, rand 0.10.4, rustls-pki-types 1.16.0,
+  rustls-webpki 0.103.17, syn 3.0.10, uuid 1.29.2 and webpki-roots 1.0.12.
+  uuid and the two TLS floors, rustls-webpki and webpki-roots, are direct
+  dependencies. itoa arrives through serde_json, http, hyper, axum,
+  serde_path_to_error and serde_urlencoded, errno through rustix and
+  signal-hook-registry, mio through tokio, and rustls-pki-types through rustls,
+  rustls-webpki, webpki-roots and reqwest, so each is linked into the binary.
+  syn 3.0.10 is build-time only, the proc-macro front end for serde_derive,
+  thiserror-impl, tokio-macros, clap_derive, async-trait, displaydoc,
+  futures-macro, zerovec-derive and their peers, and bumpalo arrives only
+  through wasm-bindgen-macro-support for wasm32 targets. cc 1.11.2 stays a
+  build dependency of ring, so it shapes how the binary is compiled and is not
+  linked in. rand 0.10.4 is locked for reqwest's optional quinn and quinn-proto
+  HTTP/3 path, which this crate's feature set does not enable; `cargo tree
+  --target all -i rand@0.10.4` resolves no path for any target. No advisory
+  applied: cargo-audit and osv-scanner were clean before and after across the
+  same 210 dependencies, so no manifest floor changed and the crate version is
+  unchanged. Two upstream changes are worth an operator's attention: the
+  rustls/webpki-roots 1.0.12 release notes remove six retired trust anchors
+  (Buypass Class 2 and Class 3, DigiCert Trusted Root G4, QuoVadis Root CA 1 G3
+  and 3 G3, and Certigna Root CA), and the rustls/pki-types 1.16.0 release
+  notes make `DnsName` reject a final label that is a hex number and strip a
+  trailing dot, which is what rustls validates a provider hostname against.
 - Refresh 7 Rust 1.90-compatible lockfile packages: cc 1.11.1, mime 0.3.18,
   serde_spanned 1.1.3, smallvec 1.16.5, toml_writer 1.2.0+spec-1.1.0,
   uuid 1.29.1 and winnow 1.0.5. cc is only a build dependency of ring, so it
