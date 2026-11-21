@@ -48,6 +48,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Complete the metric-family inventory in `AGENTS.md`. The `Metric families`
+  list named eight families, and four of those only through the compressed
+  form `octoroute_fabric_provider_{admissions,responses,fallbacks,probes}_total`,
+  while the registry renders eleven: `octoroute_fabric_runtime_info`,
+  `octoroute_fabric_pool_enabled`, and `octoroute_fabric_provider_enabled`
+  were absent and the four provider counters were not spelled out. The
+  existing test that pins `docs/api-reference.md` and `docs/observability.md`
+  to the rendered `# TYPE` lines now pins `AGENTS.md` the same way, so the
+  inventory cannot drift again.
+- Name the provider-configured request defaults in `AGENTS.md`'s proxy
+  invariants. The bullet allowed mutating "only the model and server-owned
+  OpenRouter Auto policy", but both protocol builders also apply a provider's
+  configured `reasoning_effort`, `temperature`, and `max_tokens` when the
+  caller sent no control of its own, as `docs/configuration.md`'s "Optional
+  request defaults" already documented. The invariant now states the complete
+  mutation set.
 - Complete the gateway response header inventory in `AGENTS.md`. The
   authoritative list named only `X-Octoroute-Destination`,
   `X-Octoroute-Reason`, `X-Octoroute-Upstream`, `X-Octoroute-Request-Id`, and

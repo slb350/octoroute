@@ -108,8 +108,10 @@ state of the last step tried.
 ## Proxy invariants
 
 - Preserve the complete bounded JSON object and unknown request fields.
-- Mutate only the model and server-owned OpenRouter Auto policy. Inject
-  `reasoning_effort` only into providers explicitly configured for it.
+- Mutate only the model, the server-owned OpenRouter Auto policy, and a
+  provider's configured request defaults (`reasoning_effort`, `temperature`,
+  `max_tokens`), each applied only when the caller sent no control of its own.
+  Inject `reasoning_effort` only into providers explicitly configured for it.
 - Serialize an admitted local request once and reuse the same bytes for
   llama.cpp token counting and inference.
 - Forward response status, body bytes, SSE comments/data, `[DONE]`, usage,
@@ -405,10 +407,16 @@ Gateway response headers: `X-Octoroute-Destination`, `X-Octoroute-Reason`,
 
 Metric families:
 
+- `octoroute_fabric_runtime_info{config_version,provider_runtime}`
+- `octoroute_fabric_pool_enabled{pool}`
+- `octoroute_fabric_provider_enabled{provider}`
 - `octoroute_fabric_pool_admissions_total{pool,state}`
 - `octoroute_fabric_pool_fallbacks_total{pool,trigger}` - the signal that local
   capacity is spilling to cloud
-- `octoroute_fabric_provider_{admissions,responses,fallbacks,probes}_total`
+- `octoroute_fabric_provider_admissions_total{provider,state}`
+- `octoroute_fabric_provider_responses_total{provider,outcome}`
+- `octoroute_fabric_provider_fallbacks_total{provider,trigger}`
+- `octoroute_fabric_provider_probes_total{provider,state}`
 - `octoroute_fabric_routing_duration_seconds` - admission and probes for every
   step that attempts admission, rejected steps included, excluding the upstream
   call. Observing only admitted steps silences the histogram during an outage
