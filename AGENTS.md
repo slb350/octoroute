@@ -482,6 +482,42 @@ Maintenance decisions that still hold:
 - GitHub Actions use immutable commit pins with human-readable release comments,
   read-only default permissions, and pinned installer versions.
 
+### Weekly Codex maintenance
+
+**Octoroute Weekly PRs, Release & Deployment**
+(`octoroute-weekly-maintenance-release`) is a local Codex automation for this
+repository. It runs Sundays at noon America/Los_Angeles. Its saved configuration
+owns the schedule and operating instructions.
+
+Steve's standing approval covers these actions on each scheduled run.
+
+- Fast-forward a clean local `main`, review open PRs, and push bounded repairs
+  to eligible PR branches. Close demonstrably stale or superseded PRs. Merge
+  needed changes only after resolving confirmed findings and verifying that
+  CI passed on the exact reviewed head. Preserve unrelated work in an isolated
+  checkout and land repository changes through PRs.
+- Prepare or finish a warranted patch release through a version and changelog
+  PR. After package verification, CI, and merge, push an annotated `vX.Y.Z`
+  tag on the release merge commit. Let GitHub Actions publish through the
+  existing trusted publishing workflow and verify the crate and all four
+  release archives.
+- Upgrade the existing running instance in place with a verified release and
+  restart that service once its host, service, artifact, and listener are
+  recorded in the saved job or an accepted deployment record. Preserve the
+  live configuration and credentials. Keep a verified rollback copy and check
+  the running version, health, authenticated readiness, routes, metrics, and
+  routing canaries after restart. Restore and verify the previous version if
+  these checks regress. Until a target is confirmed, report deployment as
+  blocked. See [deployment and canary procedure](docs/deployment.md).
+
+Jobsy continues its dependency-security, weekly improvement, daily PR review,
+and weekly release schedules. The Codex job reuses existing Jobsy PRs, release
+tags, and CI evidence. Before editing, closing, or merging Jobsy-owned work,
+confirm the relevant job is idle and re-read the head and status immediately
+before the write. Check release-job activity before opening a release PR or
+pushing a tag, and prefer completing an eligible release PR. Defer a write
+when ownership or concurrent activity is unclear.
+
 Use current primary documentation for Axum, reqwest, OpenRouter, Anthropic, and
 llama.cpp contracts. Check an appropriate MCP first; if none is available, use
 official upstream documentation.
