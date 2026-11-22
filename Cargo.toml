@@ -7,7 +7,7 @@ authors = ["Steve Brandon"]
 description = "OpenAI-compatible inference fabric for local pools and cloud providers"
 license = "MIT"
 repository = "https://github.com/slb350/octoroute"
-exclude = ["AGENTS.md", "CLAUDE.md", ".Codex", "scripts", ".githooks", ".github", "docs/plans", "Cross.toml", "clippy.toml", "justfile", "rust-toolchain.toml", ".markdownlint.json", ".markdownlintignore"]
+exclude = ["CLAUDE.md", ".Codex", "scripts", ".githooks", ".github", "docs/plans", "Cross.toml", "clippy.toml", "justfile", "rust-toolchain.toml", ".markdownlint.json", ".markdownlintignore"]
 
 [dependencies]
 axum = "0.8"
@@ -39,6 +39,10 @@ rustls-webpki = { version = "0.103.16", default-features = false }
 # Keep the bundled root store above RUSTSEC-2026-0381's vulnerable range:
 # reqwest and hyper-rustls only require ^1, which still selects 1.0.9.
 webpki-roots = { version = "1.0.10", default-features = false }
+# Keep the URL parser above RUSTSEC-2026-0592's vulnerable range: reqwest only
+# requires ^2.4 and tower-http and wiremock ^2.5, so a downstream lockfile can
+# stay on the affected 2.5.8. Default features stay on, matching every parent.
+url = "2.5.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"] }
