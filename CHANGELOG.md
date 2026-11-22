@@ -32,14 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consumer whose lockfile predates the patch. `cargo update --precise 2.5.8 -p url`
   is now refused by this crate's own requirement. The default features stay on so
   the resolved `url` feature set (`default`, `std`) is unchanged.
-- Impact on this gateway is supply-chain hardening rather than an exposed path.
-  The crate calls neither affected function: the `url` API it uses is `Url::parse`
-  plus `scheme`, `host_str`, `username`, `password`, `query`, `fragment`, `path`
-  and `set_path` when it validates a provider endpoint or builds a pool member's
-  chat URL, and no `origin()` call appears in the vendored reqwest 0.12.28 or
-  tower-http 0.6.11 sources either, so no request path reaches it. Library
-  consumers that call `Url::origin()` or `url::quirks::origin()` on a
-  client-supplied URL are the ones the floor protects.
+- The gateway and its locked reqwest 0.12.28 and tower-http 0.6.11 versions
+  call neither affected function. The manifest floor protects library
+  consumers that call `Url::origin()` or `url::quirks::origin()` on
+  client-supplied URLs.
 
 ### Changed
 
