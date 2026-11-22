@@ -484,14 +484,20 @@ mod tests {
         assert!(!names_identifier("unrelated", "family_total"));
     }
 
-    /// Both operator references name every family the registry renders.
+    /// Every authoritative reference - the operator docs and the AGENTS.md
+    /// instruction file - names every family the registry renders.
     ///
     /// The API reference once listed only the four provider counters while the
     /// runtime also rendered pool admissions, pool fallbacks, the routing
     /// histogram, and the unknown-type counter, so an operator building
     /// dashboards from it never learned that the spill-to-cloud signal existed.
-    /// Families are read from the rendered `# TYPE` lines, so a new family fails
-    /// here until it is documented.
+    /// AGENTS.md's `Metric families` inventory held the same kind of drift,
+    /// naming four families directly and four more only inside a compressed
+    /// brace form while omitting the runtime-info and enabled gauges, so an
+    /// agent trusting the instructions could not reason about the full
+    /// cardinality the exposition pins at startup. Families are read from the
+    /// rendered `# TYPE` lines, so a new family fails here until it is
+    /// documented.
     #[test]
     fn operator_references_name_every_rendered_metric_family() {
         let config = config();
@@ -506,7 +512,11 @@ mod tests {
             "family parsing missed the histogram in:\n{rendered}"
         );
 
-        for document in ["docs/api-reference.md", "docs/observability.md"] {
+        for document in [
+            "AGENTS.md",
+            "docs/api-reference.md",
+            "docs/observability.md",
+        ] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(document);
             let text = std::fs::read_to_string(&path).expect("readable operator reference");
             let missing: Vec<&str> = families

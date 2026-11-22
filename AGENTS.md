@@ -6,6 +6,8 @@ status and recovery. The transport's historical `AI1_*` names and
 `mutants-ai1-transport.sh` filename remain compatibility interfaces.
 
 This AGENTS.md is the tracked, authoritative instruction file for agents working in this repository. A local `CLAUDE.md` stays gitignored; it imports this file with `@AGENTS.md` and may add private notes.
+Keep AGENTS.md in the published Cargo package. The source-layout, response-header,
+and metric-inventory tests read it from the crate root.
 
 ## Project overview
 
@@ -107,9 +109,15 @@ state of the last step tried.
 
 ## Proxy invariants
 
-- Preserve the complete bounded JSON object and unknown request fields.
-- Mutate only the model and server-owned OpenRouter Auto policy. Inject
-  `reasoning_effort` only into providers explicitly configured for it.
+- On local and OpenAI-compatible HTTP paths, preserve the bounded JSON object
+  and unknown request fields. Replace the client route name with the destination
+  model and enforce the server-owned policy whenever the OpenRouter Auto profile
+  is configured.
+- A configured HTTP provider default (`reasoning_effort`, `temperature`, or
+  `max_tokens`) applies only when the adapter permits it and finds no
+  corresponding caller control. Apply a local pool's `default_reasoning_effort`
+  only when the pool declares the `reasoning` capability and the caller supplied
+  no non-null reasoning control.
 - Serialize an admitted local request once and reuse the same bytes for
   llama.cpp token counting and inference.
 - Forward response status, body bytes, SSE comments/data, `[DONE]`, usage,
@@ -131,10 +139,12 @@ state of the last step tried.
 
 - Thinking is opt-in: the caller's reasoning control or the provider's
   `reasoning_effort`. A route default must never enable it.
-- `max_tokens` is the total for thinking plus the answer, so the budget claims
-  at most half of it and is omitted below Anthropic's 1024-token minimum.
-- `temperature`, `top_p`, and `top_k` are dropped when thinking is enabled; the
-  API rejects that combination.
+- `max_tokens` covers thinking and the answer. The thinking budget claims at
+  most half of it. An enabled budget below Anthropic's 1024-token minimum is
+  `incompatible`.
+- With thinking enabled, any non-null caller `temperature`, `top_p`, or
+  `top_k`, or a configured provider `temperature`, makes the step
+  `incompatible`.
 - A `system` or `developer` turn after conversation content fails closed. It
   cannot be represented in place, and hoisting it would silently promote a
   mid-conversation instruction to a global one.
@@ -150,8 +160,10 @@ state of the last step tried.
   every nesting level. The allowlist applies to message objects, content
   blocks, tool and function objects, and the `reasoning` object, not only to
   the top level: a dropped nested key hands the caller a plausible answer to
-  a request it did not make. `reasoning.enabled` and `reasoning.max_tokens`
-  have verified mappings onto the thinking budget; the rest fail closed.
+  a request it did not make. The adapter maps `reasoning.effort`,
+  `reasoning.enabled`, and `reasoning.max_tokens` to thinking controls.
+  It accepts `reasoning.exclude: false` and rejects `reasoning.exclude: true`
+  as `incompatible`.
 
 ## Codex CLI contract
 
@@ -405,10 +417,16 @@ Gateway response headers: `X-Octoroute-Destination`, `X-Octoroute-Reason`,
 
 Metric families:
 
+- `octoroute_fabric_runtime_info{config_version,provider_runtime}`
+- `octoroute_fabric_pool_enabled{pool}`
+- `octoroute_fabric_provider_enabled{provider}`
 - `octoroute_fabric_pool_admissions_total{pool,state}`
 - `octoroute_fabric_pool_fallbacks_total{pool,trigger}` - the signal that local
   capacity is spilling to cloud
-- `octoroute_fabric_provider_{admissions,responses,fallbacks,probes}_total`
+- `octoroute_fabric_provider_admissions_total{provider,state}`
+- `octoroute_fabric_provider_responses_total{provider,outcome}`
+- `octoroute_fabric_provider_fallbacks_total{provider,trigger}`
+- `octoroute_fabric_provider_probes_total{provider,state}`
 - `octoroute_fabric_routing_duration_seconds` - admission and probes for every
   step that attempts admission, rejected steps included, excluding the upstream
   call. Observing only admitted steps silences the histogram during an outage

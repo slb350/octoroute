@@ -93,6 +93,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Complete the metric-family inventory in `AGENTS.md`. The `Metric families`
+  list named eight families, and four of those only through the compressed
+  form `octoroute_fabric_provider_{admissions,responses,fallbacks,probes}_total`,
+  while the registry renders eleven: `octoroute_fabric_runtime_info`,
+  `octoroute_fabric_pool_enabled`, and `octoroute_fabric_provider_enabled`
+  were absent and the four provider counters were not spelled out. The
+  existing test that pins `docs/api-reference.md` and `docs/observability.md`
+  to the rendered `# TYPE` lines now checks that `AGENTS.md` names every family.
+- Clarify the proxy invariants in `AGENTS.md`. The gateway replaces the route
+  name with the destination model and enforces the configured OpenRouter Auto
+  policy. Provider request defaults and reasoning-capable pool defaults fill
+  in for absent caller controls. Document when the Anthropic adapter rejects
+  incompatible thinking and sampling settings.
+- Include `AGENTS.md` in the published crate so its documentation tests can run
+  from the packaged source.
 - Complete the gateway response header inventory in `AGENTS.md`. The
   authoritative list named only `X-Octoroute-Destination`,
   `X-Octoroute-Reason`, `X-Octoroute-Upstream`, `X-Octoroute-Request-Id`, and
