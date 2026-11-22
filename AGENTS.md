@@ -108,10 +108,12 @@ state of the last step tried.
 ## Proxy invariants
 
 - Preserve the complete bounded JSON object and unknown request fields.
-- Mutate only the model, the server-owned OpenRouter Auto policy, and a
+- Mutate only the model, the server-owned OpenRouter Auto policy, a
   provider's configured request defaults (`reasoning_effort`, `temperature`,
-  `max_tokens`), each applied only when the caller sent no control of its own.
-  Inject `reasoning_effort` only into providers explicitly configured for it.
+  `max_tokens`), and a local pool's `default_reasoning_effort`, each applied
+  only when the caller sent no control of its own. Inject `reasoning_effort`
+  only into providers explicitly configured for it and pools declaring the
+  `reasoning` capability.
 - Serialize an admitted local request once and reuse the same bytes for
   llama.cpp token counting and inference.
 - Forward response status, body bytes, SSE comments/data, `[DONE]`, usage,

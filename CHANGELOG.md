@@ -57,13 +57,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing test that pins `docs/api-reference.md` and `docs/observability.md`
   to the rendered `# TYPE` lines now pins `AGENTS.md` the same way, so the
   inventory cannot drift again.
-- Name the provider-configured request defaults in `AGENTS.md`'s proxy
-  invariants. The bullet allowed mutating "only the model and server-owned
-  OpenRouter Auto policy", but both protocol builders also apply a provider's
-  configured `reasoning_effort`, `temperature`, and `max_tokens` when the
-  caller sent no control of its own, as `docs/configuration.md`'s "Optional
-  request defaults" already documented. The invariant now states the complete
-  mutation set.
+- Name the configured request defaults in `AGENTS.md`'s proxy invariants.
+  The bullet allowed mutating "only the model and server-owned OpenRouter Auto
+  policy", but both protocol builders also apply a provider's configured
+  `reasoning_effort`, `temperature`, and `max_tokens`, and local dispatch
+  injects a reasoning-capable pool's `default_reasoning_effort`, each only when
+  the caller sent no control of its own, as `docs/configuration.md` already
+  documented. The invariant now states the complete mutation set.
 - Complete the gateway response header inventory in `AGENTS.md`. The
   authoritative list named only `X-Octoroute-Destination`,
   `X-Octoroute-Reason`, `X-Octoroute-Upstream`, `X-Octoroute-Request-Id`, and
