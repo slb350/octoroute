@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.8] - 2026-11-22
+
 ### Security
 
 - Update url from 2.5.8 to 2.5.9 and add a direct `url = "2.5.9"` manifest floor
@@ -813,7 +815,8 @@ gaps, and 45 smaller findings. The suite grew from 126 tests to 212.
 
 ---
 
-[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.7...HEAD
+[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.8...HEAD
+[3.0.8]: https://github.com/slb350/octoroute/compare/v3.0.7...v3.0.8
 [3.0.7]: https://github.com/slb350/octoroute/compare/v3.0.6...v3.0.7
 [3.0.6]: https://github.com/slb350/octoroute/compare/v3.0.5...v3.0.6
 [3.0.5]: https://github.com/slb350/octoroute/compare/v3.0.4...v3.0.5
