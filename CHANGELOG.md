@@ -9,8 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Update url from 2.5.8 to 2.5.9 and add a direct `url = "2.5.9"` manifest floor
+  so downstream resolution cannot select a version affected by RUSTSEC-2026-0592
+  (GHSA-hrj5-67jp-wqp9), whose OSV record covers every url release from 0.0.0-0 up
+  to the 2.5.9 fix and names two functions, `url::Url::origin` and
+  `url::quirks::origin`. In 2.5.8 and earlier `Url::origin()` handled a `blob:` URL
+  by parsing its path as another URL and calling itself on the result whatever that
+  inner URL's scheme was, `blob:` included, one stack frame per prefix and no depth
+  limit: `Url::parse()` accepts 10,000 `blob:` prefixes followed by
+  `https://example.com/` (50,020 bytes) and `Url::origin()` on it overflowed the
+  default 2 MiB stack of a spawned thread. A stack overflow aborts the whole
+  process and `catch_unwind()` does not catch it, so a single URL crashes any
+  program that calls the function on untrusted input. The patched 2.5.9 follows the
+  URL Standard, as servo/rust-url#1186 does: the inner origin is taken only when
+  the scheme is `http`, `https` or `file`, an opaque origin otherwise, and the
+  function never calls itself.
+- Require `url ^2.5.9` in this manifest rather than only in `Cargo.lock`, because
+  no parent range excludes the affected release: reqwest requires `url ^2.4`, and
+  tower-http and wiremock require `^2.5`, each of which still resolves 2.5.8 for a
+  consumer whose lockfile predates the patch. `cargo update --precise 2.5.8 -p url`
+  is now refused by this crate's own requirement. The default features stay on so
+  the resolved `url` feature set (`default`, `std`) is unchanged.
+- The gateway and its locked reqwest 0.12.28 and tower-http 0.6.11 versions
+  call neither affected function. The manifest floor protects library
+  consumers that call `Url::origin()` or `url::quirks::origin()` on
+  client-supplied URLs.
+
 ### Changed
 
+- Refresh 17 Rust 1.90-compatible lockfile packages: bytes 1.12.2, cc 1.11.3,
+  clap 4.6.9, clap_derive 4.6.9, clap_lex 1.1.2, form_urlencoded 1.2.3,
+  hashbrown 0.17.2, pin-project-lite 0.2.18, rand_pcg 0.10.3, regex 1.13.2,
+  regex-automata 0.4.19, regex-syntax 0.8.12, smallvec 1.16.6,
+  toml_parser 1.1.6+spec-1.1.0, url 2.5.9, uuid 1.29.3 and zeroize 1.9.2. url and
+  uuid are direct dependencies; form_urlencoded 1.2.3 is the sibling crate of the
+  same rust-url release. bytes, hashbrown, pin-project-lite and smallvec arrive
+  through the hyper/axum/h2 stack, regex-automata and regex-syntax through
+  tracing-subscriber's `matchers` filter and wiremock, toml_parser through toml,
+  and zeroize through secrecy and rustls-pki-types, so all are linked into the
+  binary. clap 4.6.9 and clap_lex 1.1.2 are linked and clap_derive 4.6.9 is the
+  build-time proc-macro front end for the CLI. regex 1.13.2 reaches us only
+  through wiremock, so it is compiled for the test binaries and not the shipped
+  one, and cc 1.11.3 stays a build dependency of ring, shaping how the binary is
+  compiled without being linked in. rand_pcg 0.10.3 is locked but not built for
+  any target of this crate's feature set - it sits on reqwest's disabled HTTP/3
+  path, and `cargo tree --target all -i rand_pcg@0.10.3` resolves no path.
 - Refresh 11 Rust 1.90-compatible lockfile packages: bumpalo 3.20.4, cc 1.11.2,
   errno 0.3.15, itoa 1.0.19, mio 1.2.5, rand 0.10.4, rustls-pki-types 1.16.0,
   rustls-webpki 0.103.17, syn 3.0.10, uuid 1.29.2 and webpki-roots 1.0.12.
