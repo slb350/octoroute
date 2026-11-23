@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-11-23
+
+### Changed
+
+- Eliminate per-request JSON AST cloning (`GatewayRequest::body_value_for_model`) across local pools, OpenAI-compatible HTTP providers, the Anthropic adapter, and the Codex CLI adapter via zero-clone borrowed serialization (`BodyWithModel` and `FieldOverride`).
+- Replace the mutex-guarded `BTreeMap` metric registry with pre-allocated lock-free atomic counter arrays and `std::fmt::Write` Prometheus rendering.
+- Split Anthropic SSE translation into `anthropic/response/sse.rs`, serialize stream chunks from borrowed typed structs instead of `serde_json::json!` DOM trees, replace double `Vec::drain` buffer shifting with a single-pass offset cursor, and bound CRLF boundary scanning.
+- Add a zero-copy single-chunk fast path and `content-length`-hinted coalescing in `bounded_response::read`.
+- Precompute `/v1/models` route IDs once at service startup, precompute local pool token-count probe bodies, check local capabilities without per-admission `BTreeSet` allocation, make the safe response header allowlist `const`, serialize gateway error envelopes directly from borrowed structs, and relax Codex capture polling from 10ms to 50ms.
+- Migrate `FabricUpstreamTransport` from `#[async_trait]` to native Rust RPITIT (`-> impl Future<...> + Send`), replace the `futures` umbrella dependency with `futures-core` and minimal `futures-util`, drop the unused `reqwest` `"json"` feature, and enable thin LTO, single codegen unit, and symbol stripping in `[profile.release]`.
+- Configure `cargo-nextest`, `[profile.mutants]`, and `additional_cargo_args` in `.cargo/mutants.toml`, scope sibling unit-test modules under `src/` to their owning production files in `scripts/mutants_scope.py`, deduplicate config validation defaults and range checks, share cached test HTTP clients and configs, and remove obsolete tracked `.Codex/pr-reviews/` notes.
+
+### Fixed
+
+- Preserve the primary `CommandOutputTooLarge` and `CommandTimeout` errors in `provider::credential` if process-group cleanup fails afterward, matching `codex::process` and preventing a Darwin `P_WEXIT` cleanup race from masking oversized credential output as `CommandFailed`.
+
 ## [3.0.8] - 2026-11-22
 
 ### Security
@@ -815,7 +831,8 @@ gaps, and 45 smaller findings. The suite grew from 126 tests to 212.
 
 ---
 
-[Unreleased]: https://github.com/slb350/octoroute/compare/v3.0.8...HEAD
+[Unreleased]: https://github.com/slb350/octoroute/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/slb350/octoroute/compare/v3.0.8...v3.1.0
 [3.0.8]: https://github.com/slb350/octoroute/compare/v3.0.7...v3.0.8
 [3.0.7]: https://github.com/slb350/octoroute/compare/v3.0.6...v3.0.7
 [3.0.6]: https://github.com/slb350/octoroute/compare/v3.0.5...v3.0.6
