@@ -30,7 +30,7 @@ async fn open_ai_provider_rewrites_only_destination_and_supplies_bounded_headers
         .mount(&server)
         .await;
 
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         single_provider_config(&server, "zai"),
         TestEnvironment::default()
             .with("OCTOROUTE_API_KEY", "inbound-test-key")
@@ -137,7 +137,7 @@ async fn missing_provider_credential_surfaces_instead_of_rerouting_spend() {
         .with("OCTOROUTE_API_KEY", "inbound-test-key")
         .with("OPENROUTER_API_KEY", "openrouter-test-key");
     let environment_audit = environment.clone();
-    let service = FabricGatewayService::from_config(config, environment).expect("service");
+    let service = service_from_config(config, environment).expect("service");
 
     let response = service.handle_chat(&headers(), cloud_request()).await;
     assert_eq!(response.status(), 503);
@@ -197,7 +197,7 @@ async fn unauthenticated_fallback_is_available_when_explicitly_configured() {
         .with("OCTOROUTE_API_KEY", "inbound-test-key")
         .with("OPENROUTER_API_KEY", "openrouter-test-key");
     let environment_audit = environment.clone();
-    let service = FabricGatewayService::from_config(config, environment).expect("service");
+    let service = service_from_config(config, environment).expect("service");
 
     let response = service.handle_chat(&headers(), cloud_request()).await;
     assert_eq!(response.status(), 200);
@@ -223,6 +223,7 @@ async fn unauthenticated_fallback_is_available_when_explicitly_configured() {
 
 #[tokio::test]
 async fn provider_response_fallback_obeys_the_closed_trigger_set() {
+    let server = MockServer::start().await;
     for (first_status, remove_trigger, expected_status, expected_provider, falls_forward) in [
         (429, None, 200, Some("openrouter"), true),
         (
@@ -239,7 +240,6 @@ async fn provider_response_fallback_obeys_the_closed_trigger_set() {
         // rejection is reported as an upstream fault instead.
         (401, None, 502, None, false),
     ] {
-        let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .and(header("authorization", "Bearer zai-test-key"))
@@ -275,7 +275,7 @@ async fn provider_response_fallback_obeys_the_closed_trigger_set() {
         if let Some(trigger) = remove_trigger {
             route.fallback_on.remove(&trigger);
         }
-        let service = FabricGatewayService::from_config(
+        let service = service_from_config(
             config,
             TestEnvironment::default()
                 .with("OCTOROUTE_API_KEY", "inbound-test-key")
@@ -301,6 +301,8 @@ async fn provider_response_fallback_obeys_the_closed_trigger_set() {
             expected_provider
         );
         drop(response);
+        server.verify().await;
+        server.reset().await;
     }
 }
 
@@ -325,7 +327,7 @@ async fn provider_permit_is_held_until_the_streaming_body_is_dropped() {
         .get_mut("zai")
         .expect("zai provider")
         .max_in_flight = 1;
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default()
             .with("OCTOROUTE_API_KEY", "inbound-test-key")
@@ -373,7 +375,7 @@ async fn provider_readiness_probes_auth_once_per_cache_window() {
         .with("OCTOROUTE_API_KEY", "inbound-test-key")
         .with("ZAI_API_KEY", "zai-test-key");
     let environment_audit = environment.clone();
-    let service = FabricGatewayService::from_config(config, environment).expect("service");
+    let service = service_from_config(config, environment).expect("service");
 
     for _ in 0..2 {
         let readiness = service.readiness().await;
@@ -395,8 +397,8 @@ async fn provider_readiness_probes_auth_once_per_cache_window() {
 
 #[tokio::test]
 async fn anthropic_tools_preserve_the_requested_response_format() {
+    let server = MockServer::start().await;
     for (requested_stream, stream) in [(None, false), (Some(false), false), (Some(true), true)] {
-        let server = MockServer::start().await;
         let expected_request = json!({
             "model": "k3",
             "messages": [{
@@ -457,7 +459,7 @@ async fn anthropic_tools_preserve_the_requested_response_format() {
             .mount(&server)
             .await;
 
-        let service = FabricGatewayService::from_config(
+        let service = service_from_config(
             single_provider_config(&server, "kimi"),
             TestEnvironment::default()
                 .with("OCTOROUTE_API_KEY", "inbound-test-key")
@@ -540,6 +542,8 @@ async fn anthropic_tools_preserve_the_requested_response_format() {
             upstream.headers.get("authorization").is_none(),
             "the inbound bearer must never travel to an Anthropic provider"
         );
+        server.verify().await;
+        server.reset().await;
     }
 }
 
@@ -557,7 +561,7 @@ async fn a_failing_models_endpoint_still_reports_unavailable() {
         .await;
 
     let config = single_enabled_provider_config(&server, "zai");
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default()
             .with("OCTOROUTE_API_KEY", "inbound-test-key")

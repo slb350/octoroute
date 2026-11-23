@@ -1,3 +1,4 @@
+use super::test_support::{example_config, service_from_config};
 use super::{
     FabricConfig, FabricGatewayService, FallbackTrigger, ProviderAdmissionState,
     ProviderRuntimeConfig, RoutePrivacy, RouteTarget,
@@ -98,11 +99,21 @@ fn set_provider_endpoint(config: &mut FabricConfig, provider: &str, endpoint: Ur
 }
 
 fn local_config(server: &MockServer) -> FabricConfig {
-    let mut config =
-        FabricConfig::from_toml(include_str!("../../../../config.toml")).expect("config");
+    let mut config = example_config();
     let workers = config.local_pools.get_mut("workers").expect("workers pool");
     workers.members.truncate(1);
     workers.members[0].base_url = Url::parse(&server.uri()).expect("mock URL");
+    config
+}
+
+/// Configure `cloud-sota` to target a single provider without starting an HTTP mock server.
+fn single_provider_offline_config(provider: &str) -> FabricConfig {
+    let mut config = example_config();
+    config
+        .routes
+        .get_mut("cloud-sota")
+        .expect("cloud route")
+        .steps = vec![RouteTarget::Provider(provider.to_string())];
     config
 }
 

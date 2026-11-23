@@ -30,7 +30,7 @@ use axum::{
     http::{HeaderMap, Request, Response, StatusCode},
 };
 use bytes::BytesMut;
-use futures::{StreamExt, future::join_all};
+use futures_util::{StreamExt, future::join_all};
 use reqwest::Client;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -61,6 +61,7 @@ pub struct FabricGatewayService<T> {
     transport: T,
     reachable_pools: BTreeSet<String>,
     reachable_providers: BTreeSet<String>,
+    model_ids: Vec<String>,
     inbound_permits: Arc<Semaphore>,
     rate_limiter: FixedWindowRateLimiter,
     readiness_cache: Mutex<Option<(Instant, FabricReadiness)>>,
@@ -182,6 +183,9 @@ where
             }
         }
 
+        let mut model_ids = BTreeSet::from(["auto".to_string()]);
+        model_ids.extend(config.routes.keys().cloned());
+
         Ok(Self {
             authenticator: BearerAuthenticator::new(inbound_key),
             inbound_permits: Arc::new(Semaphore::new(config.server.max_in_flight)),
@@ -193,6 +197,7 @@ where
             transport,
             reachable_pools,
             reachable_providers,
+            model_ids: model_ids.into_iter().collect(),
             readiness_cache: Mutex::new(None),
         })
     }
@@ -260,9 +265,7 @@ where
 
     /// Virtual model identifiers exposed to OpenAI-compatible clients.
     pub fn model_ids(&self) -> Vec<String> {
-        let mut models = BTreeSet::from(["auto".to_string()]);
-        models.extend(self.config.routes.keys().cloned());
-        models.into_iter().collect()
+        self.model_ids.clone()
     }
 
     /// Return a readiness snapshot, reusing a recent one when it is fresh.
@@ -505,7 +508,7 @@ mod body_boundary_tests {
     async fn body_limit_is_independent_of_fragmentation() {
         for chunks in [vec!["abcd"], vec!["ab", "cd"], vec!["ab", "c", "d"]] {
             for limit in [3, 4, 5] {
-                let stream = futures::stream::iter(
+                let stream = futures_util::stream::iter(
                     chunks
                         .iter()
                         .map(|chunk| Ok::<_, Infallible>(Bytes::from_static(chunk.as_bytes())))

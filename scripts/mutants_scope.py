@@ -114,14 +114,98 @@ def ambiguous_test_path(path):
     )
 
 
+def tree_paths(revision_id):
+    return set(
+        git("ls-tree", "-r", "--name-only", "-z", revision_id).split("\0")[:-1]
+    )
+
+
+def production_files_under(directory, files):
+    prefix = f"{directory}/" if directory else ""
+    return sorted(
+        candidate
+        for candidate in files
+        if candidate.startswith(prefix)
+        and candidate.endswith(".rs")
+        and not ambiguous_test_path(candidate)
+    )
+
+
+def owned_source_files(path, files):
+    """Map an in-tree unit-test module to its owning production file(s), if unambiguous."""
+    if not path.startswith("src/") or not path.endswith(".rs"):
+        return None
+    parts = Path(path).parts
+    if any(
+        part in {"test_support", "fixtures", "testdata", "snapshots"}
+        or part.endswith(("_tests", "_test"))
+        for part in parts[:-1]
+    ) or parts[-1] == "test_support.rs":
+        return None
+
+    # `src/.../<dir>/tests/<topic>.rs` owns the production files in `src/.../<dir>/`.
+    if "tests" in parts[1:-1]:
+        index = parts.index("tests", 1, len(parts) - 1)
+        owner_dir = "/".join(parts[:index])
+        owned = production_files_under(owner_dir, files)
+        return owned or None
+
+    parent = "/".join(parts[:-1])
+    stem = Path(path).stem
+
+    # `src/.../<dir>/tests.rs` or `src/.../<dir>/mutation_tests.rs` owns `<dir>/`.
+    if stem in {"tests", "test", "mutation_tests", "mutation_test"}:
+        if parent == "src":
+            return None
+        owned = production_files_under(parent, files)
+        return owned or None
+
+    # `src/.../<stem>_tests.rs` or `src/.../<stem>_test.rs`
+    for suffix in ("_tests", "_test"):
+        if not stem.endswith(suffix):
+            continue
+        base = stem[: -len(suffix)]
+        if not base:
+            return None
+        # Direct sibling file (`auth_tests.rs` -> `auth.rs`, `process_tests.rs` -> `process.rs`).
+        # Include the parent `mod.rs` when present because sibling test modules
+        # often import `super::*` and exercise helpers declared in `mod.rs`.
+        direct = f"{parent}/{base}.rs"
+        if direct in files and not ambiguous_test_path(direct):
+            owned = [direct]
+            parent_mod = f"{parent}/mod.rs"
+            if parent_mod in files:
+                owned.append(parent_mod)
+            return owned
+        # Directory-backed module (`local_pool_tests.rs`, `local_pool_probe_tests.rs` -> `local_pool/`).
+        prefix_parts = base.split("_")
+        for count in range(len(prefix_parts), 0, -1):
+            candidate_dir = f"{parent}/{'_'.join(prefix_parts[:count])}"
+            if f"{candidate_dir}/mod.rs" in files:
+                owned = production_files_under(candidate_dir, files)
+                return owned or None
+        return None
+
+    return None
+
+
 def changed_scope(base, head):
     changes = git("diff", "--name-status", "--no-renames", "-z", base, head).split(
         "\0"
     )[:-1]
-    arguments = []
+    head_files = None
+    selected = []
     for status, path in zip(changes[::2], changes[1::2], strict=True):
         if ambiguous_test_path(path):
-            return "full", []
+            if status == "D":
+                return "full", []
+            if head_files is None:
+                head_files = tree_paths(head)
+            owned = owned_source_files(path, head_files)
+            if not owned:
+                return "full", []
+            selected.extend(owned)
+            continue
         if not path.endswith(".rs"):
             continue
         before = "" if status == "A" else git("show", f"{base}:{path}")
@@ -131,12 +215,19 @@ def changed_scope(base, head):
         if old_docs != new_docs:
             return "full", []
         if old_items != new_items:
-            if status == "D" or any(
-                external for _, external in [*old_items, *new_items]
-            ):
+            if status == "D":
                 return "full", []
-            arguments.extend(["--file", path])
-    return ("files", arguments) if arguments else ("none", [])
+            old_external = [text for text, ext in old_items if ext]
+            new_external = [text for text, ext in new_items if ext]
+            if old_external != new_external:
+                return "full", []
+            selected.append(path)
+    if not selected:
+        return "none", []
+    arguments = []
+    for path in sorted(set(selected)):
+        arguments.extend(["--file", path])
+    return "files", arguments
 
 
 def revision(value):

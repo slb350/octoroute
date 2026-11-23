@@ -32,7 +32,7 @@ impl Environment for InvalidCredentialEnvironment {
 }
 
 pub(super) fn example() -> FabricConfig {
-    FabricConfig::from_toml(include_str!("../../../config.toml")).expect("repository example")
+    super::test_support::example_config()
 }
 
 pub(super) fn request(output_tokens: u32) -> GatewayRequest {

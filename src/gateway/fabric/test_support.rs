@@ -1,8 +1,42 @@
-//! Unix-only fixtures shared by the fabric's process-driving tests.
+//! Shared fixtures and cached test clients for the fabric test suite.
 
-#![cfg(unix)]
+use super::{FabricConfig, FabricGatewayService, FabricTransport};
+use crate::gateway::{env::Environment, http_client};
+use reqwest::Client;
+use std::sync::OnceLock;
 
-use std::path::{Path, PathBuf};
+/// One pooled rustls client shared across unit tests so each test does not
+/// rebuild the Mozilla root store from scratch.
+pub(super) fn shared_http_client() -> Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| http_client::build().expect("shared test HTTP client"))
+        .clone()
+}
+
+/// The parsed repository `config.toml`, cached once per test process.
+pub(super) fn example_config() -> FabricConfig {
+    static CONFIG: OnceLock<FabricConfig> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            FabricConfig::from_toml(include_str!("../../../config.toml"))
+                .expect("repository example")
+        })
+        .clone()
+}
+
+/// Build a production-transport service backed by [`shared_http_client`].
+pub(super) fn service_from_config<E>(
+    config: FabricConfig,
+    environment: E,
+) -> Result<FabricGatewayService<FabricTransport>, super::FabricGatewayServiceBuildError>
+where
+    E: Environment + Send + Sync + 'static,
+{
+    let client = shared_http_client();
+    let transport = FabricTransport::with_client(client.clone());
+    FabricGatewayService::with_client(config, environment, transport, client)
+}
 
 /// Write a named executable fixture into `directory`.
 ///
@@ -16,11 +50,12 @@ use std::path::{Path, PathBuf};
 /// mutation sweep a spurious spawn failure records a mutant as caught that
 /// nothing caught. macOS never enforces this, which is why only CI and the
 /// offload host see it.
+#[cfg(unix)]
 pub(super) fn write_executable_fixture(
-    directory: &Path,
+    directory: &std::path::Path,
     filename: &str,
     contents: &str,
-) -> PathBuf {
+) -> std::path::PathBuf {
     let executable = directory.join(filename);
     // Contents travel as argv rather than through a pipe: no descriptor of
     // ours to inherit, and no deadlock surface if a forked child holds the

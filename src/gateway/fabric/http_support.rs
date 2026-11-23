@@ -4,14 +4,13 @@ use axum::{
     Json,
     body::{Body, BodyDataStream},
     http::{
-        HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode,
-        header::{CONTENT_TYPE, WWW_AUTHENTICATE},
+        HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, header::WWW_AUTHENTICATE,
     },
     middleware::Next,
     response::IntoResponse,
 };
-use futures::Stream;
-use serde_json::json;
+use futures_core::Stream;
+use serde::Serialize;
 use std::{
     pin::Pin,
     sync::Mutex,
@@ -160,20 +159,28 @@ pub(super) fn error_response(
     code: &str,
     request_id: &str,
 ) -> Response<Body> {
+    #[derive(Serialize)]
+    struct ErrorEnvelope<'a> {
+        error: ErrorBody<'a>,
+    }
+    #[derive(Serialize)]
+    struct ErrorBody<'a> {
+        message: &'a str,
+        #[serde(rename = "type")]
+        error_type: &'a str,
+        code: &'a str,
+    }
     let mut response = (
         status,
-        Json(json!({
-            "error": {
-                "message": message,
-                "type": error_type,
-                "code": code
-            }
-        })),
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                message,
+                error_type,
+                code,
+            },
+        }),
     )
         .into_response();
-    response
-        .headers_mut()
-        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     insert_header(response.headers_mut(), REQUEST_ID_HEADER, request_id);
     insert_header(
         response.headers_mut(),

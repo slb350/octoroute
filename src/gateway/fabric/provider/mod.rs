@@ -271,7 +271,7 @@ impl ProviderRegistry {
                 (name, state)
             }
         });
-        futures::future::join_all(probes)
+        futures_util::future::join_all(probes)
             .await
             .into_iter()
             .collect()

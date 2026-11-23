@@ -60,6 +60,21 @@ fn local_reasoning_default_applies_only_when_the_caller_omits_controls() {
     .expect("body JSON");
     assert!(body.get("reasoning_effort").is_none());
     assert_eq!(body["reasoning"]["effort"], "low");
+
+    // A caller-supplied `null` is absent and must be replaced rather than
+    // serialized twice as a duplicate JSON key.
+    let nulled = gateway_request(json!({
+        "model": "worker",
+        "messages": [{"role": "user", "content": "hello"}],
+        "reasoning_effort": null
+    }));
+    let raw = nulled
+        .body_bytes_for_model_with_reasoning_default("local-model", "high")
+        .expect("local body");
+    let text = std::str::from_utf8(&raw).expect("UTF-8");
+    assert_eq!(text.matches("\"reasoning_effort\"").count(), 1, "{text}");
+    let body: serde_json::Value = serde_json::from_str(text).expect("body JSON");
+    assert_eq!(body["reasoning_effort"], "high");
 }
 
 #[test]

@@ -1,7 +1,7 @@
 //! Member probing, endpoint resolution, and capability-driven body shaping.
 
 use super::local_pool_tests::{
-    EmptyEnvironment, example, lease, mount_probes_ready, request, single_member_pool, worker_pool,
+    EmptyEnvironment, example, lease, mount_probes_ready, request, single_member_pool,
 };
 use super::{LlamaCppPool, LocalCapability, PoolAdmissionState};
 use crate::gateway::request::GatewayRequest;
@@ -43,12 +43,10 @@ fn request_without_reasoning(output_tokens: u32) -> GatewayRequest {
 
 #[tokio::test]
 async fn unsupported_request_capability_is_rejected_without_probes() {
-    let servers = [
-        MockServer::start().await,
-        MockServer::start().await,
-        MockServer::start().await,
-    ];
-    let pool = LlamaCppPool::new(&worker_pool(&servers), &EmptyEnvironment).expect("pool");
+    let mut config = example().local_pools["workers"].clone();
+    config.members.truncate(1);
+    config.members[0].base_url = Url::parse("http://127.0.0.1:0").expect("unreachable URL");
+    let pool = LlamaCppPool::new(&config, &EmptyEnvironment).expect("pool");
 
     let outcome = pool
         .try_admit(&image_request())
@@ -142,7 +140,7 @@ async fn oversized_probe_body_is_refused_rather_than_buffered() {
         .and(path("/health"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_json(json!({"status": "ok", "pad": "x".repeat(2 * 1024 * 1024)})),
+                .set_body_json(json!({"status": "ok", "pad": "x".repeat(1_048_577)})),
         )
         .mount(&server)
         .await;
@@ -170,9 +168,8 @@ async fn an_oversized_slots_body_is_refused_rather_than_buffered() {
     Mock::given(method("GET"))
         .and(path("/slots"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_json(
-                json!([{"is_processing": false, "pad": "x".repeat(2 * 1024 * 1024)}]),
-            ),
+            ResponseTemplate::new(200)
+                .set_body_json(json!([{"is_processing": false, "pad": "x".repeat(1_048_577)}])),
         )
         .mount(&server)
         .await;
@@ -199,7 +196,7 @@ async fn an_oversized_token_count_body_is_refused_rather_than_buffered() {
         .and(path("/v1/chat/completions/input_tokens"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_json(json!({"input_tokens": 20_000, "pad": "x".repeat(2 * 1024 * 1024)})),
+                .set_body_json(json!({"input_tokens": 20_000, "pad": "x".repeat(1_048_577)})),
         )
         .mount(&server)
         .await;
@@ -329,6 +326,7 @@ async fn a_slots_probe_answering_503_is_busy_rather_than_unhealthy() {
 
 #[tokio::test]
 async fn every_member_probe_credential_rejection_surfaces_as_unauthenticated() {
+    let server = MockServer::start().await;
     for (rejected_path, status) in [
         ("/health", 401),
         ("/health", 403),
@@ -337,7 +335,6 @@ async fn every_member_probe_credential_rejection_surfaces_as_unauthenticated() {
         ("/slots", 403),
         ("/slots", 407),
     ] {
-        let server = MockServer::start().await;
         let health = if rejected_path == "/health" {
             status
         } else {
@@ -375,6 +372,8 @@ async fn every_member_probe_credential_rejection_surfaces_as_unauthenticated() {
             PoolAdmissionState::Unauthenticated,
             "{rejected_path} status {status} must not spill as unhealthy"
         );
+        server.verify().await;
+        server.reset().await;
     }
 }
 

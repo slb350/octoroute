@@ -150,7 +150,6 @@ fn metadata_header_size_boundary_is_exact() {
 #[derive(Debug, Clone, Copy)]
 struct FailingTransport;
 
-#[async_trait::async_trait]
 impl FabricUpstreamTransport for FailingTransport {
     type Error = FabricTransportError;
 

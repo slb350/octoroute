@@ -7,7 +7,7 @@ authors = ["Steve Brandon"]
 description = "OpenAI-compatible inference fabric for local pools and cloud providers"
 license = "MIT"
 repository = "https://github.com/slb350/octoroute"
-exclude = ["CLAUDE.md", ".Codex", "scripts", ".githooks", ".github", "docs/plans", "Cross.toml", "clippy.toml", "justfile", "rust-toolchain.toml", ".markdownlint.json", ".markdownlintignore"]
+exclude = ["CLAUDE.md", ".Codex", ".cargo", "scripts", ".githooks", ".github", "docs/plans", "Cross.toml", "clippy.toml", "justfile", "rust-toolchain.toml", ".markdownlint.json", ".markdownlintignore"]
 
 [dependencies]
 axum = "0.8"
@@ -23,8 +23,8 @@ subtle = "2.6"
 sha2 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-futures = "0.3"
-async-trait = "0.1"
+futures-core = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 # Keep the URL/IDNA graph above GHSA-7fx9-626j-vqph's vulnerable validators.
 zerovec = "0.11.8"
 zerovec-derive = "0.11.6"
@@ -43,12 +43,22 @@ webpki-roots = { version = "1.0.10", default-features = false }
 # requires ^2.4 and tower-http and wiremock ^2.5, so a downstream lockfile can
 # stay on the affected 2.5.8. Default features stay on, matching every parent.
 url = "2.5.9"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 libc = "0.2"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 wiremock = "0.6"
 tower = { version = "0.5", features = ["util"] }
+
+[profile.mutants]
+inherits = "test"
+debug = 0
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

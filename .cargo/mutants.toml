@@ -1,0 +1,10 @@
+# cargo-mutants configuration for Octoroute.
+#
+# nextest fails fast on the first failing test instead of running the rest of
+# the test binary after a mutant is already caught.
+test_tool = "nextest"
+profile = "mutants"
+# `tests/source_hygiene.rs` checks static layout and cfg conventions and cannot
+# catch runtime mutants; skipping it avoids compiling and linking an extra
+# integration binary on every mutant.
+additional_cargo_args = ["--lib", "--bins", "--test", "gateway_v3", "--test", "main_process"]

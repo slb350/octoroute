@@ -11,7 +11,6 @@ use super::{
     },
 };
 use crate::gateway::http_client::authorized;
-use async_trait::async_trait;
 use axum::{
     body::Body,
     http::{
@@ -20,7 +19,8 @@ use axum::{
     },
 };
 use bytes::Bytes;
-use futures::{Stream, StreamExt};
+use futures_core::Stream;
+use futures_util::{StreamExt, stream};
 use reqwest::Client;
 use std::{
     collections::VecDeque,
@@ -37,7 +37,7 @@ use tokio::sync::OwnedSemaphorePermit;
 const OPENROUTER_TITLE: &str = "x-openrouter-title";
 /// Bound on a provider response Octoroute has to buffer whole before it can
 /// translate it.
-pub(super) const MAX_TRANSLATED_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MAX_TRANSLATED_RESPONSE_BYTES: usize = 16_777_216; // 16 MiB
 
 /// Bound on an upstream error body.
 ///
@@ -45,18 +45,7 @@ pub(super) const MAX_TRANSLATED_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 /// path is taken by every request during an outage, so reading it under the
 /// 16 MiB success bound would buy nothing and cost a full read of whatever error
 /// page the provider emits.
-const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
-
-#[cfg(test)]
-mod mutation_tests {
-    use super::*;
-
-    #[test]
-    fn translated_and_error_response_bounds_have_the_exact_byte_budgets() {
-        assert_eq!(MAX_TRANSLATED_RESPONSE_BYTES, 16_777_216);
-        assert_eq!(MAX_ERROR_RESPONSE_BYTES, 65_536);
-    }
-}
+const MAX_ERROR_RESPONSE_BYTES: usize = 65_536; // 64 KiB
 
 /// The two deadlines one upstream attempt is bounded by.
 ///
@@ -93,16 +82,20 @@ impl UpstreamDeadlines {
 }
 
 /// Testable v3 transport contract shared by every backend.
-#[async_trait]
 pub trait FabricUpstreamTransport: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Dispatch one selected local member and stop before client commitment.
-    async fn local(&self, lease: PoolLease) -> Result<PreparedUpstreamResponse, Self::Error>;
+    fn local(
+        &self,
+        lease: PoolLease,
+    ) -> impl Future<Output = Result<PreparedUpstreamResponse, Self::Error>> + Send;
 
     /// Dispatch one selected provider and stop before client commitment.
-    async fn provider(&self, lease: ProviderLease)
-    -> Result<PreparedUpstreamResponse, Self::Error>;
+    fn provider(
+        &self,
+        lease: ProviderLease,
+    ) -> impl Future<Output = Result<PreparedUpstreamResponse, Self::Error>> + Send;
 }
 
 /// Production v3 transport with held-first-byte semantics for every backend.
@@ -122,7 +115,6 @@ impl FabricTransport {
     }
 }
 
-#[async_trait]
 impl FabricUpstreamTransport for FabricTransport {
     type Error = FabricTransportError;
 
@@ -356,10 +348,10 @@ async fn prepare_anthropic_stream(
         Some(Ok(bytes)) => bytes,
         Some(Err(_)) | None => return Err(FabricTransportError::InvalidProviderResponse),
     };
-    let remaining = futures::stream::unfold(state, |mut state| async move {
+    let remaining = stream::unfold(state, |mut state| async move {
         state.next_output().await.map(|item| (item, state))
     });
-    let stream = futures::stream::once(async move { Ok::<_, io::Error>(first) }).chain(remaining);
+    let stream = stream::once(async move { Ok::<_, io::Error>(first) }).chain(remaining);
     let mut response = Response::new(Body::from_stream(stream));
     *response.status_mut() = status;
     *response.headers_mut() = headers;
@@ -559,7 +551,7 @@ fn reject_redirect(response: &reqwest::Response) -> Result<(), FabricTransportEr
 /// Upstream identifiers still reach the client through `x-generation-id` and
 /// `openai-request-id`.
 pub(super) fn safe_response_headers(source: &HeaderMap) -> HeaderMap {
-    let allowed = [
+    const ALLOWED: [HeaderName; 14] = [
         CONTENT_TYPE,
         CACHE_CONTROL,
         RETRY_AFTER,
@@ -576,7 +568,7 @@ pub(super) fn safe_response_headers(source: &HeaderMap) -> HeaderMap {
         HeaderName::from_static("x-ratelimit-reset-tokens"),
     ];
     let mut headers = HeaderMap::new();
-    for name in allowed {
+    for name in ALLOWED {
         for value in source.get_all(&name) {
             headers.append(name.clone(), value.clone());
         }

@@ -7,8 +7,7 @@ mod governing;
 
 #[tokio::test]
 async fn local_only_failure_never_resolves_or_contacts_a_provider() {
-    let server = MockServer::start().await;
-    let mut config = local_config(&server);
+    let mut config = example_config();
     for pool in config.local_pools.values_mut() {
         pool.enabled = false;
     }
@@ -18,7 +17,7 @@ async fn local_only_failure_never_resolves_or_contacts_a_provider() {
         .with("ZAI_API_KEY", "unused-zai-key")
         .with("OPENROUTER_API_KEY", "unused-openrouter-key");
     let environment_audit = environment.clone();
-    let service = FabricGatewayService::from_config(config, environment).expect("service");
+    let service = service_from_config(config, environment).expect("service");
     let mut request_headers = headers();
     request_headers.insert(
         "x-octoroute-privacy",
@@ -37,11 +36,10 @@ async fn local_only_failure_never_resolves_or_contacts_a_provider() {
     assert_eq!(environment_audit.reads(), vec!["OCTOROUTE_API_KEY"]);
 }
 
-#[tokio::test]
-async fn v3_models_include_auto_and_all_virtual_routes() {
-    let server = MockServer::start().await;
-    let service = FabricGatewayService::from_config(
-        local_config(&server),
+#[test]
+fn v3_models_include_auto_and_all_virtual_routes() {
+    let service = service_from_config(
+        example_config(),
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
     .expect("service");
@@ -65,7 +63,7 @@ async fn local_precommit_failure_records_a_pool_fallback() {
         .expect(1)
         .mount(&server)
         .await;
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         local_config(&server),
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
@@ -106,7 +104,7 @@ async fn local_upstream_rate_limit_uses_the_rate_limited_trigger() {
         .expect("local route")
         .fallback_on
         .insert(FallbackTrigger::RateLimited);
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
@@ -132,15 +130,14 @@ async fn local_upstream_rate_limit_uses_the_rate_limited_trigger() {
 /// request at the same time.
 #[tokio::test]
 async fn an_unroutable_privacy_narrowing_reports_an_upstream_error_type() {
-    let server = MockServer::start().await;
-    let mut config = local_config(&server);
+    let mut config = example_config();
     // A provider-only route that privacy may narrow rather than refuse.
     config
         .routes
         .get_mut("cloud-sota")
         .expect("cloud route")
         .privacy = RoutePrivacy::CloudAllowed;
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
@@ -198,7 +195,7 @@ async fn provider_credential_rejection_falls_forward_when_the_route_opts_in() {
         RouteTarget::Provider("openrouter".to_string()),
     ];
     route.fallback_on.insert(FallbackTrigger::Unauthenticated);
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default()
             .with("OCTOROUTE_API_KEY", "inbound-test-key")
@@ -240,7 +237,7 @@ async fn provider_credential_rejection_is_never_the_clients_own_401() {
         .expect(1)
         .mount(&server)
         .await;
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         single_provider_config(&server, "zai"),
         TestEnvironment::default()
             .with("OCTOROUTE_API_KEY", "inbound-test-key")
@@ -262,9 +259,8 @@ async fn provider_credential_rejection_is_never_the_clients_own_401() {
 /// gateway-side translation failures move off `invalid_request_error`.
 #[tokio::test]
 async fn a_malformed_client_plugins_field_stays_a_client_error() {
-    let server = MockServer::start().await;
-    let service = FabricGatewayService::from_config(
-        single_provider_config(&server, "openrouter"),
+    let service = service_from_config(
+        single_provider_offline_config("openrouter"),
         TestEnvironment::default()
             .with("OCTOROUTE_API_KEY", "inbound-test-key")
             .with("OPENROUTER_API_KEY", "openrouter-test-key"),
@@ -311,7 +307,7 @@ async fn a_request_body_exactly_at_the_limit_is_accepted() {
     let body = local_request("worker");
     let mut config = local_config(&server);
     config.server.max_request_bytes = body.len();
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
@@ -344,7 +340,7 @@ async fn an_admitted_local_response_commits_on_a_route_that_could_fall_forward()
         )
         .mount(&server)
         .await;
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         local_config(&server),
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
@@ -379,8 +375,7 @@ async fn an_admitted_local_response_commits_on_a_route_that_could_fall_forward()
 /// out of the admission counters hides it from `/metrics` entirely.
 #[tokio::test]
 async fn a_gateway_side_translation_failure_is_not_the_clients_error() {
-    let server = MockServer::start().await;
-    let mut config = single_provider_config(&server, "zai");
+    let mut config = single_provider_offline_config("zai");
     // Not representable as JSON, so the configured temperature cannot be
     // written into the outbound body.
     config
@@ -388,7 +383,7 @@ async fn a_gateway_side_translation_failure_is_not_the_clients_error() {
         .get_mut("zai")
         .expect("zai provider")
         .temperature = Some(f64::NAN);
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default()
             .with("OCTOROUTE_API_KEY", "inbound-test-key")

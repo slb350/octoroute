@@ -65,7 +65,7 @@ pub(super) async fn run_process(
     };
     let execution = async {
         let mut completion = std::pin::pin!(async { tokio::join!(child.wait(), send_input) });
-        let mut poll = tokio::time::interval(Duration::from_millis(10));
+        let mut poll = tokio::time::interval(Duration::from_millis(50));
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {

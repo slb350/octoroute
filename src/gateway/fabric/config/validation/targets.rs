@@ -2,18 +2,18 @@
 
 use super::fields::{
     invalid, validate_command, validate_env_name, validate_executable, validate_first_byte_timeout,
-    validate_model, validate_name, validate_u64_max, validate_u64_range, validate_url,
-    validate_usize_range,
+    validate_model, validate_name, validate_positive_range, validate_u64_max, validate_url,
 };
 use super::{
-    DEFAULT_CODEX_EXECUTABLE, DEFAULT_PROVIDER_MAX_IN_FLIGHT, MAX_CONCURRENCY,
-    MAX_PROVIDER_READINESS_TIMEOUT_MS, MAX_PROVIDER_READINESS_TTL_MS, MAX_UPSTREAM_TIMEOUT_MS,
-    RawProviderConfig, RawVirtualRoute,
+    DEFAULT_CODEX_EXECUTABLE, DEFAULT_FALLBACK_TRIGGERS, DEFAULT_PROVIDER_MAX_IN_FLIGHT,
+    DEFAULT_PROVIDER_READINESS_TIMEOUT_MS, DEFAULT_PROVIDER_READINESS_TTL_MS,
+    DEFAULT_PROVIDER_TIMEOUT_MS, MAX_CONCURRENCY, MAX_PROVIDER_READINESS_TIMEOUT_MS,
+    MAX_PROVIDER_READINESS_TTL_MS, MAX_UPSTREAM_TIMEOUT_MS, RawProviderConfig, RawVirtualRoute,
 };
 use crate::gateway::fabric::{
     FabricConfigError, LocalPoolConfig, ProviderConfig, ProviderCredentialConfig, ProviderKind,
-    ProviderProfile, ProviderProtocol, ProviderRuntimeConfig, RoutePrivacy, RouteTarget,
-    VirtualRoute,
+    ProviderProfile, ProviderProtocol, ProviderRuntimeConfig, ReasoningEffort, RoutePrivacy,
+    RouteTarget, VirtualRoute,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,29 +25,36 @@ pub(super) fn validate_providers(
         validate_name("fabric.providers.name", &raw.name)?;
         validate_model("fabric.providers.model", &raw.model)?;
         let max_in_flight = raw.max_in_flight.unwrap_or(DEFAULT_PROVIDER_MAX_IN_FLIGHT);
-        validate_usize_range(
+        let timeout_ms = raw.timeout_ms.unwrap_or(DEFAULT_PROVIDER_TIMEOUT_MS);
+        let readiness_ttl_ms = raw
+            .readiness_ttl_ms
+            .unwrap_or(DEFAULT_PROVIDER_READINESS_TTL_MS);
+        let readiness_timeout_ms = raw
+            .readiness_timeout_ms
+            .unwrap_or(DEFAULT_PROVIDER_READINESS_TIMEOUT_MS);
+        validate_positive_range(
             "fabric.providers.max_in_flight",
             max_in_flight,
             MAX_CONCURRENCY,
         )?;
-        validate_u64_range(
+        validate_positive_range(
             "fabric.providers.timeout_ms",
-            raw.timeout_ms,
+            timeout_ms,
             MAX_UPSTREAM_TIMEOUT_MS,
         )?;
         validate_first_byte_timeout(
             "fabric.providers.first_byte_timeout_ms",
-            raw.timeout_ms,
+            timeout_ms,
             raw.first_byte_timeout_ms,
         )?;
         validate_u64_max(
             "fabric.providers.readiness_ttl_ms",
-            raw.readiness_ttl_ms,
+            readiness_ttl_ms,
             MAX_PROVIDER_READINESS_TTL_MS,
         )?;
-        validate_u64_range(
+        validate_positive_range(
             "fabric.providers.readiness_timeout_ms",
-            raw.readiness_timeout_ms,
+            readiness_timeout_ms,
             MAX_PROVIDER_READINESS_TIMEOUT_MS,
         )?;
         if raw
@@ -158,13 +165,13 @@ pub(super) fn validate_providers(
         let name = raw.name.clone();
         let provider = ProviderConfig {
             name: raw.name,
-            enabled: raw.enabled,
+            enabled: raw.enabled.unwrap_or(true),
             runtime,
             model: raw.model,
             max_in_flight,
-            timeout_ms: raw.timeout_ms,
-            readiness_ttl_ms: raw.readiness_ttl_ms,
-            readiness_timeout_ms: raw.readiness_timeout_ms,
+            timeout_ms,
+            readiness_ttl_ms,
+            readiness_timeout_ms,
             first_byte_timeout_ms: raw.first_byte_timeout_ms,
             reasoning_effort: raw.reasoning_effort,
             temperature: raw.temperature,
@@ -275,8 +282,12 @@ pub(super) fn validate_routes(
             model: raw.model,
             privacy: raw.privacy,
             steps,
-            default_reasoning_effort: raw.default_reasoning_effort,
-            fallback_on: raw.fallback_on,
+            default_reasoning_effort: raw
+                .default_reasoning_effort
+                .unwrap_or(ReasoningEffort::Medium),
+            fallback_on: raw
+                .fallback_on
+                .unwrap_or_else(|| DEFAULT_FALLBACK_TRIGGERS.into_iter().collect()),
         };
         if routes.insert(model.clone(), route).is_some() {
             return Err(invalid(

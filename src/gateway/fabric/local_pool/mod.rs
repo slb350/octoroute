@@ -20,7 +20,6 @@ use bytes::Bytes;
 use reqwest::{Client, Url};
 use secrecy::{ExposeSecret, SecretString};
 use std::{
-    collections::BTreeSet,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -175,6 +174,7 @@ pub struct LlamaCppPool {
 struct PoolInner {
     config: LocalPoolConfig,
     members: Vec<Member>,
+    token_count_probe_body: Bytes,
     cursor: AtomicUsize,
 }
 
@@ -185,7 +185,7 @@ struct RankedMember<'a> {
 }
 
 impl LlamaCppPool {
-    /// Build a local pool over a private client.
+    /// Build a local pool over the shared test client.
     ///
     /// Test-only. Production builds every pool with [`Self::with_client`] so
     /// local probes, local inference, and every provider share the one pooled
@@ -195,9 +195,11 @@ impl LlamaCppPool {
         config: &LocalPoolConfig,
         environment: &(impl Environment + ?Sized),
     ) -> Result<Self, LlamaCppPoolBuildError> {
-        let client =
-            crate::gateway::http_client::build().map_err(LlamaCppPoolBuildError::HttpClient)?;
-        Self::with_client(config, environment, client)
+        Self::with_client(
+            config,
+            environment,
+            super::test_support::shared_http_client(),
+        )
     }
 
     pub(crate) fn with_client(
@@ -249,10 +251,18 @@ impl LlamaCppPool {
                 pool: config.name.clone(),
             });
         }
+        let token_count_probe_body = Bytes::from(
+            serde_json::to_vec(&serde_json::json!({
+                "model": config.model,
+                "messages": [{"role": "user", "content": "ping"}]
+            }))
+            .expect("the fixed readiness probe body serializes"),
+        );
         Ok(Self {
             inner: Arc::new(PoolInner {
                 config: config.clone(),
                 members,
+                token_count_probe_body,
                 cursor: AtomicUsize::new(0),
             }),
         })
@@ -266,14 +276,7 @@ impl LlamaCppPool {
         if !self.inner.config.enabled {
             return Ok(PoolAdmissionOutcome::Rejected(PoolAdmissionState::Disabled));
         }
-        let capabilities = match request_capabilities(request) {
-            Ok(capabilities) => capabilities,
-            Err(state) => return Ok(PoolAdmissionOutcome::Rejected(state)),
-        };
-        if !capabilities
-            .iter()
-            .all(|capability| self.inner.config.capabilities.contains(capability))
-        {
+        if !request_is_compatible(request, &self.inner.config.capabilities) {
             return Ok(PoolAdmissionOutcome::Rejected(
                 PoolAdmissionState::Incompatible,
             ));
@@ -443,15 +446,9 @@ impl LlamaCppPool {
     /// Smallest well-formed body that exercises the token-count endpoint.
     ///
     /// Readiness carries no client prompt, so the probe body is fixed and
-    /// contains no request-derived content.
+    /// precomputed once when the pool is built.
     fn token_count_probe_body(&self) -> Bytes {
-        Bytes::from(
-            serde_json::to_vec(&serde_json::json!({
-                "model": self.inner.config.model,
-                "messages": [{"role": "user", "content": "ping"}]
-            }))
-            .expect("the fixed readiness probe body serializes"),
-        )
+        self.inner.token_count_probe_body.clone()
     }
 
     fn candidates(&self) -> Vec<RankedMember<'_>> {
@@ -516,23 +513,16 @@ impl Degradations {
     }
 }
 
-fn request_capabilities(
+fn request_is_compatible(
     request: &GatewayRequest,
-) -> Result<BTreeSet<LocalCapability>, PoolAdmissionState> {
-    let mut capabilities = BTreeSet::new();
-    for feature in request.features() {
-        match feature {
-            RequestFeature::Capability(capability) => {
-                capabilities.insert(*capability);
-            }
-            RequestFeature::OpenRouterPlugins
-            | RequestFeature::NonTextOutput
-            | RequestFeature::UnsupportedContent => {
-                return Err(PoolAdmissionState::Incompatible);
-            }
-        }
-    }
-    Ok(capabilities)
+    supported: &std::collections::BTreeSet<LocalCapability>,
+) -> bool {
+    request.features().iter().all(|feature| match feature {
+        RequestFeature::Capability(capability) => supported.contains(capability),
+        RequestFeature::OpenRouterPlugins
+        | RequestFeature::NonTextOutput
+        | RequestFeature::UnsupportedContent => false,
+    })
 }
 
 /// Resolve one member endpoint relative to its configured base URL.

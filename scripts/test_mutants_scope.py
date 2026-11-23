@@ -170,6 +170,68 @@ class MutationScopeTests(unittest.TestCase):
                 after = self.commit(path, "after\n")
                 self.assertEqual(self.push(before, after), ("full", []))
 
+    def test_owned_unit_test_siblings_scope_to_their_production_files(self):
+        self.commit("src/gateway/mod.rs", "pub mod auth;\n")
+        self.commit("src/gateway/auth.rs", "pub fn check() -> bool { true }\n")
+        self.commit("src/gateway/auth_tests.rs", "#[test]\nfn a() {}\n")
+        self.commit("src/gateway/fabric/local_pool/mod.rs", "mod member;\n")
+        self.commit("src/gateway/fabric/local_pool/member.rs", "pub fn probe() {}\n")
+        self.commit("src/gateway/fabric/local_pool_probe_tests.rs", "#[test]\nfn b() {}\n")
+        self.commit("src/gateway/fabric/anthropic/mod.rs", "mod request;\n")
+        self.commit("src/gateway/fabric/anthropic/request.rs", "pub fn build() {}\n")
+        self.commit("src/gateway/fabric/anthropic/tests/fields.rs", "#[test]\nfn c() {}\n")
+        self.commit(
+            "src/gateway/fabric/service/mod.rs",
+            "#[cfg(test)]\nmod mutation_tests;\n#[cfg(test)]\nmod inline { #[test] fn ok() { assert_eq!(1, 1); } }\n",
+        )
+        self.commit("src/gateway/fabric/service/mutation_tests.rs", "#[test]\nfn d() {}\n")
+
+        cases = [
+            (
+                "src/gateway/auth_tests.rs",
+                ["--file", "src/gateway/auth.rs", "--file", "src/gateway/mod.rs"],
+            ),
+            (
+                "src/gateway/fabric/local_pool_probe_tests.rs",
+                [
+                    "--file",
+                    "src/gateway/fabric/local_pool/member.rs",
+                    "--file",
+                    "src/gateway/fabric/local_pool/mod.rs",
+                ],
+            ),
+            (
+                "src/gateway/fabric/anthropic/tests/fields.rs",
+                [
+                    "--file",
+                    "src/gateway/fabric/anthropic/mod.rs",
+                    "--file",
+                    "src/gateway/fabric/anthropic/request.rs",
+                ],
+            ),
+            (
+                "src/gateway/fabric/service/mutation_tests.rs",
+                ["--file", "src/gateway/fabric/service/mod.rs"],
+            ),
+        ]
+        for path, expected in cases:
+            with self.subTest(path=path):
+                before = self.git("rev-parse", "HEAD")
+                after = self.commit(path, "#[test]\nfn updated() {}\n")
+                self.assertEqual(self.push(before, after), ("files", expected))
+
+        # Editing an inline test in a file that also declares an untouched
+        # external test module stays scoped to that owning file.
+        before = self.git("rev-parse", "HEAD")
+        after = self.commit(
+            "src/gateway/fabric/service/mod.rs",
+            "#[cfg(test)]\nmod mutation_tests;\n#[cfg(test)]\nmod inline { #[test] fn ok() { assert_eq!(2, 2); } }\n",
+        )
+        self.assertEqual(
+            self.push(before, after),
+            ("files", ["--file", "src/gateway/fabric/service/mod.rs"]),
+        )
+
     def test_removed_and_reordered_test_items_and_files_still_qualify(self):
         production = "pub fn answer() -> u8 { 42 }\n"
         source = production + "#[test]\nfn example() { assert!(true); }\n"

@@ -36,7 +36,7 @@ async fn a_terminal_context_overflow_outranks_an_earlier_busy_pool() {
     supervisor.context_window = 4096;
     supervisor.context_safety_tokens = 0;
     supervisor.default_max_output_tokens = 8192;
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
@@ -67,7 +67,7 @@ async fn an_unresolvable_provider_credential_outranks_an_earlier_busy_pool() {
     ];
     // No `ZAI_API_KEY`, so the provider step is refused as unauthenticated
     // without any request reaching the network.
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
@@ -89,7 +89,7 @@ async fn an_unresolvable_provider_credential_outranks_an_earlier_busy_pool() {
 async fn terminal_error_names_the_rejection_that_governed_the_route() {
     let server = MockServer::start().await;
     mount_busy_local(&server).await;
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         local_config(&server),
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
@@ -111,11 +111,10 @@ async fn terminal_error_names_the_rejection_that_governed_the_route() {
 /// need a test, or half the histogram can be deleted unnoticed.
 #[tokio::test]
 async fn a_rejected_provider_step_is_observed_in_the_routing_histogram() {
-    let server = MockServer::start().await;
-    let config = single_provider_config(&server, "zai");
+    let config = single_provider_offline_config("zai");
     // No `ZAI_API_KEY`: the step is refused at admission, after the same
     // credential resolution an admitted step would have done.
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
@@ -136,14 +135,13 @@ async fn a_rejected_provider_step_is_observed_in_the_routing_histogram() {
 /// trying to read.
 #[tokio::test]
 async fn a_rejected_local_step_is_observed_in_the_routing_histogram() {
-    let server = MockServer::start().await;
-    let mut config = local_config(&server);
+    let mut config = example_config();
     config
         .local_pools
         .get_mut("workers")
         .expect("workers pool")
         .enabled = false;
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )

@@ -1,5 +1,6 @@
 //! Transport header-allowlist and deadline tests.
 
+use super::test_support::shared_http_client;
 use super::transport::*;
 use crate::gateway::http_client::build as build_http_client;
 use axum::{
@@ -93,7 +94,7 @@ fn safe_diagnostic_headers_are_preserved() {
 
 /// A missing first-byte deadline must not invent one, and a configured one
 /// must bound how long a hung upstream holds its permits.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn first_byte_deadline_is_applied_only_when_configured() {
     let unbounded = UpstreamDeadlines::new(60_000, None);
     let slow = async {
@@ -130,7 +131,7 @@ async fn first_byte_deadline_covers_the_response_header_wait() {
         let _ = socket.read(&mut request).await;
         std::future::pending::<()>().await;
     });
-    let client = build_http_client().expect("shared client");
+    let client = shared_http_client();
     let request = client
         .get(format!("http://{address}/"))
         .build()
@@ -219,17 +220,17 @@ async fn the_shared_client_never_follows_an_upstream_redirect() {
 }
 
 async fn translated_anthropic_error_code(status: u16) -> String {
-    let server = MockServer::start().await;
-    Mock::given(any())
-        .respond_with(ResponseTemplate::new(status).set_body_json(json!({
-            "type": "error",
-            "error": {"type": "fixture_error", "message": "bounded fixture"}
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let client = build_http_client().expect("shared client");
-    let response = client.get(server.uri()).send().await.expect("response");
+    let body = serde_json::to_vec(&json!({
+        "type": "error",
+        "error": {"type": "fixture_error", "message": "bounded fixture"}
+    }))
+    .expect("fixture JSON");
+    let response: reqwest::Response = axum::http::Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(body)
+        .expect("fixture response")
+        .into();
     let permit = Arc::new(Semaphore::new(1))
         .acquire_owned()
         .await
@@ -321,7 +322,7 @@ async fn truncated_upstream(body_bytes: usize) -> String {
 /// thing.
 #[tokio::test]
 async fn a_body_that_fails_before_and_after_its_first_byte_are_distinct_faults() {
-    let client = build_http_client().expect("shared client");
+    let client = shared_http_client();
 
     let silent = truncated_upstream(0).await;
     let response = client.get(&silent).send().await.expect("response head");
@@ -353,15 +354,12 @@ async fn a_body_that_fails_before_and_after_its_first_byte_are_distinct_faults()
 /// few hundred bytes, kept passing.
 #[tokio::test]
 async fn a_multi_megabyte_response_is_within_the_translation_bound() {
-    let body = "x".repeat(2 * 1024 * 1024);
-    let server = MockServer::start().await;
-    Mock::given(any())
-        .respond_with(ResponseTemplate::new(200).set_body_string(body.clone()))
-        .mount(&server)
-        .await;
-    let client = build_http_client().expect("shared client");
-
-    let response = client.get(server.uri()).send().await.expect("response");
+    let body = bytes::Bytes::from(vec![b'x'; 2 * 1024 * 1024]);
+    let response: reqwest::Response = axum::http::Response::builder()
+        .status(200)
+        .body(body.clone())
+        .expect("response")
+        .into();
     let read = read_bounded(response, MAX_TRANSLATED_RESPONSE_BYTES)
         .await
         .expect("a 2 MiB response is within the 16 MiB bound");
@@ -370,7 +368,11 @@ async fn a_multi_megabyte_response_is_within_the_translation_bound() {
     // The control: the same response against a bound it does not fit is
     // refused, so the read above is the bound admitting it rather than the
     // limit being ignored.
-    let response = client.get(server.uri()).send().await.expect("response");
+    let response: reqwest::Response = axum::http::Response::builder()
+        .status(200)
+        .body(body)
+        .expect("response")
+        .into();
     assert!(matches!(
         read_bounded(response, 64 * 1024).await,
         Err(FabricTransportError::ProviderResponseTooLarge)

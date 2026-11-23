@@ -86,8 +86,7 @@ async fn a_rejected_credential_is_discarded_so_the_next_request_re_resolves_it()
     let environment = RotatingEnvironment::new(["stale-key", "rotated-key"]);
     let audit = environment.clone();
     let service =
-        FabricGatewayService::from_config(single_provider_config(&server, "zai"), environment)
-            .expect("service");
+        service_from_config(single_provider_config(&server, "zai"), environment).expect("service");
 
     // The stale key is resolved, sent, and rejected. The route has one step, so
     // the rejection commits rather than falling forward.

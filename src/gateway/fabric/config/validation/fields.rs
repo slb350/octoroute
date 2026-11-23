@@ -198,7 +198,9 @@ pub(super) fn validate_first_byte_timeout(
     first_byte_timeout_ms: Option<u64>,
 ) -> Result<(), FabricConfigError> {
     match first_byte_timeout_ms {
-        Some(first_byte_timeout_ms) => validate_u64_range(field, first_byte_timeout_ms, timeout_ms),
+        Some(first_byte_timeout_ms) => {
+            validate_positive_range(field, first_byte_timeout_ms, timeout_ms)
+        }
         None => Ok(()),
     }
 }
@@ -252,36 +254,15 @@ pub(super) fn line_column(input: &str, byte_index: usize) -> (usize, usize) {
     (line, column)
 }
 
-pub(super) fn validate_usize_range(
+pub(super) fn validate_positive_range<T>(
     field: &str,
-    value: usize,
-    maximum: usize,
-) -> Result<(), FabricConfigError> {
-    if (1..=maximum).contains(&value) {
-        Ok(())
-    } else {
-        Err(invalid(field, format!("must be between 1 and {maximum}")))
-    }
-}
-
-pub(super) fn validate_u32_range(
-    field: &str,
-    value: u32,
-    maximum: u32,
-) -> Result<(), FabricConfigError> {
-    if (1..=maximum).contains(&value) {
-        Ok(())
-    } else {
-        Err(invalid(field, format!("must be between 1 and {maximum}")))
-    }
-}
-
-pub(super) fn validate_u64_range(
-    field: &str,
-    value: u64,
-    maximum: u64,
-) -> Result<(), FabricConfigError> {
-    if (1..=maximum).contains(&value) {
+    value: T,
+    maximum: T,
+) -> Result<(), FabricConfigError>
+where
+    T: Copy + PartialOrd + From<u8> + std::fmt::Display,
+{
+    if (T::from(1)..=maximum).contains(&value) {
         Ok(())
     } else {
         Err(invalid(field, format!("must be between 1 and {maximum}")))

@@ -26,7 +26,7 @@ async fn a_local_member_redirect_is_a_precommit_failure_and_is_never_followed() 
         .expect(1)
         .mount(&server)
         .await;
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         local_config(&server),
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
@@ -99,7 +99,7 @@ async fn a_provider_redirect_is_a_precommit_failure_and_is_never_followed() {
         RouteTarget::Provider("kimi".to_string()),
         RouteTarget::Provider("openrouter".to_string()),
     ];
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default()
             .with("OCTOROUTE_API_KEY", "inbound-test-key")

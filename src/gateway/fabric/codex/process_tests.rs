@@ -265,7 +265,7 @@ async fn doctor_probe_failures_keep_their_kind() {
     );
     let started = std::time::Instant::now();
     assert!(matches!(
-        probe(&hung, &environment, Duration::from_millis(250)).await,
+        probe(&hung, &environment, Duration::from_millis(80)).await,
         Err(CodexAdapterError::Timeout)
     ));
     assert!(

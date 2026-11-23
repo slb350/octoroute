@@ -28,7 +28,7 @@ async fn an_orphan_ready_target_cannot_make_unservable_routes_ready() {
     for route in config.routes.values_mut() {
         route.steps = vec![RouteTarget::LocalPool("workers".to_string())];
     }
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default()
             .with("OCTOROUTE_API_KEY", "inbound-test-key")
@@ -68,7 +68,7 @@ async fn repeated_anonymous_readiness_requests_probe_the_fleet_once() {
         .expect("zai provider")
         .readiness_ttl_ms = 0;
     let app = fabric_gateway_app(
-        FabricGatewayService::from_config(
+        service_from_config(
             config,
             TestEnvironment::default()
                 .with("OCTOROUTE_API_KEY", "inbound-test-key")
@@ -109,7 +109,7 @@ async fn repeated_anonymous_readiness_requests_probe_the_fleet_once() {
 /// Probe one HTTP provider pointed at `server` and report its verdict.
 async fn provider_verdict(server: &MockServer) -> ProviderAdmissionState {
     let config = single_enabled_provider_config(server, "zai");
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default()
             .with("OCTOROUTE_API_KEY", "inbound-test-key")
@@ -226,8 +226,8 @@ async fn an_inference_path_in_an_outage_does_not_corroborate_a_missing_models_en
 /// silently rerouting the traffic and the spend to the next provider.
 #[tokio::test]
 async fn a_rejected_credential_reports_unauthenticated_rather_than_unavailable() {
+    let server = MockServer::start().await;
     for status in [401, 403] {
-        let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/models"))
             .respond_with(ResponseTemplate::new(status))
@@ -240,6 +240,8 @@ async fn a_rejected_credential_reports_unauthenticated_rather_than_unavailable()
             ProviderAdmissionState::Unauthenticated,
             "{status} is a refused credential"
         );
+        server.verify().await;
+        server.reset().await;
     }
 }
 

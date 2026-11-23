@@ -16,7 +16,7 @@ use tokio::{
     sync::Mutex,
 };
 
-const MAX_CREDENTIAL_BYTES: usize = 4 * 1024;
+const MAX_CREDENTIAL_BYTES: usize = 4_096; // 4 KiB
 const CREDENTIAL_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Longest a resolved provider credential is reused before being re-resolved.
@@ -140,16 +140,22 @@ async fn resolve_command_credential(
     match tokio::time::timeout_at(deadline, read).await {
         Ok(Ok(_)) => {}
         Ok(Err(_)) => {
-            terminate(&mut child, &mut process_group).await?;
+            if let Err(error) = terminate(&mut child, &mut process_group).await {
+                tracing::warn!(%error, "credential command cleanup failed after read error");
+            }
             return Err(ProviderCredentialError::CommandFailed);
         }
         Err(_) => {
-            terminate(&mut child, &mut process_group).await?;
+            if let Err(error) = terminate(&mut child, &mut process_group).await {
+                tracing::warn!(%error, "credential command cleanup failed after timeout");
+            }
             return Err(ProviderCredentialError::CommandTimeout);
         }
     }
     if output.len() > MAX_CREDENTIAL_BYTES {
-        terminate(&mut child, &mut process_group).await?;
+        if let Err(error) = terminate(&mut child, &mut process_group).await {
+            tracing::warn!(%error, "credential command cleanup failed after oversized output");
+        }
         return Err(ProviderCredentialError::CommandOutputTooLarge);
     }
     let status = match tokio::time::timeout_at(deadline, child.wait()).await {
@@ -158,11 +164,15 @@ async fn resolve_command_credential(
             status
         }
         Ok(Err(_)) => {
-            terminate(&mut child, &mut process_group).await?;
+            if let Err(error) = terminate(&mut child, &mut process_group).await {
+                tracing::warn!(%error, "credential command cleanup failed after wait error");
+            }
             return Err(ProviderCredentialError::CommandFailed);
         }
         Err(_) => {
-            terminate(&mut child, &mut process_group).await?;
+            if let Err(error) = terminate(&mut child, &mut process_group).await {
+                tracing::warn!(%error, "credential command cleanup failed after wait timeout");
+            }
             return Err(ProviderCredentialError::CommandTimeout);
         }
     };
@@ -235,9 +245,7 @@ mod tests {
         [
             "/bin/sh".to_string(),
             "-c".to_string(),
-            format!(
-                "/usr/bin/awk 'BEGIN {{ for (i = 0; i < {bytes}; i++) printf \"x\" }}'; sleep 0.1"
-            ),
+            format!("/usr/bin/awk 'BEGIN {{ for (i = 0; i < {bytes}; i++) printf \"x\" }}'"),
         ]
     }
 
@@ -375,13 +383,13 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_slow_command_is_bounded_in_total_not_per_phase() {
-        let timeout = Duration::from_millis(500);
+        let timeout = Duration::from_millis(250);
         let command = [
             "/bin/sh".to_string(),
             "-c".to_string(),
             // Writes and closes stdout part-way through the budget, so the read
             // returns, and then outlives any second budget of the same size.
-            "sleep 0.4; printf secret-key; exec 1>&-; sleep 30".to_string(),
+            "sleep 0.15; printf secret-key; exec 1>&-; sleep 30".to_string(),
         ];
         let started = Instant::now();
         let result =
@@ -391,10 +399,10 @@ mod tests {
             matches!(result, Err(ProviderCredentialError::CommandTimeout)),
             "a command that never exits must time out"
         );
-        // Per-phase bounds would allow the 0.4s read and then a fresh 0.5s
-        // wait; one budget cuts the whole call at 0.5s.
+        // Per-phase bounds would allow the 0.15s read and then a fresh 0.25s
+        // wait (0.40s); one budget cuts the whole call at 0.25s.
         assert!(
-            elapsed < timeout + Duration::from_millis(200),
+            elapsed < timeout + Duration::from_millis(120),
             "the read and the wait share one budget; took {elapsed:?}"
         );
     }

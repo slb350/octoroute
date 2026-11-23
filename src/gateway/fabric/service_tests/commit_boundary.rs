@@ -39,7 +39,7 @@ async fn a_committed_local_stream_that_ends_early_never_switches_target() {
     supervisor.enabled = true;
     supervisor.members[0].base_url =
         Url::parse(&supervisor_server.uri()).expect("supervisor mock URL");
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )

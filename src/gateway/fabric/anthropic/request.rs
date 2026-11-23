@@ -12,7 +12,7 @@ mod tools;
 
 use super::AnthropicAdapterError;
 use crate::gateway::fabric::ProviderConfig;
-use crate::gateway::request::GatewayRequest;
+use crate::gateway::request::{GatewayRequest, validate_destination_model};
 use bytes::Bytes;
 use fields::{reject_late_system_messages, reject_unsupported_request_fields};
 use messages::translate_message;
@@ -32,10 +32,8 @@ pub(crate) fn build_request(
     config: &ProviderConfig,
     request: &GatewayRequest,
 ) -> Result<AnthropicRequest, AnthropicAdapterError> {
-    let source = request.body_value_for_model(&config.model)?;
-    let source = source
-        .as_object()
-        .expect("gateway requests are validated objects");
+    validate_destination_model(&config.model)?;
+    let source = request.body();
     reject_unsupported_request_fields(source)?;
 
     let mut system = Vec::new();

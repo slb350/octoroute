@@ -262,7 +262,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn shutdown_grace_starts_only_after_the_stop_signal() {
         let (shutdown_started_tx, shutdown_started_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(wait_for_server_shutdown(

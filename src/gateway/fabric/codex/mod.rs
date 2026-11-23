@@ -24,10 +24,9 @@ use events::{parse_events, render_open_ai_reply};
 use process::*;
 
 use crate::gateway::fabric::{ProviderConfig, ReasoningEffort};
-use crate::gateway::request::{GatewayRequest, RequestFeature};
+use crate::gateway::request::{BodyWithModel, GatewayRequest, RequestFeature};
 use bytes::Bytes;
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
@@ -36,10 +35,10 @@ use std::{
 };
 use thiserror::Error;
 
-const STDOUT_MAX_BYTES: usize = 16 * 1024 * 1024;
-const STDERR_CAPTURE_MAX_BYTES: usize = 16 * 1024 * 1024;
-pub(super) const EVENT_LINE_MAX_BYTES: usize = 1024 * 1024;
-const DIAGNOSTIC_MAX_BYTES: usize = 1024 * 1024;
+const STDOUT_MAX_BYTES: usize = 16_777_216; // 16 MiB
+const STDERR_CAPTURE_MAX_BYTES: usize = 16_777_216; // 16 MiB
+pub(super) const EVENT_LINE_MAX_BYTES: usize = 1_048_576; // 1 MiB
+const DIAGNOSTIC_MAX_BYTES: usize = 1_048_576; // 1 MiB
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ChildEnvironment {
@@ -104,7 +103,7 @@ pub(super) fn build_request(
     }) {
         return Err(CodexAdapterError::Incompatible);
     }
-    let body = request.body_value_for_model(&config.model)?;
+    let body = request.body();
     if body
         .get("n")
         .filter(|value| !value.is_null())
@@ -112,11 +111,16 @@ pub(super) fn build_request(
     {
         return Err(CodexAdapterError::Incompatible);
     }
-    let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
-    let input = serde_json::to_string(&json!({
-        "contract": "openai_chat_completion",
-        "request": body
-    }))
+    #[derive(Serialize)]
+    struct CodexEnvelope<'a> {
+        contract: &'static str,
+        request: BodyWithModel<'a>,
+    }
+    let stream = request.is_stream();
+    let input = serde_json::to_string(&CodexEnvelope {
+        contract: "openai_chat_completion",
+        request: request.patched_body(&config.model, &[])?,
+    })
     .map_err(|_| CodexAdapterError::Contract)?;
     Ok(CodexRequest {
         executable: PathBuf::from(executable),

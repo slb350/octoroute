@@ -20,10 +20,8 @@ use crate::gateway::{
 };
 use serde_json::{Value, json};
 
-const REPOSITORY_CONFIG: &str = include_str!("../../../../config.toml");
-
 fn config() -> FabricConfig {
-    FabricConfig::from_toml(REPOSITORY_CONFIG).expect("repository config")
+    crate::gateway::fabric::test_support::example_config()
 }
 
 fn request(value: Value) -> GatewayRequest {

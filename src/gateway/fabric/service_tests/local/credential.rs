@@ -35,7 +35,7 @@ async fn local_credential_rejection_falls_forward_when_the_route_opts_in() {
         RouteTarget::Provider("openrouter".to_string()),
     ];
     route.fallback_on.insert(FallbackTrigger::Unauthenticated);
-    let service = FabricGatewayService::from_config(
+    let service = service_from_config(
         config,
         TestEnvironment::default()
             .with("OCTOROUTE_API_KEY", "inbound-test-key")
@@ -68,8 +68,8 @@ async fn local_credential_rejection_falls_forward_when_the_route_opts_in() {
 /// Its body and authentication status must never be forwarded as the caller's.
 #[tokio::test]
 async fn local_credential_rejection_is_never_the_clients_own_authentication_error() {
+    let server = MockServer::start().await;
     for status in [401, 403, 407] {
-        let server = MockServer::start().await;
         mount_local_admission(&server).await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
@@ -79,7 +79,7 @@ async fn local_credential_rejection_is_never_the_clients_own_authentication_erro
             .expect(1)
             .mount(&server)
             .await;
-        let service = FabricGatewayService::from_config(
+        let service = service_from_config(
             local_config(&server),
             TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
         )
@@ -98,5 +98,7 @@ async fn local_credential_rejection_is_never_the_clients_own_authentication_erro
             !text.contains("worker says the gateway key is invalid"),
             "{text}"
         );
+        server.verify().await;
+        server.reset().await;
     }
 }

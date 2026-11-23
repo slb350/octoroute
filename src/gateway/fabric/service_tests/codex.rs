@@ -7,7 +7,6 @@ use crate::gateway::fabric::test_support::write_executable_fixture;
 
 #[tokio::test]
 async fn incompatible_codex_request_fails_closed_without_launching_the_cli() {
-    let server = MockServer::start().await;
     let environment = TestEnvironment::default()
         .with("OCTOROUTE_API_KEY", "inbound-test-key")
         .with("OPENROUTER_API_KEY", "unused-openrouter-key");
@@ -15,13 +14,8 @@ async fn incompatible_codex_request_fails_closed_without_launching_the_cli() {
     // Scoped to the Codex step alone: this asserts Codex fails closed, not what
     // the route does afterwards. `incompatible_codex_request_falls_forward_to_a_
     // capable_provider` covers the fall-through.
-    let mut config = local_config(&server);
-    config
-        .routes
-        .get_mut("cloud-sota")
-        .expect("cloud route")
-        .steps = vec![RouteTarget::Provider("codex".to_string())];
-    let service = FabricGatewayService::from_config(config, environment).expect("service");
+    let config = single_provider_offline_config("codex");
+    let service = service_from_config(config, environment).expect("service");
     let incompatible_requests = [
         json!({
             "model": "cloud-sota",
@@ -79,10 +73,13 @@ fn doctor_branch(auth_mode: &str, chatgpt_tokens: &str) -> String {
     )
 }
 
-/// Point the `codex` provider at a fake CLI and make it the only cloud step.
+/// Point the `codex` provider at a fake CLI and make it the only enabled target.
 #[cfg(unix)]
-fn codex_only_config(server: &MockServer, executable: &std::path::Path) -> FabricConfig {
-    let mut config = local_config(server);
+fn codex_only_config(executable: &std::path::Path) -> FabricConfig {
+    let mut config = single_provider_offline_config("codex");
+    for pool in config.local_pools.values_mut() {
+        pool.enabled = false;
+    }
     for provider in config.providers.values_mut() {
         provider.enabled = false;
     }
@@ -92,17 +89,11 @@ fn codex_only_config(server: &MockServer, executable: &std::path::Path) -> Fabri
         executable: executable.to_string_lossy().into_owned(),
     };
     config
-        .routes
-        .get_mut("cloud-sota")
-        .expect("cloud route")
-        .steps = vec![RouteTarget::Provider("codex".to_string())];
-    config
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn codex_cli_dispatch_is_ephemeral_filtered_and_open_ai_compatible() {
-    let server = MockServer::start().await;
     let directory = tempfile::tempdir().expect("temporary Codex fixture");
     let executable = write_executable_fixture(
         directory.path(),
@@ -121,8 +112,8 @@ async fn codex_cli_dispatch_is_ephemeral_filtered_and_open_ai_compatible() {
         ),
     );
 
-    let service = FabricGatewayService::from_config(
-        codex_only_config(&server, &executable),
+    let service = service_from_config(
+        codex_only_config(&executable),
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
     .expect("service");
@@ -188,7 +179,7 @@ async fn incompatible_codex_request_falls_forward_to_a_capable_provider() {
     let environment = TestEnvironment::default()
         .with("OCTOROUTE_API_KEY", "inbound-test-key")
         .with("OPENROUTER_API_KEY", "openrouter-test-key");
-    let service = FabricGatewayService::from_config(config, environment).expect("service");
+    let service = service_from_config(config, environment).expect("service");
 
     let body = Bytes::from(
         serde_json::to_vec(&json!({
@@ -218,7 +209,7 @@ async fn incompatible_codex_request_falls_forward_to_a_capable_provider() {
 /// step cannot serve reaches a step that can.
 #[test]
 fn shipped_cloud_route_falls_forward_on_an_incompatible_first_step() {
-    let config = FabricConfig::from_toml(include_str!("../../../../config.toml")).expect("config");
+    let config = example_config();
     let route = &config.routes["cloud-sota"];
     assert_eq!(
         route.steps.first(),
@@ -234,15 +225,14 @@ fn shipped_cloud_route_falls_forward_on_an_incompatible_first_step() {
 #[cfg(unix)]
 #[tokio::test]
 async fn api_key_codex_auth_reports_unauthenticated_rather_than_unavailable() {
-    let server = MockServer::start().await;
     let directory = tempfile::tempdir().expect("temporary Codex fixture");
     let executable = write_executable_fixture(
         directory.path(),
         "fake-codex",
         &format!("{}exit 0\n", doctor_branch("api", "false")),
     );
-    let service = FabricGatewayService::from_config(
-        codex_only_config(&server, &executable),
+    let service = service_from_config(
+        codex_only_config(&executable),
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
     .expect("service");
@@ -259,15 +249,14 @@ async fn api_key_codex_auth_reports_unauthenticated_rather_than_unavailable() {
 #[cfg(unix)]
 #[tokio::test]
 async fn an_unparseable_codex_diagnostic_reports_unauthenticated() {
-    let server = MockServer::start().await;
     let directory = tempfile::tempdir().expect("temporary Codex fixture");
     let executable = write_executable_fixture(
         directory.path(),
         "fake-codex",
         "#!/bin/sh\nif [ \"${1:-}\" = doctor ]; then\n  printf '%s' 'not json'\n  exit 0\nfi\nexit 0\n",
     );
-    let service = FabricGatewayService::from_config(
-        codex_only_config(&server, &executable),
+    let service = service_from_config(
+        codex_only_config(&executable),
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
     .expect("service");
@@ -284,17 +273,16 @@ async fn an_unparseable_codex_diagnostic_reports_unauthenticated() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_hung_codex_run_is_bounded_by_the_first_byte_deadline() {
-    let server = MockServer::start().await;
     let directory = tempfile::tempdir().expect("temporary Codex fixture");
     let executable = write_executable_fixture(
         directory.path(),
         "fake-codex",
         &format!("{}sleep 30\n", doctor_branch("chatgpt", "true")),
     );
-    let mut config = codex_only_config(&server, &executable);
+    let mut config = codex_only_config(&executable);
     let codex = config.providers.get_mut("codex").expect("codex provider");
-    codex.first_byte_timeout_ms = Some(250);
-    let service = FabricGatewayService::from_config(
+    codex.first_byte_timeout_ms = Some(80);
+    let service = service_from_config(
         config,
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
@@ -356,14 +344,13 @@ fn doctor_that_changes_its_answer(marker: &std::path::Path) -> String {
 #[tokio::test]
 async fn a_failed_codex_dispatch_discards_the_cached_readiness_verdict() {
     let directory = tempfile::tempdir().expect("temporary Codex fixture");
-    let server = MockServer::start().await;
     let executable = write_executable_fixture(
         directory.path(),
         "fake-codex",
         &doctor_that_changes_its_answer(&directory.path().join("probed")),
     );
-    let service = FabricGatewayService::from_config(
-        codex_only_config(&server, &executable),
+    let service = service_from_config(
+        codex_only_config(&executable),
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
     .expect("service");

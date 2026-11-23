@@ -1,6 +1,7 @@
 # Local agent notes; AGENTS.md is tracked
 CLAUDE.md
 .claude/
+.Codex/
 
 # Rust
 target/

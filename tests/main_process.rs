@@ -17,14 +17,14 @@ use std::{
 };
 use tempfile::TempDir;
 
-const POLL_INTERVAL: Duration = Duration::from_millis(25);
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
 #[cfg(unix)]
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(100);
 #[cfg(unix)]
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(unix)]
-const LIVENESS_OBSERVATION: Duration = Duration::from_millis(500);
+const LIVENESS_OBSERVATION: Duration = Duration::from_millis(150);
 
 struct ChildGuard(Option<Child>);
 

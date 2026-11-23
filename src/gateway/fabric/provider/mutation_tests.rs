@@ -19,7 +19,7 @@ impl Environment for ProviderEnvironment {
 }
 
 fn config() -> FabricConfig {
-    FabricConfig::from_toml(include_str!("../../../../config.toml")).expect("repository config")
+    crate::gateway::fabric::test_support::example_config()
 }
 
 fn request(body: Value) -> GatewayRequest {
@@ -177,7 +177,7 @@ fn registry(config: &FabricConfig) -> ProviderRegistry {
         &config.providers,
         Arc::new(ProviderEnvironment),
         metrics,
-        crate::gateway::http_client::build().expect("HTTP client"),
+        crate::gateway::fabric::test_support::shared_http_client(),
     )
     .expect("provider registry")
 }

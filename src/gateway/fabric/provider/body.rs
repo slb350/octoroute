@@ -2,7 +2,7 @@
 
 use super::ProviderRequestError;
 use crate::gateway::fabric::{ProviderConfig, ProviderProfile};
-use crate::gateway::request::GatewayRequest;
+use crate::gateway::request::{FieldOverride, GatewayRequest};
 use bytes::Bytes;
 use serde_json::{Map, Number, Value};
 
@@ -36,11 +36,14 @@ pub(super) fn build_open_ai_body(
     config: &ProviderConfig,
     request: &GatewayRequest,
 ) -> Result<Bytes, ProviderRequestError> {
-    let mut body = request.body_value_for_model(&config.model)?;
-    let object = body
-        .as_object_mut()
-        .expect("gateway request bodies are validated objects");
+    let object = request.body();
+    let openrouter_plugins = if config.profile == ProviderProfile::OpenRouterAuto {
+        Some(openrouter_auto_plugins(object.get("plugins"))?)
+    } else {
+        None
+    };
 
+    let mut overrides = Vec::with_capacity(4);
     // Only a provider explicitly configured for reasoning receives the field.
     // A route-wide default would send `reasoning_effort` to every OpenAI-protocol
     // model whether or not it accepts one, which mutates more than the model and
@@ -49,46 +52,32 @@ pub(super) fn build_open_ai_body(
         && !present(object, "reasoning_effort")
         && !present(object, "reasoning")
     {
-        object.insert(
-            "reasoning_effort".to_string(),
-            Value::String(effort.as_str().to_string()),
-        );
+        overrides.push(("reasoning_effort", FieldOverride::Str(effort.as_str())));
     }
     if let Some(temperature) = config.temperature
         && !present(object, "temperature")
     {
         let number = Number::from_f64(temperature).ok_or(ProviderRequestError::Serialization)?;
-        object.insert("temperature".to_string(), Value::Number(number));
+        overrides.push(("temperature", FieldOverride::Number(number)));
     }
     if let Some(max_tokens) = config.max_tokens
         && !present(object, "max_tokens")
         && !present(object, "max_completion_tokens")
     {
-        object.insert(
-            "max_tokens".to_string(),
-            Value::Number(Number::from(max_tokens)),
-        );
+        overrides.push(("max_tokens", FieldOverride::U32(max_tokens)));
     }
-    if config.profile == ProviderProfile::OpenRouterAuto {
-        apply_openrouter_auto_profile(object)?;
+    if let Some(plugins) = openrouter_plugins.as_ref() {
+        overrides.push(("plugins", FieldOverride::Value(plugins)));
     }
 
-    serde_json::to_vec(&body)
-        .map(Bytes::from)
-        .map_err(|_| ProviderRequestError::Serialization)
+    Ok(request.body_bytes_for_model_with_overrides(&config.model, &overrides)?)
 }
 
-fn apply_openrouter_auto_profile(
-    body: &mut Map<String, Value>,
-) -> Result<(), ProviderRequestError> {
-    let plugins = body
-        .entry("plugins")
-        .or_insert_with(|| Value::Array(Vec::new()));
-    if plugins.is_null() {
-        *plugins = Value::Array(Vec::new());
-    }
-    let Value::Array(plugins) = plugins else {
-        return Err(ProviderRequestError::InvalidOpenRouterPlugins);
+fn openrouter_auto_plugins(existing: Option<&Value>) -> Result<Value, ProviderRequestError> {
+    let mut plugins = match existing {
+        None | Some(Value::Null) => Vec::with_capacity(1),
+        Some(Value::Array(plugins)) => plugins.clone(),
+        Some(_) => return Err(ProviderRequestError::InvalidOpenRouterPlugins),
     };
 
     let matching_index = {
@@ -129,7 +118,7 @@ fn apply_openrouter_auto_profile(
     for field in OPENROUTER_CLIENT_STEERING_FIELDS {
         plugin.remove(field);
     }
-    Ok(())
+    Ok(Value::Array(plugins))
 }
 
 fn present(body: &Map<String, Value>, field: &str) -> bool {

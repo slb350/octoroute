@@ -121,7 +121,9 @@ jobs:
           toolchain: stable
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --version 0.22.2 --locked
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: cargo-audit@0.22.2
 
       - name: Audit locked dependencies
         run: cargo audit --deny warnings
@@ -171,10 +173,10 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Install cargo-mutants
+      - name: Install cargo-mutants and cargo-nextest
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
-          tool: cargo-mutants@27.1.0
+          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.152
 
       - name: Run mutation sweep
         shell: bash

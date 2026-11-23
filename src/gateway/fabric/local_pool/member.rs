@@ -28,7 +28,7 @@ use tokio::sync::{Mutex, Semaphore};
 /// `-np 64` member exceeds in normal operation, and the failure was silent and
 /// permanent: the member read as unhealthy on every probe forever. One mebibyte
 /// covers roughly 950 plain slots while still bounding a hostile response.
-const MAX_PROBE_BODY_BYTES: usize = 1024 * 1024;
+const MAX_PROBE_BODY_BYTES: usize = 1_048_576; // 1 MiB
 
 /// Deserialize a probe body, refusing to buffer more than [`MAX_PROBE_BODY_BYTES`].
 async fn bounded_json<T: DeserializeOwned>(response: Response) -> Option<T> {

@@ -13,11 +13,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// The shipped configuration, whose upstreams are unreachable on purpose: every
 /// test in this module is refused before any route step runs.
 fn preflight_config() -> FabricConfig {
-    FabricConfig::from_toml(include_str!("../../../../config.toml")).expect("config")
+    example_config()
 }
 
 fn preflight_service(config: FabricConfig) -> FabricGatewayService<FabricTransport> {
-    FabricGatewayService::from_config(
+    service_from_config(
         config,
         TestEnvironment::default().with("OCTOROUTE_API_KEY", "inbound-test-key"),
     )
@@ -28,7 +28,7 @@ fn preflight_service(config: FabricConfig) -> FabricGatewayService<FabricTranspo
 fn observed_body(bytes: usize) -> (Body, Arc<AtomicBool>) {
     let polled = Arc::new(AtomicBool::new(false));
     let recorder = Arc::clone(&polled);
-    let stream = futures::stream::once(async move {
+    let stream = futures_util::stream::once(async move {
         recorder.store(true, Ordering::SeqCst);
         Ok::<_, std::io::Error>(Bytes::from(vec![b'x'; bytes]))
     });
@@ -243,7 +243,7 @@ async fn a_broken_body_returns_an_incomplete_request_error() {
         let response = service
             .handle_http_chat(preflight_request(
                 Some("inbound-test-key"),
-                Body::from_stream(futures::stream::iter(chunks)),
+                Body::from_stream(futures_util::stream::iter(chunks)),
             ))
             .await;
         assert_eq!(response.status(), 400);
@@ -251,13 +251,14 @@ async fn a_broken_body_returns_an_incomplete_request_error() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_stalled_authenticated_body_times_out_and_releases_its_permit() {
     let mut config = preflight_config();
     config.server.max_in_flight = 1;
     config.server.request_body_timeout_ms = 20;
     let service = preflight_service(config);
-    let stalled = Body::from_stream(futures::stream::pending::<Result<Bytes, std::io::Error>>());
+    let stalled =
+        Body::from_stream(futures_util::stream::pending::<Result<Bytes, std::io::Error>>());
 
     let timed_out = service
         .handle_http_chat(preflight_request(Some("inbound-test-key"), stalled))

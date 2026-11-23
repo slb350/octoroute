@@ -250,7 +250,7 @@ src/
     fabric/
       anthropic/              # response, shared error, and:
         request.rs + request/ # fields, messages, tools, params
-        response.rs + response/ # translation facade + usage accounting
+        response.rs + response/ # translation facade, SSE streaming, and usage
         tests.rs + tests/     # one module per translation concern
       codex/                  # adapter, process.rs child execution, events, tests
       config/                 # public types + validation/{targets,fields}
@@ -345,28 +345,36 @@ fault. Express platform differences as cfg'd blocks inside shared,
 always-compiled functions, as `process_group.rs` does.
 
 Ordinary CI inspects the complete pushed or pull-request diff before allocating
-the mutation runner. Added, changed, deleted, or renamed tests qualify: inline test
-changes select their owning production source files; shared test modules,
-fixtures, integration tests, and doctests require the full tree. Production-only
-changes skip mutation. One Python classifier owns this policy and publishes the
-runner arguments once; Git fixture checks run with workflow tests rather than in
-every Cargo mutation test invocation. Manual dispatch and the monthly schedule
-on the fifth at 09:17 UTC always run the full sweep. Scheduled and
-manual runs omit ordinary CI jobs. Failures retain only the three bounded repair
-reports for Jobsy's `octoroute-mutation-repair` job, which repairs the survivors through a draft pull request on the sixth.
+the mutation runner. Added, changed, deleted, or renamed tests qualify: inline
+test changes select their owning production source file, and sibling unit-test
+modules under `src/` (`*_tests.rs`, `<mod>/tests.rs`, `<mod>/mutation_tests.rs`,
+`<mod>/tests/*.rs`) resolve to their owning production file(s) or module
+directory; cross-cutting suites (`tests/`, `service_tests/`), shared test
+fixtures (`test_support.rs`), deleted tests, `.cargo/mutants.toml`, and doctests
+require the full tree. Production-only changes skip mutation. One Python
+classifier owns this policy and publishes the runner arguments once; Git fixture
+checks run with workflow tests rather than in every Cargo mutation test
+invocation. Manual dispatch and the monthly schedule on the fifth at 09:17 UTC
+always run the full sweep. Scheduled and manual runs omit ordinary CI jobs.
+Failures retain only the three bounded repair reports for Jobsy's
+`octoroute-mutation-repair` job, which repairs the survivors through a draft
+pull request on the sixth.
 
+- `.cargo/mutants.toml` configures `test_tool = "nextest"` (fail-fast per
+  mutant), `profile = "mutants"` (`debug = 0`, keeping incremental compilation
+  so workers only recompile the mutated module while `sccache` caches external
+  dependencies), and excludes `tests/source_hygiene.rs` (static convention
+  checks that catch zero runtime mutants).
 - The verdict is `missed.txt`, not the exit code: cargo-mutants returns exit 3
   (Timeout) in preference to exit 2 (FoundProblems). `scripts/mutants-run.sh`
   owns that decision.
 - Scratch copies go beside the checkout via `TMPDIR`, never in the system temp
-  dir, because a killed run strands multi-GB tree copies in a tmpfs.
-- Directories are not the whole of cleanup. `mutants-run.sh` also reaps
-  processes matching the scratch root, excluding its own process tree: the
-  mutants that disable the process-group kill path are exactly the ones that
-  time out, so the fixture they spawned outlives the run and spins on a core.
+  dir, because a killed run strands multi-GB tree copies in a tmpfs. Process
+  fixtures (such as `endless-codex`) self-bound to 30 seconds so killed runs do
+  not strand infinite spinners.
 - Fix a survivor by making a test discriminate, never by excluding the mutant.
   A mutation that genuinely cannot be observed marks dead code to delete.
-- Every mutation workload runs on homelab-1 as the `octoroute-mutants` role. CI sweeps run on that role's runner (`runs-on: [self-hosted, linux, x64, homelab-1, octoroute-mutants]`) and never for pull requests from forks. `scripts/mutants-remote.sh` offloads hook and `just mutants` runs there through `scripts/mutants-ai1-transport.sh`, which sends every command through homelab-1's sandboxed `offload.py`, and falls back to a local run with a warning when homelab-1 is unreachable. Hosted and laptop runs serialize on `/srv/ci/fleet/octoroute-mutants/home/host.lock`, and homelab-1's CI slice bounds their CPU and memory. The five scripts are drep's (`~/dev/drep/scripts/`): keep them in step with it, changing only the role, lock and workspace defaults plus Octoroute's three additions, which are orphan reaping, closing the lock descriptor for cargo, and the index gate.
+- Every mutation workload runs on homelab-1 as the `octoroute-mutants` role. CI sweeps run on that role's runner (`runs-on: [self-hosted, linux, x64, homelab-1, octoroute-mutants]`) and never for pull requests from forks. `scripts/mutants-remote.sh` offloads hook and `just mutants` runs there through `scripts/mutants-ai1-transport.sh`, which sends every command through homelab-1's sandboxed `offload.py`, and falls back to a local run with a warning when homelab-1 is unreachable. Hosted and laptop runs serialize on `/srv/ci/fleet/octoroute-mutants/home/host.lock`, homelab-1's CI slice bounds their CPU and memory, and the role's `sccache` caches dependency compilations across workers. The five scripts are drep's (`~/dev/drep/scripts/`): keep them in step with it, changing only the role default.
 - Entrypoint mutation qualification, 2026-08-28: unit tests in `src/main.rs`
   pin exact artifact writes, the `AlreadyExists` remap and non-remapped I/O
   errors, and parseable config generation without overwrite. Process tests in

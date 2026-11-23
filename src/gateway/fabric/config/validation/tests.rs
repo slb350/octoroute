@@ -9,7 +9,7 @@
 use super::fields::{
     line_column, validate_command, validate_env_name, validate_executable,
     validate_local_member_url, validate_log_level, validate_model, validate_name,
-    validate_revision, validate_u32_range, validate_u64_max, validate_url, validate_usize_range,
+    validate_positive_range, validate_revision, validate_u64_max, validate_url,
 };
 use super::{
     DEFAULT_MEMBER_MAX_IN_FLIGHT, DEFAULT_PROVIDER_MAX_IN_FLIGHT,
@@ -244,15 +244,15 @@ fn log_level_accepts_only_the_five_documented_values() {
 /// Numeric ranges are inclusive at both ends and reject zero.
 #[test]
 fn numeric_ranges_are_inclusive_and_reject_zero() {
-    validate_usize_range(FIELD, 1, 10).expect("the lower bound is accepted");
-    validate_usize_range(FIELD, 10, 10).expect("the upper bound is accepted");
-    validate_usize_range(FIELD, 0, 10).expect_err("zero is rejected");
-    validate_usize_range(FIELD, 11, 10).expect_err("above the maximum is rejected");
+    validate_positive_range(FIELD, 1_usize, 10).expect("the lower bound is accepted");
+    validate_positive_range(FIELD, 10_usize, 10).expect("the upper bound is accepted");
+    validate_positive_range(FIELD, 0_usize, 10).expect_err("zero is rejected");
+    validate_positive_range(FIELD, 11_usize, 10).expect_err("above the maximum is rejected");
 
-    validate_u32_range(FIELD, 1, 10).expect("the lower bound is accepted");
-    validate_u32_range(FIELD, 10, 10).expect("the upper bound is accepted");
-    validate_u32_range(FIELD, 0, 10).expect_err("zero is rejected");
-    validate_u32_range(FIELD, 11, 10).expect_err("above the maximum is rejected");
+    validate_positive_range(FIELD, 1_u32, 10).expect("the lower bound is accepted");
+    validate_positive_range(FIELD, 10_u32, 10).expect("the upper bound is accepted");
+    validate_positive_range(FIELD, 0_u32, 10).expect_err("zero is rejected");
+    validate_positive_range(FIELD, 11_u32, 10).expect_err("above the maximum is rejected");
 }
 
 #[test]

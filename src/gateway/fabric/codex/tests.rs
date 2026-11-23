@@ -2,6 +2,7 @@
 
 use super::events::*;
 use super::*;
+use serde_json::{Value, json};
 const DIAGNOSTIC: &str = r#"{
   "schemaVersion": 1,
   "codexVersion": "0.148.0",

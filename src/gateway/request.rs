@@ -141,15 +141,14 @@ impl GatewayRequest {
         Ok(default_max_output_tokens)
     }
 
+    /// Read-only view of the validated JSON request object.
+    pub(crate) fn body(&self) -> &Map<String, Value> {
+        &self.body
+    }
+
     /// Serialize one destination-specific body for reuse across local probes and dispatch.
     pub fn body_bytes_for_model(&self, model: &str) -> Result<Bytes, GatewayRequestError> {
-        validate_destination_model(model)?;
-        serde_json::to_vec(&BodyWithModel {
-            body: &self.body,
-            model,
-        })
-        .map(Bytes::from)
-        .map_err(|_| GatewayRequestError::Serialization)
+        self.body_bytes_for_model_with_overrides(model, &[])
     }
 
     /// Serialize a local body, supplying the pool reasoning default only when
@@ -159,22 +158,45 @@ impl GatewayRequest {
         model: &str,
         reasoning_effort: &str,
     ) -> Result<Bytes, GatewayRequestError> {
-        let mut body = self.body_value_for_model(model)?;
-        let object = body
-            .as_object_mut()
-            .expect("gateway request bodies are validated objects");
         let has_reasoning_control = ["reasoning_effort", "reasoning", "include_reasoning"]
             .iter()
-            .any(|field| object.get(*field).is_some_and(|value| !value.is_null()));
-        if !has_reasoning_control {
-            object.insert(
-                "reasoning_effort".to_string(),
-                Value::String(reasoning_effort.to_string()),
-            );
+            .any(|field| self.body.get(*field).is_some_and(|value| !value.is_null()));
+        if has_reasoning_control {
+            self.body_bytes_for_model(model)
+        } else {
+            self.body_bytes_for_model_with_overrides(
+                model,
+                &[("reasoning_effort", FieldOverride::Str(reasoning_effort))],
+            )
         }
-        serde_json::to_vec(&body)
+    }
+
+    /// Serialize the validated request with `"model"` replaced and optional
+    /// top-level field overrides applied without cloning the request AST.
+    pub(crate) fn body_bytes_for_model_with_overrides(
+        &self,
+        model: &str,
+        overrides: &[(&'static str, FieldOverride<'_>)],
+    ) -> Result<Bytes, GatewayRequestError> {
+        let patched = self.patched_body(model, overrides)?;
+        serde_json::to_vec(&patched)
             .map(Bytes::from)
             .map_err(|_| GatewayRequestError::Serialization)
+    }
+
+    /// Borrow a zero-clone `Serialize` view of the request with `"model"`
+    /// replaced and optional top-level overrides applied.
+    pub(crate) fn patched_body<'a>(
+        &'a self,
+        model: &'a str,
+        overrides: &'a [(&'static str, FieldOverride<'a>)],
+    ) -> Result<BodyWithModel<'a>, GatewayRequestError> {
+        validate_destination_model(model)?;
+        Ok(BodyWithModel {
+            body: &self.body,
+            model,
+            overrides,
+        })
     }
 
     /// Whether the caller asked for a streamed response.
@@ -183,14 +205,6 @@ impl GatewayRequest {
             .get("stream")
             .and_then(Value::as_bool)
             .unwrap_or(false)
-    }
-
-    /// Clone the schema-preserving body while replacing only the destination model.
-    pub(crate) fn body_value_for_model(&self, model: &str) -> Result<Value, GatewayRequestError> {
-        validate_destination_model(model)?;
-        let mut body = self.body.clone();
-        body.insert("model".to_string(), Value::String(model.to_string()));
-        Ok(Value::Object(body))
     }
 }
 
@@ -389,9 +403,31 @@ fn nonempty_array(value: Option<&Value>) -> bool {
         .is_some_and(|values| !values.is_empty())
 }
 
-struct BodyWithModel<'a> {
+pub(crate) enum FieldOverride<'a> {
+    Str(&'a str),
+    Number(serde_json::Number),
+    U32(u32),
+    Value(&'a Value),
+}
+
+impl Serialize for FieldOverride<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Str(value) => serializer.serialize_str(value),
+            Self::Number(value) => value.serialize(serializer),
+            Self::U32(value) => serializer.serialize_u32(*value),
+            Self::Value(value) => value.serialize(serializer),
+        }
+    }
+}
+
+pub(crate) struct BodyWithModel<'a> {
     body: &'a Map<String, Value>,
     model: &'a str,
+    overrides: &'a [(&'static str, FieldOverride<'a>)],
 }
 
 impl Serialize for BodyWithModel<'_> {
@@ -399,19 +435,22 @@ impl Serialize for BodyWithModel<'_> {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(self.body.len()))?;
+        let mut map = serializer.serialize_map(None)?;
         for (key, value) in self.body {
             if key == "model" {
                 map.serialize_entry(key, self.model)?;
-            } else {
+            } else if !self.overrides.iter().any(|(name, _)| *name == key) {
                 map.serialize_entry(key, value)?;
             }
+        }
+        for (name, value) in self.overrides {
+            map.serialize_entry(name, value)?;
         }
         map.end()
     }
 }
 
-fn validate_destination_model(model: &str) -> Result<(), GatewayRequestError> {
+pub(crate) fn validate_destination_model(model: &str) -> Result<(), GatewayRequestError> {
     if model.trim().is_empty() {
         return Err(invalid("model", "destination model must not be empty"));
     }

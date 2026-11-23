@@ -24,13 +24,9 @@ async fn mount_ready_but_never_counted(server: &MockServer) {
 
 #[tokio::test]
 async fn exact_pool_context_budget_rejects_before_chat_dispatch() {
-    let servers = [
-        MockServer::start().await,
-        MockServer::start().await,
-        MockServer::start().await,
-    ];
-    mount_ready(&servers[0], 120_000, 16_000).await;
-    let pool = LlamaCppPool::new(&worker_pool(&servers), &EmptyEnvironment).expect("pool");
+    let server = MockServer::start().await;
+    mount_ready(&server, 120_000, 16_000).await;
+    let pool = LlamaCppPool::new(&single_member_pool(&server), &EmptyEnvironment).expect("pool");
 
     let outcome = pool
         .try_admit(&request(16_000))
@@ -119,12 +115,12 @@ async fn token_count_request_rejection_is_not_retried_against_the_next_member() 
 /// blaming the request.
 #[tokio::test]
 async fn token_count_server_error_still_falls_through_to_the_next_member() {
+    let servers = [
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+    ];
     for status in [500, 404] {
-        let servers = [
-            MockServer::start().await,
-            MockServer::start().await,
-            MockServer::start().await,
-        ];
         for server in &servers {
             mount_probes_ready(server).await;
             Mock::given(method("POST"))
@@ -146,6 +142,10 @@ async fn token_count_server_error_still_falls_through_to_the_next_member() {
             PoolAdmissionState::TokenCountUnavailable,
             "status {status} describes the member, not the request"
         );
+        for server in &servers {
+            server.verify().await;
+            server.reset().await;
+        }
     }
 }
 
@@ -156,6 +156,7 @@ async fn token_count_server_error_still_falls_through_to_the_next_member() {
 /// endpoint is unavailability, and anything else 4xx is a verdict on the body.
 #[tokio::test]
 async fn each_token_count_status_class_reaches_its_own_admission_state() {
+    let server = MockServer::start().await;
     for (status, expected) in [
         (400, PoolAdmissionState::Incompatible),
         (401, PoolAdmissionState::Unauthenticated),
@@ -168,7 +169,6 @@ async fn each_token_count_status_class_reaches_its_own_admission_state() {
         (500, PoolAdmissionState::TokenCountUnavailable),
         (501, PoolAdmissionState::TokenCountUnavailable),
     ] {
-        let server = MockServer::start().await;
         mount_probes_ready(&server).await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions/input_tokens"))
@@ -182,6 +182,8 @@ async fn each_token_count_status_class_reaches_its_own_admission_state() {
         let outcome = pool.try_admit(&request(16_000)).await.expect("admission");
 
         assert_eq!(outcome.state(), expected, "token count answered {status}");
+        server.verify().await;
+        server.reset().await;
     }
 }
 
@@ -190,13 +192,13 @@ async fn each_token_count_status_class_reaches_its_own_admission_state() {
 /// `/health/ready`, which is the operator's only sight of the condition.
 #[tokio::test]
 async fn each_token_count_status_class_reaches_its_own_readiness_state() {
+    let server = MockServer::start().await;
     for (status, expected) in [
         (401, PoolAdmissionState::Unauthenticated),
         (408, PoolAdmissionState::Unhealthy),
         (429, PoolAdmissionState::Busy),
         (404, PoolAdmissionState::TokenCountUnavailable),
     ] {
-        let server = MockServer::start().await;
         mount_probes_ready(&server).await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions/input_tokens"))
@@ -212,6 +214,8 @@ async fn each_token_count_status_class_reaches_its_own_readiness_state() {
             expected,
             "token count answered {status}"
         );
+        server.verify().await;
+        server.reset().await;
     }
 }
 
